@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from app.config import Config
-from app.main import create_service_components, recover_state_from_latest_targets
+from app.main import (
+    build_decoder_process_config,
+    create_service_components,
+    recover_state_from_latest_targets,
+    resolve_adsb_snapshot_path,
+)
 from app.models import Freshness, ScanBand, Source, Target, TargetKind
 from app.state import LiveState
 from app.store import SQLiteStore
@@ -60,3 +67,31 @@ def test_create_service_components_without_background_scanner(tmp_path) -> None:
     assert components.store.sqlite_path == config.sqlite_path
     assert components.scanner_worker.status()["is_alive"] is False
     assert components.app is not None
+
+
+def test_build_decoder_process_config_matches_ingestors() -> None:
+    decoder_config = build_decoder_process_config(
+        adsb_snapshot_path=Path("/tmp/readsb/aircraft.json"),
+        ais_tcp_port=10110,
+    )
+    assert decoder_config.adsb_command[0] == "readsb"
+    assert "--device-type" in decoder_config.adsb_command
+    device_type_index = decoder_config.adsb_command.index("--device-type")
+    assert decoder_config.adsb_command[device_type_index + 1] == "rtlsdr"
+    assert "--write-json" in decoder_config.adsb_command
+    assert "/tmp/readsb" in decoder_config.adsb_command
+    assert decoder_config.ais_command == ("rtl_ais", "-T", "-P", "10110", "-n")
+
+
+def test_resolve_adsb_snapshot_path_falls_back_on_unwritable_dir(tmp_path) -> None:
+    @dataclass
+    class FakeLogger:
+        messages: list[str]
+
+        def warning(self, message, *args):  # noqa: ANN001
+            self.messages.append(message % args)
+
+    logger = FakeLogger(messages=[])
+    resolved = resolve_adsb_snapshot_path(Path("/proc/readsb/aircraft.json"), logger=logger)
+    assert resolved == Path("./data/readsb/aircraft.json")
+    assert logger.messages

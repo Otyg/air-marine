@@ -85,6 +85,7 @@ class HybridBandScanner:
             band=ScanBand.ADSB,
             window_seconds=self._config.adsb_window_seconds,
             reader=self._adsb_reader,
+            timeout_seconds=self._config.adsb_window_seconds,
         )
         if self._stop_event.is_set():
             return
@@ -128,8 +129,9 @@ class HybridBandScanner:
         reader: ObservationReader,
         timeout_seconds: float | None = None,
     ) -> None:
+        window_started_at = self._now_fn()
         self._active_scan_band = band
-        self._last_scan_switch = self._now_fn()
+        self._last_scan_switch = window_started_at
 
         try:
             self._supervisor.switch_to(band)
@@ -148,7 +150,10 @@ class HybridBandScanner:
         except Exception as exc:
             self._record_error(f"{band.value}: ingest error: {exc}")
         finally:
-            self._sleep_fn(window_seconds)
+            elapsed = (self._now_fn() - window_started_at).total_seconds()
+            remaining = max(0.0, window_seconds - elapsed)
+            if remaining > 0:
+                self._sleep_fn(remaining)
             try:
                 self._supervisor.stop_active()
             except Exception as exc:

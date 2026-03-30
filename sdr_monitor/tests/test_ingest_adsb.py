@@ -9,6 +9,7 @@ from app.ingest_adsb import (
     ADSBAircraftJsonIngestor,
     ADSBIngestError,
     load_readsb_aircraft_json,
+    load_readsb_aircraft_json_with_retry,
     parse_readsb_aircraft_json,
 )
 from app.models import ScanBand, Source, TargetKind
@@ -111,3 +112,24 @@ def test_load_readsb_aircraft_json_raises_for_invalid_json(tmp_path) -> None:
 
     with pytest.raises(ADSBIngestError):
         load_readsb_aircraft_json(file_path)
+
+
+def test_load_readsb_aircraft_json_with_retry_succeeds_after_initial_failure(monkeypatch) -> None:
+    attempts = {"count": 0}
+
+    def _fake_loader(path):  # noqa: ANN001, ARG001
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise ADSBIngestError("not ready yet")
+        return {"now": 1000.0, "aircraft": [{"hex": "abcdef"}]}
+
+    monkeypatch.setattr("app.ingest_adsb.load_readsb_aircraft_json", _fake_loader)
+    monkeypatch.setattr("app.ingest_adsb.time.sleep", lambda _: None)
+
+    payload = load_readsb_aircraft_json_with_retry(
+        "/tmp/aircraft.json",
+        timeout_seconds=1.0,
+        poll_interval_seconds=0.01,
+    )
+    assert attempts["count"] >= 2
+    assert payload["aircraft"][0]["hex"] == "abcdef"

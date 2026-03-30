@@ -136,6 +136,100 @@ def test_read_ais_lines_from_tcp_reads_lines(monkeypatch) -> None:
     assert lines == [line1, line2]
 
 
+def test_read_ais_lines_from_tcp_retries_before_success(monkeypatch) -> None:
+    payload, fill_bits = _build_type1_payload(
+        mmsi=265123456,
+        lat=59.334,
+        lon=18.063,
+        sog_knots=12.3,
+        cog_degrees=90.0,
+        nav_status=0,
+    )
+    line = _make_sentence(payload=payload, fill_bits=fill_bits)
+    attempts = {"count": 0}
+
+    class FakeSocket:
+        def __init__(self, content: str) -> None:
+            self._stream = StringIO(content)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            self._stream.close()
+
+        def settimeout(self, timeout: float) -> None:  # noqa: ARG002
+            return None
+
+        def makefile(self, mode: str, encoding: str, errors: str):  # noqa: ARG002
+            return self._stream
+
+    def _fake_create_connection(addr, timeout):  # noqa: ARG001
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise OSError("connection refused")
+        return FakeSocket(f"{line}\n")
+
+    monkeypatch.setattr("app.ingest_ais.socket.create_connection", _fake_create_connection)
+    monkeypatch.setattr("app.ingest_ais.time.sleep", lambda _: None)
+
+    lines = read_ais_lines_from_tcp(host="127.0.0.1", port=10110, timeout_seconds=1.0, max_lines=10)
+    assert attempts["count"] >= 2
+    assert lines == [line]
+
+
+def test_read_ais_lines_from_tcp_retries_when_first_connection_has_no_data(monkeypatch) -> None:
+    payload, fill_bits = _build_type1_payload(
+        mmsi=265123456,
+        lat=59.334,
+        lon=18.063,
+        sog_knots=12.3,
+        cog_degrees=90.0,
+        nav_status=0,
+    )
+    line = _make_sentence(payload=payload, fill_bits=fill_bits)
+    attempts = {"count": 0}
+
+    class FakeSocketNoData:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def settimeout(self, timeout: float) -> None:  # noqa: ARG002
+            return None
+
+        def makefile(self, mode: str, encoding: str, errors: str):  # noqa: ARG002
+            return StringIO("")
+
+    class FakeSocketWithData:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def settimeout(self, timeout: float) -> None:  # noqa: ARG002
+            return None
+
+        def makefile(self, mode: str, encoding: str, errors: str):  # noqa: ARG002
+            return StringIO(f"{line}\n")
+
+    def _fake_create_connection(addr, timeout):  # noqa: ARG001
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            return FakeSocketNoData()
+        return FakeSocketWithData()
+
+    monkeypatch.setattr("app.ingest_ais.socket.create_connection", _fake_create_connection)
+    monkeypatch.setattr("app.ingest_ais.time.sleep", lambda _: None)
+
+    lines = read_ais_lines_from_tcp(host="127.0.0.1", port=10110, timeout_seconds=1.0, max_lines=10)
+    assert attempts["count"] >= 2
+    assert lines == [line]
+
+
 def _build_type1_payload(
     *,
     mmsi: int,

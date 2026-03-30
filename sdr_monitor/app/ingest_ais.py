@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import socket
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -165,24 +166,38 @@ def read_ais_lines_from_tcp(
     if max_lines <= 0:
         raise ValueError("max_lines must be > 0")
 
-    try:
-        with socket.create_connection((host, port), timeout=timeout_seconds) as sock:
-            sock.settimeout(timeout_seconds)
-            with sock.makefile("r", encoding="utf-8", errors="replace") as stream:
-                lines: list[str] = []
-                while len(lines) < max_lines:
-                    try:
-                        line = stream.readline()
-                    except socket.timeout:
-                        break
-                    if not line:
-                        break
-                    stripped = line.strip()
-                    if stripped:
-                        lines.append(stripped)
-                return lines
-    except OSError as exc:
-        raise AISIngestError(f"Failed to read AIS stream from {host}:{port}") from exc
+    deadline = time.monotonic() + timeout_seconds
+    last_error: OSError | None = None
+
+    while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        connect_timeout = max(0.05, min(1.0, remaining))
+        try:
+            with socket.create_connection((host, port), timeout=connect_timeout) as sock:
+                with sock.makefile("r", encoding="utf-8", errors="replace") as stream:
+                    lines: list[str] = []
+                    while len(lines) < max_lines and time.monotonic() < deadline:
+                        read_timeout = max(0.1, min(1.0, deadline - time.monotonic()))
+                        sock.settimeout(read_timeout)
+                        try:
+                            line = stream.readline()
+                        except socket.timeout:
+                            continue
+                        if not line:
+                            break
+                        stripped = line.strip()
+                        if stripped:
+                            lines.append(stripped)
+                    if lines:
+                        return lines
+        except OSError as exc:
+            last_error = exc
+            if time.monotonic() < deadline:
+                time.sleep(0.1)
+
+    if last_error is not None:
+        raise AISIngestError(f"Failed to read AIS stream from {host}:{port}") from last_error
+    return []
 
 
 def parse_ais_nmea_lines(

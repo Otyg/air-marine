@@ -61,6 +61,8 @@ class ProcessSupervisor:
         command: Sequence[str],
         cwd: str | None = None,
         env: Mapping[str, str] | None = None,
+        stdout: Any = subprocess.DEVNULL,
+        stderr: Any = subprocess.DEVNULL,
     ) -> None:
         if not command:
             raise ValueError("command must not be empty")
@@ -73,8 +75,8 @@ class ProcessSupervisor:
         try:
             self._process = self._popen_factory(
                 list(command),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=stdout,
+                stderr=stderr,
                 cwd=cwd,
                 env=dict(env) if env is not None else None,
             )
@@ -148,8 +150,13 @@ class DecoderSupervisor:
     def switch_to(self, band: ScanBand) -> None:
         if band == ScanBand.ADSB:
             command = self._config.adsb_command
+            stdout = subprocess.DEVNULL
+            stderr = subprocess.DEVNULL
         elif band == ScanBand.AIS:
             command = self._config.ais_command
+            stdout = subprocess.DEVNULL
+            # Let rtl_ais stderr reach the console for troubleshooting.
+            stderr = None
         else:
             raise ValueError(f"Unsupported band: {band}")
 
@@ -158,6 +165,8 @@ class DecoderSupervisor:
             command=command,
             cwd=self._config.cwd,
             env=self._config.env,
+            stdout=stdout,
+            stderr=stderr,
         )
 
     def stop_active(self) -> None:

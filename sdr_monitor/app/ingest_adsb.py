@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,8 +31,17 @@ class ADSBAircraftJsonIngestor:
     def from_config(cls, config: Config) -> "ADSBAircraftJsonIngestor":
         return cls(aircraft_json_path=config.readsb_aircraft_json)
 
-    def read_observations(self) -> list[NormalizedObservation]:
-        payload = load_readsb_aircraft_json(self.aircraft_json_path)
+    def read_observations(
+        self,
+        *,
+        timeout_seconds: float = 1.0,
+        poll_interval_seconds: float = 0.1,
+    ) -> list[NormalizedObservation]:
+        payload = load_readsb_aircraft_json_with_retry(
+            self.aircraft_json_path,
+            timeout_seconds=timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+        )
         return parse_readsb_aircraft_json(payload)
 
 
@@ -52,6 +62,32 @@ def load_readsb_aircraft_json(path: str | Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ADSBIngestError("ADS-B snapshot must be a JSON object.")
     return payload
+
+
+def load_readsb_aircraft_json_with_retry(
+    path: str | Path,
+    *,
+    timeout_seconds: float,
+    poll_interval_seconds: float = 0.1,
+) -> dict[str, Any]:
+    """Load ADS-B snapshot, retrying while writer initializes/rotates."""
+
+    if timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be > 0")
+    if poll_interval_seconds <= 0:
+        raise ValueError("poll_interval_seconds must be > 0")
+
+    deadline = time.monotonic() + timeout_seconds
+    last_error: Exception | None = None
+
+    while time.monotonic() < deadline:
+        try:
+            return load_readsb_aircraft_json(path)
+        except ADSBIngestError as exc:
+            last_error = exc
+            time.sleep(poll_interval_seconds)
+
+    raise ADSBIngestError(f"Failed to read ADS-B snapshot: {Path(path)}") from last_error
 
 
 def parse_readsb_aircraft_json(

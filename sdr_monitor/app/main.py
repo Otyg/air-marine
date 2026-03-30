@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
+from pathlib import Path
 from threading import Thread
 from typing import Any
 
@@ -17,7 +19,7 @@ from app.models import NormalizedObservation, Target
 from app.scanner import HybridBandScanner, ScannerConfig
 from app.state import LiveState
 from app.store import SQLiteStore
-from app.supervisor import DecoderSupervisor
+from app.supervisor import DecoderProcessConfig, DecoderSupervisor
 
 try:
     from dotenv import load_dotenv
@@ -96,12 +98,18 @@ def create_service_components(
         except Exception as exc:
             logger.exception("Failed to restore latest targets from SQLite: %s", exc)
 
+    adsb_snapshot_path = resolve_adsb_snapshot_path(resolved.readsb_aircraft_json, logger=logger)
+    decoder_process_config = build_decoder_process_config(
+        adsb_snapshot_path=adsb_snapshot_path,
+        ais_tcp_port=resolved.ais_tcp_port,
+    )
+
     scanner = HybridBandScanner(
-        adsb_reader=ADSBAircraftJsonIngestor.from_config(resolved),
+        adsb_reader=ADSBAircraftJsonIngestor(aircraft_json_path=adsb_snapshot_path),
         ais_reader=AISTCPIngestor.from_config(resolved),
         state=state,
         store=store,
-        supervisor=DecoderSupervisor(),
+        supervisor=DecoderSupervisor(config=decoder_process_config),
         config=ScannerConfig(
             adsb_window_seconds=resolved.adsb_window_seconds,
             ais_window_seconds=resolved.ais_window_seconds,
@@ -153,6 +161,67 @@ def recover_state_from_latest_targets(
     for target in latest_targets:
         state.upsert_observation(_target_to_observation(target))
     return len(latest_targets)
+
+
+def build_decoder_process_config(
+    *,
+    adsb_snapshot_path: Path,
+    ais_tcp_port: int,
+) -> DecoderProcessConfig:
+    """Build decoder command lines aligned with ingest adapters."""
+
+    adsb_json_dir = adsb_snapshot_path.parent
+    return DecoderProcessConfig(
+        adsb_command=(
+            "readsb",
+            "--device-type",
+            "rtlsdr",
+            "--write-json",
+            str(adsb_json_dir),
+            "--write-json-every",
+            "1",
+            "--quiet",
+        ),
+        ais_command=(
+            "rtl_ais",
+            "-T",
+            "-P",
+            str(ais_tcp_port),
+            "-n",
+        ),
+    )
+
+
+def resolve_adsb_snapshot_path(configured_path: Path, *, logger) -> Path:
+    """Resolve a writable ADS-B snapshot path, fallback when needed."""
+
+    candidate = configured_path.expanduser()
+    candidate_dir = candidate.parent
+
+    try:
+        candidate_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        fallback = Path("./data/readsb/aircraft.json")
+        fallback.parent.mkdir(parents=True, exist_ok=True)
+        logger.warning(
+            "ADS-B snapshot path %s is not creatable (%s). Falling back to %s.",
+            candidate,
+            exc,
+            fallback,
+        )
+        return fallback
+
+    if not os.access(candidate_dir, os.W_OK):
+        fallback = Path("./data/readsb/aircraft.json")
+        fallback.parent.mkdir(parents=True, exist_ok=True)
+        logger.warning(
+            "ADS-B snapshot directory %s is not writable. Falling back to %s.",
+            candidate_dir,
+            fallback,
+        )
+        return fallback
+
+    return candidate
 
 
 def _target_to_observation(target: Target) -> NormalizedObservation:
