@@ -258,6 +258,15 @@ def _build_radar_html(
     .zoom-controls > *:last-child {{
       border-right: 0;
     }}
+    .toggle-control {{
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--panel-dim);
+      font-size: 12px;
+      user-select: none;
+      white-space: nowrap;
+    }}
     .screen {{
       flex: 1;
       min-height: 0;
@@ -367,6 +376,10 @@ def _build_radar_html(
           <button id="zoomIn" type="button" aria-label="Öka range">+</button>
           <button id="zoomReset" type="button" aria-label="Reset range">Hem</button>
         </div>
+        <label class="toggle-control" for="showFixedNames">
+          <input id="showFixedNames" type="checkbox" checked />
+          Visa namn fasta punkter
+        </label>
         <div id="meta" class="dim">Center: {center_lat:.6f}, {center_lon:.6f}</div>
       </div>
     </div>
@@ -402,6 +415,9 @@ def _build_radar_html(
     const radarRingCount = 5;
     const minRangeKm = 0.2;
     const maxRangeKm = 500.0;
+    const trailPointWindowSeconds = 120;
+    const trailStaleStartSeconds = 30;
+    const trailStaleFadeSeconds = 270;
     const trailColors = ["#39FF14", "#1fd400", "#57e140", "#8ce77c", "#b2eda8", "#d1f6cb"];
     const fixedObjects = {fixed_objects_json};
     const canvas = document.getElementById("radar");
@@ -410,6 +426,7 @@ def _build_radar_html(
     const zoomOutButton = document.getElementById("zoomOut");
     const zoomResetButton = document.getElementById("zoomReset");
     const rangeInput = document.getElementById("rangeInput");
+    const showFixedNamesCheckbox = document.getElementById("showFixedNames");
     const showLowSpeedCheckbox = document.getElementById("showLowSpeed");
     const objectsSummary = document.getElementById("objectsSummary");
     const objectsList = document.getElementById("objectsList");
@@ -417,6 +434,8 @@ def _build_radar_html(
     const outsideObjectsList = document.getElementById("outsideObjectsList");
     const ctx = canvas.getContext("2d");
     let targets = [];
+    let retainedTrailTargets = [];
+    const trailCache = new Map();
     let error = null;
     let radioConnected = false;
     let viewCenter = {{ ...homeCenter }};
@@ -424,6 +443,7 @@ def _build_radar_html(
     let dragStart = null;
     let dragCurrent = null;
     let showLowSpeed = false;
+    let showFixedNames = true;
 
     function clampRangeKm(value) {{
       return Math.max(minRangeKm, Math.min(maxRangeKm, value));
@@ -641,54 +661,216 @@ def _build_radar_html(
       ctx.restore();
     }}
 
-    function drawRecentPositions(target, cx, cy, pxPerKm, radius, currentX, currentY) {{
-      if (!radioConnected || !Array.isArray(target.recent_positions)) return;
+    function normalizeRecentPositions(value) {{
+      if (!Array.isArray(value)) return [];
+      return value;
+    }}
+
+    function parseTimestampMs(value) {{
+      if (typeof value === "number" && Number.isFinite(value)) return value;
+      if (typeof value !== "string" || !value.trim()) return NaN;
+      const parsed = Date.parse(value);
+      return Number.isFinite(parsed) ? parsed : NaN;
+    }}
+
+    function buildTrailPoint(sample, fallbackTsMs = NaN) {{
+      if (!sample || typeof sample !== "object") return null;
+      const lat = toOptionalNumber(sample.lat);
+      const lon = toOptionalNumber(sample.lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+      let tsMs = parseTimestampMs(sample.ts);
+      if (!Number.isFinite(tsMs)) tsMs = parseTimestampMs(sample.last_seen);
+      if (!Number.isFinite(tsMs)) tsMs = fallbackTsMs;
+      if (!Number.isFinite(tsMs)) return null;
+      return {{ ts_ms: tsMs, lat, lon }};
+    }}
+
+    function mergeTrailPoints(existingPoints, incomingPoints, nowMs) {{
+      const cutoffMs = nowMs - (trailPointWindowSeconds * 1000);
+      const candidates = []
+        .concat(Array.isArray(existingPoints) ? existingPoints : [])
+        .concat(Array.isArray(incomingPoints) ? incomingPoints : [])
+        .filter(
+          (point) =>
+            point
+            && Number.isFinite(point.ts_ms)
+            && Number.isFinite(point.lat)
+            && Number.isFinite(point.lon)
+            && point.ts_ms >= cutoffMs,
+        )
+        .sort((a, b) => a.ts_ms - b.ts_ms);
+
+      const deduped = [];
+      for (const point of candidates) {{
+        const previous = deduped[deduped.length - 1];
+        if (
+          previous
+          && Math.abs(previous.ts_ms - point.ts_ms) < 1000
+          && Math.abs(previous.lat - point.lat) < 0.000001
+          && Math.abs(previous.lon - point.lon) < 0.000001
+        ) {{
+          continue;
+        }}
+        deduped.push(point);
+      }}
+      return deduped;
+    }}
+
+    function updateTrailCacheFromTargets(activeTargets) {{
+      const nowMs = Date.now();
+      const activeIds = new Set();
+      for (const target of activeTargets) {{
+        const targetId = typeof target.target_id === "string" ? target.target_id : "";
+        if (!targetId) continue;
+        activeIds.add(targetId);
+        const cached = trailCache.get(targetId) || {{}};
+        const targetLastSeenMs = parseTimestampMs(target.last_seen);
+        const incomingTrailPoints = [];
+
+        const currentPoint = buildTrailPoint(target, targetLastSeenMs);
+        if (currentPoint) incomingTrailPoints.push(currentPoint);
+        for (const sample of normalizeRecentPositions(target.recent_positions)) {{
+          const trailPoint = buildTrailPoint(sample, targetLastSeenMs);
+          if (trailPoint) incomingTrailPoints.push(trailPoint);
+        }}
+
+        const nextTrailPoints = mergeTrailPoints(
+          cached.trail_points,
+          incomingTrailPoints,
+          nowMs,
+        );
+        const nextLastSeen = target.last_seen || cached.last_seen || null;
+        trailCache.set(targetId, {{
+          ...cached,
+          ...target,
+          last_seen: nextLastSeen,
+          trail_points: nextTrailPoints,
+        }});
+      }}
+
+      const maxInactiveSeconds = trailStaleStartSeconds + trailStaleFadeSeconds;
+      retainedTrailTargets = [];
+      for (const [targetId, cached] of trailCache.entries()) {{
+        const lastSeenMs = Date.parse(String(cached.last_seen || ""));
+        const inactiveSeconds = Number.isFinite(lastSeenMs)
+          ? (nowMs - lastSeenMs) / 1000
+          : Number.POSITIVE_INFINITY;
+        if (inactiveSeconds > maxInactiveSeconds) {{
+          trailCache.delete(targetId);
+          continue;
+        }}
+        if (!activeIds.has(targetId)) {{
+          retainedTrailTargets.push(cached);
+        }}
+      }}
+    }}
+
+    function getTrailFadeProgress(lastSeenValue) {{
+      if (!lastSeenValue) return 0;
+      const lastSeenMs = Date.parse(String(lastSeenValue));
+      if (!Number.isFinite(lastSeenMs)) return 0;
+      const inactiveSeconds = (Date.now() - lastSeenMs) / 1000;
+      if (!Number.isFinite(inactiveSeconds) || inactiveSeconds <= trailStaleStartSeconds) {{
+        return 0;
+      }}
+      return Math.max(
+        0,
+        Math.min(1, (inactiveSeconds - trailStaleStartSeconds) / trailStaleFadeSeconds),
+      );
+    }}
+
+    function trailOpacityForAgeRank(ageRank, fadeProgress) {{
+      if (fadeProgress <= 0) return 1;
+      const clampedRank = Math.max(0, Math.min(1, ageRank));
+      const fadeStart = (1 - clampedRank) * 0.65;
+      const localProgress = Math.max(0, Math.min(1, (fadeProgress - fadeStart) / (1 - fadeStart)));
+      return 1 - localProgress;
+    }}
+
+    function drawRecentPositions(target, cx, cy, pxPerKm, radius, currentX = null, currentY = null) {{
+      if (!radioConnected) return;
+
+      const fallbackLastSeenMs = parseTimestampMs(target.last_seen);
+      const rawTrailPoints = Array.isArray(target.trail_points) && target.trail_points.length > 0
+        ? target.trail_points
+        : normalizeRecentPositions(target.recent_positions)
+          .map((sample) => buildTrailPoint(sample, fallbackLastSeenMs))
+          .filter(Boolean);
+      if (rawTrailPoints.length === 0) return;
+
+      const cutoffMs = Date.now() - (trailPointWindowSeconds * 1000);
+      const orderedTrailPoints = rawTrailPoints
+        .filter(
+          (point) =>
+            point
+            && Number.isFinite(point.ts_ms)
+            && Number.isFinite(point.lat)
+            && Number.isFinite(point.lon)
+            && point.ts_ms >= cutoffMs,
+        )
+        .sort((a, b) => a.ts_ms - b.ts_ms);
+      if (orderedTrailPoints.length === 0) return;
 
       const points = [];
-      for (const sample of target.recent_positions.slice(-5)) {{
-        const lat = toOptionalNumber(sample.lat);
-        const lon = toOptionalNumber(sample.lon);
-        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
-        const {{ dx, dy }} = toOffsetKm(lat, lon, viewCenter);
+      for (const sample of orderedTrailPoints) {{
+        const {{ dx, dy }} = toOffsetKm(sample.lat, sample.lon, viewCenter);
         const x = cx + (dx * pxPerKm);
         const y = cy - (dy * pxPerKm);
         const insideRadar = ((x - cx) * (x - cx)) + ((y - cy) * (y - cy)) <= (radius * radius);
         if (!insideRadar) continue;
-        const sameAsCurrent = ((x - currentX) * (x - currentX)) + ((y - currentY) * (y - currentY)) < 1;
-        if (sameAsCurrent) continue;
+        if (Number.isFinite(currentX) && Number.isFinite(currentY)) {{
+          const sameAsCurrent = ((x - currentX) * (x - currentX)) + ((y - currentY) * (y - currentY)) < 1;
+          if (sameAsCurrent) continue;
+        }}
         points.push({{ x, y }});
       }}
 
       if (points.length === 0) return;
 
       points.reverse();
+      const fadeProgress = getTrailFadeProgress(target.last_seen);
 
       ctx.save();
       ctx.lineWidth = 1;
       ctx.setLineDash([4, 3]);
-      ctx.strokeStyle = trailColors[1];
-      ctx.beginPath();
-      ctx.moveTo(currentX, currentY);
-      ctx.lineTo(points[0].x, points[0].y);
-      ctx.stroke();
+      if (Number.isFinite(currentX) && Number.isFinite(currentY)) {{
+        const newestOpacity = trailOpacityForAgeRank(0, fadeProgress);
+        if (newestOpacity > 0.02) {{
+          ctx.globalAlpha = newestOpacity;
+          ctx.strokeStyle = trailColors[1];
+          ctx.beginPath();
+          ctx.moveTo(currentX, currentY);
+          ctx.lineTo(points[0].x, points[0].y);
+          ctx.stroke();
+        }}
+      }}
       for (let i = 0; i < points.length - 1; i += 1) {{
+        const segmentAgeRank = points.length <= 1 ? 1 : (i + 1) / (points.length - 1);
+        const segmentOpacity = trailOpacityForAgeRank(segmentAgeRank, fadeProgress);
+        if (segmentOpacity <= 0.02) continue;
+        ctx.globalAlpha = segmentOpacity;
         const color = trailColors[Math.min(i + 1, trailColors.length - 1)];
         const from = points[i];
         const to = points[i + 1];
-        ctx.strokeStyle = color;
         ctx.beginPath();
         ctx.moveTo(from.x, from.y);
         ctx.lineTo(to.x, to.y);
+        ctx.strokeStyle = color;
         ctx.stroke();
       }}
       ctx.setLineDash([]);
       points.forEach((point, index) => {{
+        const pointAgeRank = points.length <= 1 ? 1 : index / (points.length - 1);
+        const pointOpacity = trailOpacityForAgeRank(pointAgeRank, fadeProgress);
+        if (pointOpacity <= 0.02) return;
+        ctx.globalAlpha = pointOpacity;
         const color = trailColors[Math.min(index + 1, trailColors.length - 1)];
         ctx.fillStyle = color;
         ctx.beginPath();
         ctx.arc(point.x, point.y, 1.6, 0, Math.PI * 2);
         ctx.fill();
       }});
+      ctx.globalAlpha = 1;
       ctx.restore();
     }}
 
@@ -711,14 +893,19 @@ def _build_radar_html(
         const rawSymbol = typeof item.symbol === "string" ? item.symbol.trim() : "";
         const symbol = rawSymbol ? rawSymbol[0] : "O";
         const name = typeof item.name === "string" ? item.name.trim() : "";
+        const nameLines = name ? name.split(/\\s+/).filter(Boolean) : [];
 
         ctx.fillStyle = "#86d986";
         ctx.textAlign = "center";
         ctx.fillText(symbol, x, y);
-        if (name) {{
+        if (showFixedNames && nameLines.length > 0) {{
+          const lineHeight = 12;
+          const startY = y - ((nameLines.length - 1) * lineHeight * 0.5);
           ctx.fillStyle = "#9be89b";
           ctx.textAlign = "left";
-          ctx.fillText(name, x + 8, y);
+          nameLines.forEach((line, index) => {{
+            ctx.fillText(line, x + 8, startY + (index * lineHeight));
+          }});
         }}
       }}
       ctx.restore();
@@ -845,6 +1032,7 @@ def _build_radar_html(
       const outsideTargets = [];
       for (const target of targets) {{
         if (typeof target.lat !== "number" || typeof target.lon !== "number") continue;
+        const trackedTarget = trailCache.get(target.target_id) || target;
         const speed = toOptionalNumber(target.speed);
         if (!showLowSpeed && Number.isFinite(speed) && speed < 1) continue;
         const {{ dx, dy }} = toOffsetKm(target.lat, target.lon, viewCenter);
@@ -852,17 +1040,21 @@ def _build_radar_html(
         const y = cy - (dy * pxPerKm);
         const insideRadar = ((x - cx) * (x - cx)) + ((y - cy) * (y - cy)) <= (radius * radius);
         if (!insideRadar) {{
+          drawRecentPositions(trackedTarget, cx, cy, pxPerKm, radius);
           outsideTargets.push(target);
           continue;
         }}
         const course = toOptionalNumber(target.course);
-        drawRecentPositions(target, cx, cy, pxPerKm, radius, x, y);
+        drawRecentPositions(trackedTarget, cx, cy, pxPerKm, radius, x, y);
         drawCourseVector(x, y, course, speed, trailColors[0]);
         ctx.fillStyle = trailColors[0];
         const symbol = target.kind === "vessel" ? "#" : "+";
         ctx.fillText(symbol, x, y);
         visibleTargets.push(target);
         visible += 1;
+      }}
+      for (const retainedTarget of retainedTrailTargets) {{
+        drawRecentPositions(retainedTarget, cx, cy, pxPerKm, radius);
       }}
 
       renderObjectsPanel(visibleTargets, outsideTargets);
@@ -879,6 +1071,7 @@ def _build_radar_html(
         const payload = await response.json();
         const loadedTargets = Array.isArray(payload.targets) ? payload.targets : [];
         targets = loadedTargets.filter(isDynamicTrackTarget);
+        updateTrailCacheFromTargets(targets);
         radioConnected = Boolean(payload.radio_connected);
         error = null;
       }} catch (err) {{
@@ -903,6 +1096,10 @@ def _build_radar_html(
     }});
     showLowSpeedCheckbox.addEventListener("change", () => {{
       showLowSpeed = showLowSpeedCheckbox.checked;
+      draw();
+    }});
+    showFixedNamesCheckbox.addEventListener("change", () => {{
+      showFixedNames = showFixedNamesCheckbox.checked;
       draw();
     }});
     canvas.addEventListener(

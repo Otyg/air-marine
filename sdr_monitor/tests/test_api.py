@@ -211,6 +211,7 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
     assert "id=\"zoomIn\"" in response.text
     assert "id=\"zoomOut\"" in response.text
     assert "id=\"rangeInput\"" in response.text
+    assert "id=\"showFixedNames\"" in response.text
     assert "id=\"objectsList\"" in response.text
     assert "id=\"outsideObjectsList\"" in response.text
     assert "id=\"showLowSpeed\"" in response.text
@@ -221,6 +222,13 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
     assert "const fixedObjects =" in response.text
     assert "Lighthouse" in response.text
     assert "drawFixedObjects" in response.text
+    assert "drawRecentPositions(trackedTarget, cx, cy, pxPerKm, radius);" in response.text
+    assert "const trailPointWindowSeconds = 120;" in response.text
+    assert "mergeTrailPoints" in response.text
+    assert "getTrailFadeProgress" in response.text
+    assert "trailOpacityForAgeRank" in response.text
+    assert "updateTrailCacheFromTargets" in response.text
+    assert "retainedTrailTargets" in response.text
     assert "#39FF14" in response.text
     assert "last_seen:" in response.text
     assert "59.32930000" in response.text
