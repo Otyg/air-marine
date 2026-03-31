@@ -203,9 +203,11 @@ def _build_radar_html(*, center_lat: float, center_lon: float, service_name: str
     .zoom-controls {{
       display: inline-flex;
       border: 1px solid #226322;
+      align-items: stretch;
+      background: #051805;
     }}
     .zoom-controls button {{
-      background: #051805;
+      background: transparent;
       color: var(--panel-fg);
       border: 0;
       border-right: 1px solid #226322;
@@ -214,11 +216,33 @@ def _build_radar_html(*, center_lat: float, center_lon: float, service_name: str
       cursor: pointer;
       font: inherit;
     }}
-    .zoom-controls button:last-child {{
-      border-right: 0;
-    }}
     .zoom-controls button:hover {{
       background: #0a260a;
+    }}
+    .zoom-controls input {{
+      width: 62px;
+      border: 0;
+      border-right: 1px solid #226322;
+      background: #020b02;
+      color: var(--panel-fg);
+      text-align: right;
+      padding: 0 8px;
+      font: inherit;
+    }}
+    .zoom-controls input:focus {{
+      outline: none;
+      background: #0a1f0a;
+    }}
+    .zoom-controls .range-unit {{
+      display: inline-flex;
+      align-items: center;
+      padding: 0 8px;
+      color: var(--panel-dim);
+      border-right: 1px solid #226322;
+      font-size: 12px;
+    }}
+    .zoom-controls > *:last-child {{
+      border-right: 0;
     }}
     .screen {{
       flex: 1;
@@ -264,6 +288,13 @@ def _build_radar_html(*, center_lat: float, center_lon: float, service_name: str
       border-bottom: 1px solid #103810;
       font-size: 12px;
     }}
+    .side-panel-subhead {{
+      padding: 8px 10px;
+      color: var(--panel-fg);
+      border-top: 1px solid #154815;
+      border-bottom: 1px solid #103810;
+      font-size: 12px;
+    }}
     .objects-list {{
       flex: 1;
       overflow: auto;
@@ -271,6 +302,7 @@ def _build_radar_html(*, center_lat: float, center_lon: float, service_name: str
       display: flex;
       flex-direction: column;
       gap: 8px;
+      max-height: 34vh;
     }}
     .object-item {{
       border: 1px solid #124212;
@@ -315,9 +347,11 @@ def _build_radar_html(*, center_lat: float, center_lon: float, service_name: str
       <div>{service_name} / RADAR VIEW</div>
       <div class="hud-right">
         <div class="zoom-controls">
-          <button id="zoomOut" type="button" aria-label="Zoom out">-</button>
-          <button id="zoomReset" type="button" aria-label="Reset zoom">1.00x</button>
-          <button id="zoomIn" type="button" aria-label="Zoom in">+</button>
+          <button id="zoomOut" type="button" aria-label="Minska range">-</button>
+          <input id="rangeInput" type="text" inputmode="decimal" value="10" aria-label="Range km" />
+          <span class="range-unit">km</span>
+          <button id="zoomIn" type="button" aria-label="Öka range">+</button>
+          <button id="zoomReset" type="button" aria-label="Reset range">Hem</button>
         </div>
         <div id="meta" class="dim">Center: {center_lat:.6f}, {center_lon:.6f}</div>
       </div>
@@ -338,6 +372,11 @@ def _build_radar_html(*, center_lat: float, center_lon: float, service_name: str
         <div id="objectsList" class="objects-list">
           <div class="objects-empty">Inga objekt i aktuell vy.</div>
         </div>
+        <div class="side-panel-subhead">Objekt utanför aktivt område</div>
+        <div id="outsideObjectsSummary" class="side-panel-summary">0 objekt utanför aktivt område</div>
+        <div id="outsideObjectsList" class="objects-list">
+          <div class="objects-empty">Inga objekt utanför aktivt område.</div>
+        </div>
       </aside>
     </div>
   </div>
@@ -349,18 +388,18 @@ def _build_radar_html(*, center_lat: float, center_lon: float, service_name: str
     const radarRingCount = 5;
     const minRangeKm = 0.2;
     const maxRangeKm = 500.0;
-    const zoomMin = 0.5;
-    const zoomMax = 20.0;
-    const zoomStep = 1.25;
     const trailColors = ["#39FF14", "#1fd400", "#57e140", "#8ce77c", "#b2eda8", "#d1f6cb"];
     const canvas = document.getElementById("radar");
     const meta = document.getElementById("meta");
     const zoomInButton = document.getElementById("zoomIn");
     const zoomOutButton = document.getElementById("zoomOut");
     const zoomResetButton = document.getElementById("zoomReset");
+    const rangeInput = document.getElementById("rangeInput");
     const showLowSpeedCheckbox = document.getElementById("showLowSpeed");
     const objectsSummary = document.getElementById("objectsSummary");
     const objectsList = document.getElementById("objectsList");
+    const outsideObjectsSummary = document.getElementById("outsideObjectsSummary");
+    const outsideObjectsList = document.getElementById("outsideObjectsList");
     const ctx = canvas.getContext("2d");
     let targets = [];
     let error = null;
@@ -427,9 +466,21 @@ def _build_radar_html(*, center_lat: float, center_lon: float, service_name: str
       return {{ width, height, cx, cy, radius, autoRangeKm, rangeKm, pxPerKm }};
     }}
 
-    function updateZoomBadge(rangeKm) {{
-      const zoomFactor = Math.max(zoomMin, Math.min(zoomMax, defaultRangeKm / rangeKm));
-      zoomResetButton.textContent = `${{zoomFactor.toFixed(2)}}x`;
+    function formatRangeValue(value) {{
+      return Number.isInteger(value)
+        ? String(value)
+        : value.toFixed(2).replace(/0+$/, "").replace(/\\.$/, "");
+    }}
+
+    function syncRangeInput(rangeKm) {{
+      if (document.activeElement === rangeInput) return;
+      rangeInput.value = formatRangeValue(rangeKm);
+    }}
+
+    function parseRangeInputValue(value) {{
+      const normalized = String(value).trim().replace(",", ".");
+      if (!normalized) return NaN;
+      return Number(normalized);
     }}
 
     function setRangeKm(nextRangeKm) {{
@@ -437,20 +488,29 @@ def _build_radar_html(*, center_lat: float, center_lon: float, service_name: str
       draw();
     }}
 
-    function zoomIn() {{
+    function increaseRange() {{
       const rangeKm = getViewMetrics().rangeKm;
-      setRangeKm(rangeKm / zoomStep);
+      setRangeKm(rangeKm + 1);
     }}
 
-    function zoomOut() {{
+    function decreaseRange() {{
       const rangeKm = getViewMetrics().rangeKm;
-      setRangeKm(rangeKm * zoomStep);
+      setRangeKm(rangeKm - 1);
     }}
 
     function resetZoom() {{
       viewCenter = {{ ...homeCenter }};
       manualRangeKm = defaultRangeKm;
       draw();
+    }}
+
+    function applyRangeInput() {{
+      const parsed = parseRangeInputValue(rangeInput.value);
+      if (!Number.isFinite(parsed)) {{
+        syncRangeInput(getViewMetrics().rangeKm);
+        return;
+      }}
+      setRangeKm(parsed);
     }}
 
     function canvasPointFromEvent(event) {{
@@ -639,14 +699,12 @@ def _build_radar_html(*, center_lat: float, center_lon: float, service_name: str
         .replaceAll('"', "&quot;");
     }}
 
-    function renderObjectsPanel(visibleTargets) {{
-      objectsSummary.textContent = `${{visibleTargets.length}} synliga objekt`;
-      if (visibleTargets.length === 0) {{
-        objectsList.innerHTML = '<div class="objects-empty">Inga objekt i aktuell vy.</div>';
-        return;
+    function renderObjectCards(items, emptyText) {{
+      if (items.length === 0) {{
+        return `<div class="objects-empty">${{escapeHtml(emptyText)}}</div>`;
       }}
 
-      objectsList.innerHTML = visibleTargets
+      return items
         .map((target) => {{
           const label = target.label || target.target_id || "okänt";
           const lat = toOptionalNumber(target.lat);
@@ -670,6 +728,16 @@ def _build_radar_html(*, center_lat: float, center_lon: float, service_name: str
           `;
         }})
         .join("");
+    }}
+
+    function renderObjectsPanel(visibleTargets, outsideTargets) {{
+      objectsSummary.textContent = `${{visibleTargets.length}} synliga objekt`;
+      outsideObjectsSummary.textContent = `${{outsideTargets.length}} objekt utanför aktivt område`;
+      objectsList.innerHTML = renderObjectCards(visibleTargets, "Inga objekt i aktuell vy.");
+      outsideObjectsList.innerHTML = renderObjectCards(
+        outsideTargets,
+        "Inga objekt utanför aktivt område.",
+      );
     }}
 
     function draw() {{
@@ -716,6 +784,7 @@ def _build_radar_html(*, center_lat: float, center_lon: float, service_name: str
 
       let visible = 0;
       const visibleTargets = [];
+      const outsideTargets = [];
       for (const target of targets) {{
         if (typeof target.lat !== "number" || typeof target.lon !== "number") continue;
         const speed = toOptionalNumber(target.speed);
@@ -724,7 +793,10 @@ def _build_radar_html(*, center_lat: float, center_lon: float, service_name: str
         const x = cx + (dx * pxPerKm);
         const y = cy - (dy * pxPerKm);
         const insideRadar = ((x - cx) * (x - cx)) + ((y - cy) * (y - cy)) <= (radius * radius);
-        if (!insideRadar) continue;
+        if (!insideRadar) {{
+          outsideTargets.push(target);
+          continue;
+        }}
         const course = toOptionalNumber(target.course);
         drawRecentPositions(target, cx, cy, pxPerKm, radius, x, y);
         drawCourseVector(x, y, course, speed, trailColors[0]);
@@ -735,9 +807,9 @@ def _build_radar_html(*, center_lat: float, center_lon: float, service_name: str
         visible += 1;
       }}
 
-      renderObjectsPanel(visibleTargets);
+      renderObjectsPanel(visibleTargets, outsideTargets);
       drawSelectionBox();
-      updateZoomBadge(rangeKm);
+      syncRangeInput(rangeKm);
       const status = error ? `Error: ${{error}}` : `${{visible}} visible / ${{targets.length}} total`;
       meta.textContent = `Home: ${{homeCenter.lat.toFixed(6)}}, ${{homeCenter.lon.toFixed(6)}} | View: ${{viewCenter.lat.toFixed(6)}}, ${{viewCenter.lon.toFixed(6)}} | Range: ${{rangeKm.toFixed(2)}} km | Ringavstand: ${{ringSpacingKm.toFixed(2)}} km | ${{status}}`;
     }}
@@ -759,9 +831,17 @@ def _build_radar_html(*, center_lat: float, center_lon: float, service_name: str
     }}
 
     window.addEventListener("resize", draw);
-    zoomInButton.addEventListener("click", zoomIn);
-    zoomOutButton.addEventListener("click", zoomOut);
+    zoomInButton.addEventListener("click", increaseRange);
+    zoomOutButton.addEventListener("click", decreaseRange);
     zoomResetButton.addEventListener("click", resetZoom);
+    rangeInput.addEventListener("change", applyRangeInput);
+    rangeInput.addEventListener("blur", applyRangeInput);
+    rangeInput.addEventListener("keydown", (event) => {{
+      if (event.key === "Enter") {{
+        event.preventDefault();
+        applyRangeInput();
+      }}
+    }});
     showLowSpeedCheckbox.addEventListener("change", () => {{
       showLowSpeed = showLowSpeedCheckbox.checked;
       draw();
@@ -771,9 +851,9 @@ def _build_radar_html(*, center_lat: float, center_lon: float, service_name: str
       (event) => {{
         event.preventDefault();
         if (event.deltaY < 0) {{
-          zoomIn();
+          decreaseRange();
         }} else {{
-          zoomOut();
+          increaseRange();
         }}
       }},
       {{ passive: false }},

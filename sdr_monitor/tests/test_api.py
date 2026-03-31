@@ -201,11 +201,14 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
     assert "id=\"radar\"" in response.text
     assert "id=\"zoomIn\"" in response.text
     assert "id=\"zoomOut\"" in response.text
+    assert "id=\"rangeInput\"" in response.text
     assert "id=\"objectsList\"" in response.text
+    assert "id=\"outsideObjectsList\"" in response.text
     assert "id=\"showLowSpeed\"" in response.text
     assert "drawCourseVector" in response.text
     assert "const basePollMs = 2000;" in response.text
     assert "renderObjectsPanel" in response.text
+    assert "Objekt utanför aktivt område" in response.text
     assert "#39FF14" in response.text
     assert "last_seen:" in response.text
     assert "59.32930000" in response.text
