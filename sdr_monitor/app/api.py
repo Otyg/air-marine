@@ -334,11 +334,23 @@ def _build_radar_html(
       color: var(--panel-fg);
       font-size: 12px;
       line-height: 1.45;
+      cursor: pointer;
+      transition: border-color 120ms ease, background 120ms ease;
+    }}
+    .object-item:hover {{
+      border-color: #2f8b2f;
+    }}
+    .object-item.selected {{
+      border-color: #9e2f2f;
+      background: #200808;
     }}
     .object-label {{
       color: var(--radar-fg);
       font-size: 13px;
       margin-bottom: 4px;
+    }}
+    .object-item.selected .object-label {{
+      color: #ff9c9c;
     }}
     .objects-empty {{
       padding: 10px;
@@ -444,6 +456,11 @@ def _build_radar_html(
     let dragCurrent = null;
     let showLowSpeed = false;
     let showFixedNames = true;
+    let selectedTargetId = null;
+    const selectedHistoryByTargetId = new Map();
+    let pendingFitTargetId = null;
+    const selectedHistoryLimit = 1000;
+    const selectedTargetColor = "#ff4d4d";
 
     function clampRangeKm(value) {{
       return Math.max(minRangeKm, Math.min(maxRangeKm, value));
@@ -765,6 +782,168 @@ def _build_radar_html(
       }}
     }}
 
+    function findTargetById(targetId) {{
+      if (!targetId) return null;
+      const inCache = trailCache.get(targetId);
+      if (inCache) return inCache;
+      const inActive = targets.find((item) => item && item.target_id === targetId);
+      if (inActive) return inActive;
+      const inRetained = retainedTrailTargets.find((item) => item && item.target_id === targetId);
+      return inRetained || null;
+    }}
+
+    function normalizeHistoryPoints(observations) {{
+      if (!Array.isArray(observations)) return [];
+      return observations
+        .map((item, index) => {{
+          if (!item || typeof item !== "object") return null;
+          const lat = toOptionalNumber(item.lat);
+          const lon = toOptionalNumber(item.lon);
+          if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+          const observedAtMs = parseTimestampMs(item.observed_at);
+          return {{
+            lat,
+            lon,
+            ts_ms: Number.isFinite(observedAtMs) ? observedAtMs : index,
+          }};
+        }})
+        .filter(Boolean)
+        .sort((a, b) => a.ts_ms - b.ts_ms);
+    }}
+
+    function collectSelectionPoints(targetId, includeHistory = false) {{
+      const points = [];
+      const selectedTarget = findTargetById(targetId);
+      if (selectedTarget) {{
+        const lat = toOptionalNumber(selectedTarget.lat);
+        const lon = toOptionalNumber(selectedTarget.lon);
+        if (Number.isFinite(lat) && Number.isFinite(lon)) {{
+          points.push({{ lat, lon }});
+        }}
+      }}
+
+      if (includeHistory) {{
+        const historyPoints = selectedHistoryByTargetId.get(targetId);
+        if (Array.isArray(historyPoints)) {{
+          for (const point of historyPoints) {{
+            const lat = toOptionalNumber(point.lat);
+            const lon = toOptionalNumber(point.lon);
+            if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+            points.push({{ lat, lon }});
+          }}
+        }}
+      }}
+
+      return points;
+    }}
+
+    function fitSelectionToView(targetId, options = {{}}) {{
+      const includeHistory = Boolean(options.includeHistory);
+      const points = collectSelectionPoints(targetId, includeHistory);
+      if (points.length === 0) return false;
+
+      let minLat = points[0].lat;
+      let maxLat = points[0].lat;
+      let minLon = points[0].lon;
+      let maxLon = points[0].lon;
+      for (const point of points) {{
+        minLat = Math.min(minLat, point.lat);
+        maxLat = Math.max(maxLat, point.lat);
+        minLon = Math.min(minLon, point.lon);
+        maxLon = Math.max(maxLon, point.lon);
+      }}
+
+      const nextCenter = {{
+        lat: (minLat + maxLat) / 2,
+        lon: (minLon + maxLon) / 2,
+      }};
+      let maxDxKm = 0;
+      let maxDyKm = 0;
+      for (const point of points) {{
+        const {{ dx, dy }} = toOffsetKm(point.lat, point.lon, nextCenter);
+        maxDxKm = Math.max(maxDxKm, Math.abs(dx));
+        maxDyKm = Math.max(maxDyKm, Math.abs(dy));
+      }}
+      const requiredRangeKm = Math.max(maxDxKm, maxDyKm) * 1.15;
+      const currentRangeKm = getViewMetrics().rangeKm;
+      viewCenter = nextCenter;
+      manualRangeKm = clampRangeKm(Math.max(currentRangeKm, requiredRangeKm, minRangeKm));
+      return true;
+    }}
+
+    async function loadSelectedHistory(targetId) {{
+      if (!targetId) return [];
+      if (selectedHistoryByTargetId.has(targetId)) {{
+        return selectedHistoryByTargetId.get(targetId) || [];
+      }}
+
+      try {{
+        const response = await fetch(
+          `/history/${{encodeURIComponent(targetId)}}?limit=${{selectedHistoryLimit}}`,
+          {{ cache: "no-store" }},
+        );
+        if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
+        const payload = await response.json();
+        const observations = Array.isArray(payload.observations) ? payload.observations : [];
+        const historyPoints = normalizeHistoryPoints(observations);
+        selectedHistoryByTargetId.set(targetId, historyPoints);
+        return historyPoints;
+      }} catch (err) {{
+        return [];
+      }}
+    }}
+
+    async function selectTarget(targetId, shouldFitOnSelect = false) {{
+      if (!targetId) return;
+      if (selectedTargetId === targetId) {{
+        selectedTargetId = null;
+        pendingFitTargetId = null;
+        draw();
+        return;
+      }}
+
+      selectedTargetId = targetId;
+      if (shouldFitOnSelect) {{
+        pendingFitTargetId = targetId;
+        fitSelectionToView(targetId, {{ includeHistory: false }});
+      }} else {{
+        pendingFitTargetId = null;
+      }}
+      draw();
+
+      const activeSelection = targetId;
+      await loadSelectedHistory(targetId);
+      if (selectedTargetId !== activeSelection) return;
+      if (pendingFitTargetId === activeSelection) {{
+        fitSelectionToView(activeSelection, {{ includeHistory: true }});
+        pendingFitTargetId = null;
+      }}
+      draw();
+    }}
+
+    function getTargetIdFromPanelEvent(event) {{
+      if (!(event.target instanceof Element)) return null;
+      const card = event.target.closest(".object-item[data-target-id]");
+      if (!(card instanceof HTMLElement)) return null;
+      const targetId = card.dataset.targetId;
+      if (typeof targetId !== "string" || !targetId) return null;
+      return targetId;
+    }}
+
+    function onObjectPanelClick(event, shouldFitOnSelect) {{
+      const targetId = getTargetIdFromPanelEvent(event);
+      if (!targetId) return;
+      selectTarget(targetId, shouldFitOnSelect);
+    }}
+
+    function onObjectPanelKeyDown(event, shouldFitOnSelect) {{
+      if (event.key !== "Enter" && event.key !== " ") return;
+      const targetId = getTargetIdFromPanelEvent(event);
+      if (!targetId) return;
+      event.preventDefault();
+      selectTarget(targetId, shouldFitOnSelect);
+    }}
+
     function getTrailFadeProgress(lastSeenValue) {{
       if (!lastSeenValue) return 0;
       const lastSeenMs = Date.parse(String(lastSeenValue));
@@ -874,6 +1053,48 @@ def _build_radar_html(
       ctx.restore();
     }}
 
+    function drawSelectedHistoryPath(targetId, cx, cy, pxPerKm, radius) {{
+      if (!targetId) return;
+      const historyPoints = selectedHistoryByTargetId.get(targetId);
+      if (!Array.isArray(historyPoints) || historyPoints.length === 0) return;
+
+      const canvasPoints = [];
+      for (const point of historyPoints) {{
+        const lat = toOptionalNumber(point.lat);
+        const lon = toOptionalNumber(point.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+        const {{ dx, dy }} = toOffsetKm(lat, lon, viewCenter);
+        const x = cx + (dx * pxPerKm);
+        const y = cy - (dy * pxPerKm);
+        const insideRadar = ((x - cx) * (x - cx)) + ((y - cy) * (y - cy)) <= (radius * radius);
+        if (!insideRadar) continue;
+        canvasPoints.push({{ x, y }});
+      }}
+      if (canvasPoints.length === 0) return;
+
+      ctx.save();
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([]);
+      ctx.strokeStyle = selectedTargetColor;
+      ctx.fillStyle = selectedTargetColor;
+      ctx.globalAlpha = 0.95;
+      if (canvasPoints.length > 1) {{
+        ctx.beginPath();
+        ctx.moveTo(canvasPoints[0].x, canvasPoints[0].y);
+        for (let i = 1; i < canvasPoints.length; i += 1) {{
+          ctx.lineTo(canvasPoints[i].x, canvasPoints[i].y);
+        }}
+        ctx.stroke();
+      }}
+      for (const point of canvasPoints) {{
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, 1.9, 0, Math.PI * 2);
+        ctx.fill();
+      }}
+      ctx.globalAlpha = 1;
+      ctx.restore();
+    }}
+
     function drawFixedObjects(cx, cy, pxPerKm, radius, rangeKm) {{
       if (!Array.isArray(fixedObjects) || fixedObjects.length === 0) return;
       ctx.save();
@@ -943,6 +1164,7 @@ def _build_radar_html(
 
       return items
         .map((target) => {{
+          const targetId = typeof target.target_id === "string" ? target.target_id : "";
           const label = target.label || target.target_id || "okänt";
           const lat = toOptionalNumber(target.lat);
           const lon = toOptionalNumber(target.lon);
@@ -968,9 +1190,13 @@ def _build_radar_html(
           if (lastSeen !== "-") {{
             detailLines.push(`<div>last_seen: ${{escapeHtml(lastSeen)}}</div>`);
           }}
+          const selectedClass = targetId && selectedTargetId === targetId ? " selected" : "";
+          const targetAttr = targetId
+            ? ` data-target-id="${{escapeHtml(targetId)}}" role="button" tabindex="0"`
+            : "";
 
           return `
-            <div class="object-item">
+            <div class="object-item${{selectedClass}}"${{targetAttr}}>
               <div class="object-label">${{escapeHtml(label)}}</div>
               ${{detailLines.join("")}}
             </div>
@@ -1037,6 +1263,7 @@ def _build_radar_html(
       ctx.fill();
 
       drawFixedObjects(cx, cy, pxPerKm, radius, rangeKm);
+      drawSelectedHistoryPath(selectedTargetId, cx, cy, pxPerKm, radius);
 
       ctx.font = "bold 16px Courier New, monospace";
       ctx.textAlign = "center";
@@ -1047,6 +1274,8 @@ def _build_radar_html(
       const outsideTargets = [];
       for (const target of targets) {{
         if (typeof target.lat !== "number" || typeof target.lon !== "number") continue;
+        const targetId = typeof target.target_id === "string" ? target.target_id : "";
+        const isSelected = selectedTargetId !== null && targetId === selectedTargetId;
         const trackedTarget = trailCache.get(target.target_id) || target;
         const speed = toOptionalNumber(target.speed);
         if (!showLowSpeed && Number.isFinite(speed) && speed < 1) continue;
@@ -1055,14 +1284,19 @@ def _build_radar_html(
         const y = cy - (dy * pxPerKm);
         const insideRadar = ((x - cx) * (x - cx)) + ((y - cy) * (y - cy)) <= (radius * radius);
         if (!insideRadar) {{
-          drawRecentPositions(trackedTarget, cx, cy, pxPerKm, radius);
+          if (!isSelected || !selectedHistoryByTargetId.has(targetId)) {{
+            drawRecentPositions(trackedTarget, cx, cy, pxPerKm, radius);
+          }}
           outsideTargets.push(target);
           continue;
         }}
         const course = toOptionalNumber(target.course);
-        drawRecentPositions(trackedTarget, cx, cy, pxPerKm, radius, x, y);
-        drawCourseVector(x, y, course, speed, trailColors[0]);
-        ctx.fillStyle = trailColors[0];
+        if (!isSelected || !selectedHistoryByTargetId.has(targetId)) {{
+          drawRecentPositions(trackedTarget, cx, cy, pxPerKm, radius, x, y);
+        }}
+        const markerColor = isSelected ? selectedTargetColor : trailColors[0];
+        drawCourseVector(x, y, course, speed, markerColor);
+        ctx.fillStyle = markerColor;
         const symbol = target.kind === "vessel" ? "#" : "+";
         ctx.fillText(symbol, x, y);
         visibleTargets.push(target);
@@ -1108,6 +1342,18 @@ def _build_radar_html(
         event.preventDefault();
         applyRangeInput();
       }}
+    }});
+    objectsList.addEventListener("click", (event) => {{
+      onObjectPanelClick(event, false);
+    }});
+    outsideObjectsList.addEventListener("click", (event) => {{
+      onObjectPanelClick(event, true);
+    }});
+    objectsList.addEventListener("keydown", (event) => {{
+      onObjectPanelKeyDown(event, false);
+    }});
+    outsideObjectsList.addEventListener("keydown", (event) => {{
+      onObjectPanelKeyDown(event, true);
     }});
     showLowSpeedCheckbox.addEventListener("change", () => {{
       showLowSpeed = showLowSpeedCheckbox.checked;
