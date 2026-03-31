@@ -47,6 +47,7 @@ class Config:
     log_level: str = "INFO"
     adsb_window_seconds: float = 8.0
     ais_window_seconds: float = 12.0
+    inter_scan_pause_seconds: float = 2.0
     fresh_seconds: int = 30
     aging_seconds: int = 120
     max_positions_per_target: int = 5
@@ -56,6 +57,8 @@ class Config:
     sqlite_path: Path = Path("./data/sdr_monitor.sqlite3")
     api_host: str = "0.0.0.0"
     api_port: int = 8000
+    radar_center_lat: float = 0.0
+    radar_center_lon: float = 0.0
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Config":
@@ -72,6 +75,11 @@ class Config:
             ),
             ais_window_seconds=_read_float(
                 env_map, f"{ENV_PREFIX}AIS_WINDOW_SECONDS", defaults.ais_window_seconds
+            ),
+            inter_scan_pause_seconds=_read_float(
+                env_map,
+                f"{ENV_PREFIX}INTER_SCAN_PAUSE_SECONDS",
+                defaults.inter_scan_pause_seconds,
             ),
             fresh_seconds=_read_int(
                 env_map, f"{ENV_PREFIX}FRESH_SECONDS", defaults.fresh_seconds
@@ -102,6 +110,24 @@ class Config:
             ),
             api_host=_read_str(env_map, f"{ENV_PREFIX}API_HOST", defaults.api_host),
             api_port=_read_int(env_map, f"{ENV_PREFIX}API_PORT", defaults.api_port),
+            radar_center_lat=_read_float(
+                env_map,
+                f"{ENV_PREFIX}RADAR_CENTER_LAT",
+                _read_float(
+                    env_map,
+                    f"{ENV_PREFIX}RADAR_LATITUDE",
+                    defaults.radar_center_lat,
+                ),
+            ),
+            radar_center_lon=_read_float(
+                env_map,
+                f"{ENV_PREFIX}RADAR_CENTER_LON",
+                _read_float(
+                    env_map,
+                    f"{ENV_PREFIX}RADAR_LONGITUDE",
+                    defaults.radar_center_lon,
+                ),
+            ),
         )
         config._validate()
         return config
@@ -117,6 +143,8 @@ class Config:
             raise ValueError(f"{ENV_PREFIX}ADSB_WINDOW_SECONDS must be > 0.")
         if self.ais_window_seconds <= 0:
             raise ValueError(f"{ENV_PREFIX}AIS_WINDOW_SECONDS must be > 0.")
+        if self.inter_scan_pause_seconds < 0:
+            raise ValueError(f"{ENV_PREFIX}INTER_SCAN_PAUSE_SECONDS must be >= 0.")
         if self.fresh_seconds < 0:
             raise ValueError(f"{ENV_PREFIX}FRESH_SECONDS must be >= 0.")
         if self.aging_seconds <= self.fresh_seconds:
@@ -129,6 +157,10 @@ class Config:
             raise ValueError(f"{ENV_PREFIX}AIS_TCP_PORT must be in the range 1..65535.")
         if not (1 <= self.api_port <= 65535):
             raise ValueError(f"{ENV_PREFIX}API_PORT must be in the range 1..65535.")
+        if not (-90 <= self.radar_center_lat <= 90):
+            raise ValueError(f"{ENV_PREFIX}RADAR_CENTER_LAT must be in the range -90..90.")
+        if not (-180 <= self.radar_center_lon <= 180):
+            raise ValueError(f"{ENV_PREFIX}RADAR_CENTER_LON must be in the range -180..180.")
 
 
 def load_config(env: Mapping[str, str] | None = None) -> Config:

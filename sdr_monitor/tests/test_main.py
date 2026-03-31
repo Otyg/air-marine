@@ -164,3 +164,39 @@ def test_scanner_does_not_start_on_startup_when_no_radio(tmp_path, monkeypatch) 
     assert probe_calls["count"] == 1
     assert components.scanner_worker.status()["is_alive"] is False
     asyncio.run(components.app.router.shutdown())
+
+
+def test_startup_prunes_targets_latest_older_than_ten_minutes_when_radio_connected(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+    config = Config(
+        sqlite_path=tmp_path / "service.sqlite3",
+        adsb_window_seconds=0.01,
+        ais_window_seconds=0.01,
+    )
+    components = create_service_components(
+        config=config,
+        start_scanner=True,
+        recover_latest_targets=False,
+    )
+    components.store.upsert_latest_target(_target("adsb:old", now - timedelta(minutes=11)))
+    components.store.upsert_latest_target(_target("adsb:new", now - timedelta(minutes=5)))
+
+    monkeypatch.setattr("app.main.is_radio_connected", lambda **kwargs: True)
+
+    start_calls = {"count": 0}
+
+    def _start() -> None:
+        start_calls["count"] += 1
+
+    monkeypatch.setattr(components.scanner_worker, "start", _start)
+    monkeypatch.setattr("app.main.datetime", type("FrozenDateTime", (), {"now": staticmethod(lambda tz: now)}))
+
+    asyncio.run(components.app.router.startup())
+    assert start_calls["count"] == 1
+    latest_target_ids = {target.target_id for target in components.store.load_latest_targets()}
+    assert "adsb:new" in latest_target_ids
+    assert "adsb:old" not in latest_target_ids
+    asyncio.run(components.app.router.shutdown())

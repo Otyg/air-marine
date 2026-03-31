@@ -62,6 +62,11 @@ class SQLiteStore:
                     last_speed REAL,
                     last_altitude REAL
                 );
+
+                CREATE TABLE IF NOT EXISTS target_names (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL
+                );
                 """
             )
 
@@ -73,6 +78,7 @@ class SQLiteStore:
         with self._lock, self._connect() as conn:
             self._insert_observation(conn, observation)
             self._upsert_target(conn, target)
+            self._upsert_identifier_name_from_observation(conn, observation, target)
 
     def insert_observation(self, observation: NormalizedObservation) -> None:
         """Persist one normalized observation row."""
@@ -85,6 +91,61 @@ class SQLiteStore:
 
         with self._lock, self._connect() as conn:
             self._upsert_target(conn, target)
+            self._upsert_identifier_name_from_target(conn, target)
+
+    def delete_latest_targets_older_than(self, cutoff: datetime) -> int:
+        """Delete targets_latest rows with last_seen older than cutoff."""
+
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                """
+                DELETE FROM targets_latest
+                WHERE last_seen < ?
+                """,
+                (_to_iso(cutoff),),
+            )
+        return int(cursor.rowcount if cursor.rowcount is not None else 0)
+
+    def populate_target_names_from_observations(self, limit: int | None = None) -> dict[str, int]:
+        """Backfill `target_names` from historical `observations.payload_json`."""
+
+        query = """
+            SELECT source, target_id, observed_at, payload_json
+            FROM observations
+            ORDER BY observed_at ASC
+        """
+        params: tuple[object, ...] = ()
+        if limit is not None:
+            if limit <= 0:
+                raise ValueError("limit must be > 0")
+            query += " LIMIT ?"
+            params = (limit,)
+
+        scanned = 0
+        upserted = 0
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS target_names (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL
+                )
+                """
+            )
+            rows = conn.execute(query, params).fetchall()
+            for row in rows:
+                scanned += 1
+                payload = _parse_payload_json(row["payload_json"])
+                identifier, name = _extract_identifier_name_from_observation(
+                    source=row["source"],
+                    target_id=row["target_id"],
+                    payload=payload,
+                )
+                if identifier is None or name is None:
+                    continue
+                self._upsert_identifier_name(conn, identifier=identifier, name=name)
+                upserted += 1
+        return {"observations_scanned": scanned, "names_upserted": upserted}
 
     def fetch_history(self, target_id: str, limit: int = 100) -> list[NormalizedObservation]:
         """Fetch recent historical observations for one target id."""
@@ -150,8 +211,17 @@ class SQLiteStore:
                 last_lon,
                 last_course,
                 last_speed,
-                last_altitude
+                last_altitude,
+                target_names.name AS resolved_name
             FROM targets_latest
+            LEFT JOIN target_names
+                ON target_names.id = (
+                    CASE
+                        WHEN targets_latest.source = 'ais' THEN targets_latest.mmsi
+                        WHEN targets_latest.source = 'adsb' THEN lower(targets_latest.icao24)
+                        ELSE COALESCE(targets_latest.mmsi, lower(targets_latest.icao24))
+                    END
+                )
             ORDER BY last_seen DESC
         """
         params: tuple[object, ...] = ()
@@ -169,7 +239,7 @@ class SQLiteStore:
                 target_id=row["target_id"],
                 source=Source(row["source"]),
                 kind=TargetKind(row["kind"]),
-                label=row["label"],
+                label=row["resolved_name"] or row["label"],
                 lat=row["last_lat"],
                 lon=row["last_lon"],
                 course=row["last_course"],
@@ -272,6 +342,52 @@ class SQLiteStore:
             ),
         )
 
+    def _upsert_identifier_name_from_observation(
+        self,
+        conn: sqlite3.Connection,
+        observation: NormalizedObservation,
+        target: Target,
+    ) -> None:
+        if observation.source == Source.ADSB:
+            identifier = _normalize_identifier(observation.icao24 or target.icao24, Source.ADSB)
+            name = _normalize_name(observation.callsign or target.callsign)
+        elif observation.source == Source.AIS:
+            identifier = _normalize_identifier(observation.mmsi or target.mmsi, Source.AIS)
+            name = _normalize_name(observation.shipname or target.shipname)
+        else:
+            return
+
+        if identifier is None or name is None:
+            return
+
+        self._upsert_identifier_name(conn, identifier=identifier, name=name)
+
+    def _upsert_identifier_name_from_target(self, conn: sqlite3.Connection, target: Target) -> None:
+        if target.source == Source.ADSB:
+            identifier = _normalize_identifier(target.icao24, Source.ADSB)
+            name = _normalize_name(target.callsign)
+        elif target.source == Source.AIS:
+            identifier = _normalize_identifier(target.mmsi, Source.AIS)
+            name = _normalize_name(target.shipname)
+        else:
+            return
+
+        if identifier is None or name is None:
+            return
+
+        self._upsert_identifier_name(conn, identifier=identifier, name=name)
+
+    def _upsert_identifier_name(self, conn: sqlite3.Connection, *, identifier: str, name: str) -> None:
+        conn.execute(
+            """
+            INSERT INTO target_names (id, name)
+            VALUES (?, ?)
+            ON CONFLICT(id)
+            DO UPDATE SET name = excluded.name
+            """,
+            (identifier, name),
+        )
+
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._path)
         conn.row_factory = sqlite3.Row
@@ -292,3 +408,85 @@ def _parse_dt(value: str) -> datetime:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+def _normalize_identifier(value: str | None, source: Source) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if source == Source.ADSB:
+        return normalized.lower()
+    return normalized
+
+
+def _normalize_name(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    return normalized
+
+
+def _extract_identifier_name_from_observation(
+    *,
+    source: str,
+    target_id: str,
+    payload: dict[str, object],
+) -> tuple[str | None, str | None]:
+    if source == Source.ADSB.value:
+        identifier = _normalize_identifier(
+            _clean_payload_text(payload.get("hex"))
+            or _clean_payload_text(payload.get("icao24"))
+            or _identifier_from_target_id(target_id, Source.ADSB),
+            Source.ADSB,
+        )
+        name = _normalize_name(
+            _clean_payload_text(payload.get("flight"))
+            or _clean_payload_text(payload.get("callsign"))
+        )
+        return identifier, name
+
+    if source == Source.AIS.value:
+        decoded = payload.get("decoded")
+        decoded_map = decoded if isinstance(decoded, dict) else {}
+        identifier = _normalize_identifier(
+            _clean_payload_text(decoded_map.get("mmsi"))
+            or _clean_payload_text(payload.get("mmsi"))
+            or _identifier_from_target_id(target_id, Source.AIS),
+            Source.AIS,
+        )
+        name = _normalize_name(
+            _clean_payload_text(decoded_map.get("shipname"))
+            or _clean_payload_text(payload.get("shipname"))
+        )
+        return identifier, name
+
+    return None, None
+
+
+def _identifier_from_target_id(target_id: str, source: Source) -> str | None:
+    prefix = f"{source.value}:"
+    if not target_id.startswith(prefix):
+        return None
+    suffix = target_id[len(prefix) :].strip()
+    return suffix or None
+
+
+def _parse_payload_json(value: str) -> dict[str, object]:
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    if isinstance(payload, dict):
+        return payload
+    return {}
+
+
+def _clean_payload_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None

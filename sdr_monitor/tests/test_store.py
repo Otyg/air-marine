@@ -57,6 +57,7 @@ def test_initialize_creates_schema(tmp_path) -> None:
         }
     assert "observations" in tables
     assert "targets_latest" in tables
+    assert "target_names" in tables
 
 
 def test_persist_observation_and_target_and_count(tmp_path) -> None:
@@ -107,3 +108,86 @@ def test_fetch_history_returns_descending_with_limit(tmp_path) -> None:
     assert len(history) == 2
     assert history[0].altitude == 1200.0
     assert history[1].altitude == 1100.0
+
+
+def test_delete_latest_targets_older_than_removes_only_stale_rows(tmp_path) -> None:
+    now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+    store = SQLiteStore(tmp_path / "prune.sqlite3")
+    store.initialize()
+
+    store.upsert_latest_target(_target("adsb:old", now - timedelta(minutes=11), altitude=1000.0))
+    store.upsert_latest_target(_target("adsb:new", now - timedelta(minutes=5), altitude=2000.0))
+
+    deleted = store.delete_latest_targets_older_than(now - timedelta(minutes=10))
+    assert deleted == 1
+
+    latest = store.load_latest_targets()
+    assert [target.target_id for target in latest] == ["adsb:new"]
+
+
+def test_load_latest_targets_uses_name_mapping_when_latest_row_has_no_callsign(tmp_path) -> None:
+    now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+    store = SQLiteStore(tmp_path / "names.sqlite3")
+    store.initialize()
+
+    first_obs = _observation("adsb:abc", now - timedelta(seconds=30), altitude=9000.0)
+    first_target = _target("adsb:abc", now - timedelta(seconds=30), altitude=9000.0)
+    store.persist_observation_and_target(first_obs, first_target)
+
+    store.upsert_latest_target(
+        Target(
+            target_id="adsb:abc",
+            source=Source.ADSB,
+            kind=TargetKind.AIRCRAFT,
+            label=None,
+            lat=59.2,
+            lon=18.3,
+            course=100.0,
+            speed=220.0,
+            altitude=9100.0,
+            first_seen=now - timedelta(minutes=1),
+            last_seen=now,
+            freshness=Freshness.FRESH,
+            last_scan_band=ScanBand.ADSB,
+            icao24="ABCDEF",
+            callsign=None,
+        )
+    )
+
+    latest = store.load_latest_targets()
+    assert len(latest) == 1
+    assert latest[0].target_id == "adsb:abc"
+    assert latest[0].label == "SAS123"
+
+
+def test_populate_target_names_from_observations_backfills_adsb_and_ais(tmp_path) -> None:
+    now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+    store = SQLiteStore(tmp_path / "backfill.sqlite3")
+    store.initialize()
+
+    store.insert_observation(
+        NormalizedObservation(
+            target_id="adsb:abc123",
+            source=Source.ADSB,
+            kind=TargetKind.AIRCRAFT,
+            observed_at=now - timedelta(seconds=10),
+            payload_json={"hex": "abc123", "flight": "SAS900 "},
+        )
+    )
+    store.insert_observation(
+        NormalizedObservation(
+            target_id="ais:265123456",
+            source=Source.AIS,
+            kind=TargetKind.VESSEL,
+            observed_at=now,
+            payload_json={"decoded": {"mmsi": "265123456", "shipname": "VESSEL-X"}},
+        )
+    )
+
+    result = store.populate_target_names_from_observations()
+    assert result["observations_scanned"] == 2
+    assert result["names_upserted"] == 2
+
+    with sqlite3.connect(store.sqlite_path) as conn:
+        rows = conn.execute("SELECT id, name FROM target_names ORDER BY id ASC").fetchall()
+    assert rows == [("265123456", "VESSEL-X"), ("abc123", "SAS900")]

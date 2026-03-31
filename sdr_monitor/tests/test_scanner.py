@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.models import NormalizedObservation, ScanBand, Source, TargetKind
 from app.scanner import HybridBandScanner, ScannerConfig
@@ -27,11 +27,17 @@ class FakeReader:
 class FakeStore:
     writes: list[tuple[NormalizedObservation, str]]
     should_raise: bool = False
+    prune_cutoffs: list[datetime] | None = None
 
     def persist_observation_and_target(self, observation, target):
         if self.should_raise:
             raise RuntimeError("store write failed")
         self.writes.append((observation, target.target_id))
+
+    def delete_latest_targets_older_than(self, cutoff):  # noqa: ANN001
+        if self.prune_cutoffs is not None:
+            self.prune_cutoffs.append(cutoff)
+        return 0
 
 
 @dataclass
@@ -81,27 +87,31 @@ def test_run_cycle_switches_bands_and_persists_observations() -> None:
         state=state,
         store=store,
         supervisor=supervisor,  # type: ignore[arg-type]
-        config=ScannerConfig(adsb_window_seconds=0.01, ais_window_seconds=0.01),
+        config=ScannerConfig(
+            adsb_window_seconds=0.01,
+            ais_window_seconds=0.01,
+            inter_scan_pause_seconds=2.0,
+        ),
         sleep_fn=lambda seconds: sleep_calls.append(seconds),
         now_fn=lambda: datetime(2026, 3, 31, 8, 0, tzinfo=timezone.utc),
     )
 
     scanner.run_cycle()
 
-    assert supervisor.switches == [ScanBand.ADSB, ScanBand.AIS]
+    assert supervisor.switches == [ScanBand.AIS, ScanBand.ADSB]
     assert supervisor.stop_calls == 2
     assert adsb_reader.call_count == 1
     assert ais_reader.call_count == 1
-    assert ais_reader.last_kwargs == {"timeout_seconds": 0.01}
+    assert adsb_reader.last_kwargs == {"timeout_seconds": 0.01}
     assert len(store.writes) == 2
     assert state.get_stats()["total_live_targets"] == 2
-    assert sleep_calls == [0.01, 0.01]
+    assert sleep_calls == [0.01, 2.0, 0.01, 2.0]
     assert scanner.status()["active_scan_band"] is None
 
 
 def test_run_cycle_recovers_after_first_band_failure() -> None:
-    adsb_reader = FakeReader([], should_raise=True)
-    ais_reader = FakeReader([_obs("ais:777", Source.AIS)])
+    adsb_reader = FakeReader([_obs("adsb:777", Source.ADSB)])
+    ais_reader = FakeReader([], should_raise=True)
     state = LiveState(clock=lambda: datetime(2026, 3, 31, 8, 0, tzinfo=timezone.utc))
     supervisor = FakeSupervisor(switches=[])
 
@@ -111,16 +121,20 @@ def test_run_cycle_recovers_after_first_band_failure() -> None:
         state=state,
         store=None,
         supervisor=supervisor,  # type: ignore[arg-type]
-        config=ScannerConfig(adsb_window_seconds=0.01, ais_window_seconds=0.01),
+        config=ScannerConfig(
+            adsb_window_seconds=0.01,
+            ais_window_seconds=0.01,
+            inter_scan_pause_seconds=0.0,
+        ),
         sleep_fn=lambda seconds: None,
         now_fn=lambda: datetime(2026, 3, 31, 8, 0, tzinfo=timezone.utc),
     )
 
     scanner.run_cycle()
     assert scanner.last_error is not None
-    assert "adsb" in scanner.last_error
-    assert state.get_stats()["live_vessel_count"] == 1
-    assert supervisor.switches == [ScanBand.ADSB, ScanBand.AIS]
+    assert "ais" in scanner.last_error
+    assert state.get_stats()["live_aircraft_count"] == 1
+    assert supervisor.switches == [ScanBand.AIS, ScanBand.ADSB]
 
 
 def test_stop_requests_shutdown_and_stops_supervisor() -> None:
@@ -130,7 +144,11 @@ def test_stop_requests_shutdown_and_stops_supervisor() -> None:
         state=LiveState(clock=lambda: datetime(2026, 3, 31, 8, 0, tzinfo=timezone.utc)),
         store=None,
         supervisor=FakeSupervisor(switches=[]),  # type: ignore[arg-type]
-        config=ScannerConfig(adsb_window_seconds=0.01, ais_window_seconds=0.01),
+        config=ScannerConfig(
+            adsb_window_seconds=0.01,
+            ais_window_seconds=0.01,
+            inter_scan_pause_seconds=0.0,
+        ),
         sleep_fn=lambda seconds: None,
         now_fn=lambda: datetime(2026, 3, 31, 8, 0, tzinfo=timezone.utc),
     )
@@ -139,3 +157,27 @@ def test_stop_requests_shutdown_and_stops_supervisor() -> None:
     status = scanner.status()
     assert status["active_scan_band"] is None
     assert status["supervisor"]["stop_calls"] == 1
+
+
+def test_run_forever_prunes_targets_latest_older_than_five_minutes() -> None:
+    now = datetime(2026, 3, 31, 8, 0, tzinfo=timezone.utc)
+    store = FakeStore(writes=[], prune_cutoffs=[])
+    scanner = HybridBandScanner(
+        adsb_reader=FakeReader([]),
+        ais_reader=FakeReader([]),
+        state=LiveState(clock=lambda: now),
+        store=store,
+        supervisor=FakeSupervisor(switches=[]),  # type: ignore[arg-type]
+        config=ScannerConfig(
+            adsb_window_seconds=0.01,
+            ais_window_seconds=0.01,
+            inter_scan_pause_seconds=0.0,
+        ),
+        sleep_fn=lambda seconds: None,
+        now_fn=lambda: now,
+    )
+
+    scanner.run_forever(max_cycles=1)
+    assert store.prune_cutoffs is not None
+    assert len(store.prune_cutoffs) == 1
+    assert store.prune_cutoffs[0] == now - timedelta(minutes=5)

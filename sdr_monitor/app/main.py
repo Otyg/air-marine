@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
 import subprocess
@@ -158,6 +159,7 @@ def create_service_components(
         config=ScannerConfig(
             adsb_window_seconds=resolved.adsb_window_seconds,
             ais_window_seconds=resolved.ais_window_seconds,
+            inter_scan_pause_seconds=resolved.inter_scan_pause_seconds,
         ),
     )
     worker = ScannerWorker(scanner)
@@ -167,6 +169,9 @@ def create_service_components(
         store=store,
         scanner=scanner,
         service_name=resolved.service_name,
+        radar_center_lat=resolved.radar_center_lat,
+        radar_center_lon=resolved.radar_center_lon,
+        radio_connected=False,
     )
     app = create_api_app(api_runtime)
 
@@ -174,8 +179,18 @@ def create_service_components(
 
         @app.on_event("startup")
         async def _startup() -> None:
-            if not is_radio_connected(logger=logger):
+            connected = is_radio_connected(logger=logger)
+            api_runtime.radio_connected = connected
+            if not connected:
                 return
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+            pruned = store.delete_latest_targets_older_than(cutoff)
+            if pruned > 0:
+                logger.info(
+                    "Pruned %s stale targets_latest rows older than %s before scanner start.",
+                    pruned,
+                    cutoff.isoformat(),
+                )
             worker.start()
             logger.info("Scanner background thread started.")
 

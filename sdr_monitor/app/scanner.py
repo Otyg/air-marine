@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from threading import Event
 from typing import Any, Callable, Protocol
 
@@ -27,6 +27,7 @@ def _utcnow() -> datetime:
 class ScannerConfig:
     adsb_window_seconds: float = 8.0
     ais_window_seconds: float = 12.0
+    inter_scan_pause_seconds: float = 2.0
 
 
 class HybridBandScanner:
@@ -64,6 +65,8 @@ class HybridBandScanner:
             raise ValueError("adsb_window_seconds must be > 0")
         if self._config.ais_window_seconds <= 0:
             raise ValueError("ais_window_seconds must be > 0")
+        if self._config.inter_scan_pause_seconds < 0:
+            raise ValueError("inter_scan_pause_seconds must be >= 0")
 
     @property
     def last_error(self) -> str | None:
@@ -78,9 +81,20 @@ class HybridBandScanner:
         self._active_scan_band = None
 
     def run_cycle(self) -> None:
-        """Run one full ADS-B + AIS cycle."""
+        """Run one full AIS + ADS-B cycle with pause between scans."""
 
         self._last_cycle_start = self._now_fn()
+        self._run_band_window(
+            band=ScanBand.AIS,
+            window_seconds=self._config.ais_window_seconds,
+            reader=self._ais_reader,
+            timeout_seconds=self._config.ais_window_seconds,
+        )
+        if self._stop_event.is_set():
+            return
+        self._pause_between_scans()
+        if self._stop_event.is_set():
+            return
         self._run_band_window(
             band=ScanBand.ADSB,
             window_seconds=self._config.adsb_window_seconds,
@@ -89,12 +103,7 @@ class HybridBandScanner:
         )
         if self._stop_event.is_set():
             return
-        self._run_band_window(
-            band=ScanBand.AIS,
-            window_seconds=self._config.ais_window_seconds,
-            reader=self._ais_reader,
-            timeout_seconds=self._config.ais_window_seconds,
-        )
+        self._pause_between_scans()
         self._cycle_count += 1
 
     def run_forever(self, *, max_cycles: int | None = None) -> None:
@@ -104,6 +113,7 @@ class HybridBandScanner:
             if max_cycles is not None and self._cycle_count >= max_cycles:
                 break
             self.run_cycle()
+            self._prune_stale_latest_targets()
 
         try:
             self._supervisor.stop_active()
@@ -172,3 +182,18 @@ class HybridBandScanner:
 
     def _record_error(self, message: str) -> None:
         self._last_error = message
+
+    def _pause_between_scans(self) -> None:
+        pause_seconds = self._config.inter_scan_pause_seconds
+        if pause_seconds <= 0:
+            return
+        self._sleep_fn(pause_seconds)
+
+    def _prune_stale_latest_targets(self) -> None:
+        if self._store is None:
+            return
+        cutoff = self._now_fn() - timedelta(minutes=5)
+        try:
+            self._store.delete_latest_targets_older_than(cutoff)
+        except Exception as exc:
+            self._record_error(f"store prune: {exc}")

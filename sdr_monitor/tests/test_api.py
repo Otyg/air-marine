@@ -182,3 +182,82 @@ def test_history_endpoint_with_store_and_without_store(tmp_path) -> None:
     app_without_store = create_api_app(APIRuntime(state=state, store=None))
     unavailable = _request(app_without_store, "GET", "/history/adsb:abcdef")
     assert unavailable.status_code == 503
+
+
+def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
+    state = LiveState(clock=lambda: datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc))
+    app = create_api_app(
+        APIRuntime(
+            state=state,
+            store=None,
+            radar_center_lat=59.3293,
+            radar_center_lon=18.0686,
+        )
+    )
+
+    response = _request(app, "GET", "/")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "id=\"radar\"" in response.text
+    assert "id=\"zoomIn\"" in response.text
+    assert "id=\"zoomOut\"" in response.text
+    assert "id=\"objectsList\"" in response.text
+    assert "id=\"showLowSpeed\"" in response.text
+    assert "drawCourseVector" in response.text
+    assert "const basePollMs = 2000;" in response.text
+    assert "renderObjectsPanel" in response.text
+    assert "#39FF14" in response.text
+    assert "last_seen:" in response.text
+    assert "59.32930000" in response.text
+    assert "18.06860000" in response.text
+
+
+def test_targets_latest_ui_endpoint_returns_store_rows(tmp_path) -> None:
+    now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+    state = LiveState(clock=lambda: now)
+    store = SQLiteStore(tmp_path / "radar.sqlite3")
+    store.initialize()
+    store.upsert_latest_target(_target("adsb:abcdef", now))
+
+    app = create_api_app(APIRuntime(state=state, store=store))
+    response = _request(app, "GET", "/ui/targets-latest")
+    assert response.status_code == 200
+    assert response.json()["count"] == 1
+    assert response.json()["radio_connected"] is False
+    assert response.json()["targets"][0]["target_id"] == "adsb:abcdef"
+    assert response.json()["targets"][0]["recent_positions"] == []
+
+
+def test_targets_latest_ui_endpoint_includes_recent_positions_when_radio_connected(tmp_path) -> None:
+    now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+    state = LiveState(clock=lambda: now)
+    store = SQLiteStore(tmp_path / "radar_positions.sqlite3")
+    store.initialize()
+
+    first = _obs(
+        target_id="adsb:abcdef",
+        source=Source.ADSB,
+        observed_at=now - timedelta(seconds=10),
+        lat=59.0001,
+        lon=18.0001,
+    )
+    second = _obs(
+        target_id="adsb:abcdef",
+        source=Source.ADSB,
+        observed_at=now,
+        lat=59.0002,
+        lon=18.0002,
+    )
+    state.upsert_observation(first)
+    snapshot = state.upsert_observation(second)
+    store.upsert_latest_target(snapshot.target)
+
+    app = create_api_app(APIRuntime(state=state, store=store, radio_connected=True))
+    response = _request(app, "GET", "/ui/targets-latest")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["radio_connected"] is True
+    assert payload["count"] == 1
+    recent_positions = payload["targets"][0]["recent_positions"]
+    assert len(recent_positions) == 2
+    assert recent_positions[-1]["lat"] == 59.0002

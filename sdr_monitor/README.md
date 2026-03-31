@@ -52,6 +52,7 @@ Key runtime variables:
 - `SDR_MONITOR_LOG_LEVEL`: `DEBUG|INFO|WARNING|ERROR|CRITICAL`
 - `SDR_MONITOR_ADSB_WINDOW_SECONDS`: ADS-B scan window length
 - `SDR_MONITOR_AIS_WINDOW_SECONDS`: AIS scan window length
+- `SDR_MONITOR_INTER_SCAN_PAUSE_SECONDS`: pause between AIS/ADS-B updates (default `2.0`)
 - `SDR_MONITOR_FRESH_SECONDS`: freshness threshold lower bound
 - `SDR_MONITOR_AGING_SECONDS`: freshness threshold upper bound
 - `SDR_MONITOR_MAX_POSITIONS_PER_TARGET`: in-memory position history size
@@ -61,6 +62,8 @@ Key runtime variables:
 - `SDR_MONITOR_SQLITE_PATH`: SQLite database path
 - `SDR_MONITOR_API_HOST`: API bind host
 - `SDR_MONITOR_API_PORT`: API bind port
+- `SDR_MONITOR_RADAR_CENTER_LAT`: radar center latitude (-90..90)
+- `SDR_MONITOR_RADAR_CENTER_LON`: radar center longitude (-180..180)
 
 ## Running
 
@@ -79,6 +82,8 @@ The service starts:
 
 ## API endpoints
 
+- `GET /` (radar-like web UI)
+- `GET /ui/targets-latest`
 - `GET /health`
 - `GET /targets?kind=aircraft|vessel&fresh_only=true|false`
 - `GET /targets/{target_id}`
@@ -91,3 +96,17 @@ The service starts:
 cd sdr_monitor
 pytest -q
 ```
+
+## Utility script
+
+Backfill `target_names` (`id -> name`) from historical `observations`:
+
+```bash
+cd sdr_monitor
+python scripts/populate_target_names_from_observations.py
+```
+
+Optional flags:
+
+- `--sqlite-path /path/to/sdr_monitor.sqlite3`
+- `--limit 50000`
