@@ -74,7 +74,8 @@ Example static radar objects file (`./data/fixed_objects.json`):
     "name": "Home Harbor",
     "latitude": 56.1619519,
     "longitude": 15.5940978,
-    "symbol": "H"
+    "symbol": "H",
+    "max_visible_range_km": 10
   },
   {
     "name": "Reference Mast",
@@ -88,6 +89,7 @@ Notes:
 
 - `name`, `latitude`, and `longitude` are required
 - `symbol` is optional; default symbol is `O`
+- `max_visible_range_km` is optional; object is hidden when current range is larger
 - the label (`name`) is drawn next to the symbol on the radar screen
 
 ## Running

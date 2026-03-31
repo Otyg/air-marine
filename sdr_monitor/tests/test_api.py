@@ -199,6 +199,7 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
                     lat=59.3201,
                     lon=18.0711,
                     symbol="*",
+                    max_visible_range_km=10.0,
                 )
             ],
         )
@@ -221,6 +222,7 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
     assert "Objekt utanför aktivt område" in response.text
     assert "const fixedObjects =" in response.text
     assert "Lighthouse" in response.text
+    assert "\"max_visible_range_km\": 10.0" in response.text
     assert "drawFixedObjects" in response.text
     assert "drawRecentPositions(trackedTarget, cx, cy, pxPerKm, radius);" in response.text
     assert "const trailPointWindowSeconds = 120;" in response.text

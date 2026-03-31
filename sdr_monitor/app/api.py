@@ -874,7 +874,7 @@ def _build_radar_html(
       ctx.restore();
     }}
 
-    function drawFixedObjects(cx, cy, pxPerKm, radius) {{
+    function drawFixedObjects(cx, cy, pxPerKm, radius, rangeKm) {{
       if (!Array.isArray(fixedObjects) || fixedObjects.length === 0) return;
       ctx.save();
       ctx.font = "13px Courier New, monospace";
@@ -889,6 +889,9 @@ def _build_radar_html(
         const y = cy - (dy * pxPerKm);
         const insideRadar = ((x - cx) * (x - cx)) + ((y - cy) * (y - cy)) <= (radius * radius);
         if (!insideRadar) continue;
+
+        const maxVisibleRangeKm = toOptionalNumber(item.max_visible_range_km);
+        if (Number.isFinite(maxVisibleRangeKm) && rangeKm > maxVisibleRangeKm) continue;
 
         const rawSymbol = typeof item.symbol === "string" ? item.symbol.trim() : "";
         const symbol = rawSymbol ? rawSymbol[0] : "O";
@@ -950,14 +953,26 @@ def _build_radar_html(
             Number.isFinite(lat) && Number.isFinite(lon)
               ? `${{lat.toFixed(6)}}, ${{lon.toFixed(6)}}`
               : "-";
+          const detailLines = [];
+          if (positionText !== "-") {{
+            detailLines.push(`<div>position: ${{escapeHtml(positionText)}}</div>`);
+          }}
+          const speedText = formatOptional(speed);
+          if (speedText !== "-") {{
+            detailLines.push(`<div>last_speed: ${{escapeHtml(speedText)}}</div>`);
+          }}
+          const altitudeText = formatOptional(altitude);
+          if (altitudeText !== "-") {{
+            detailLines.push(`<div>last_altitude: ${{escapeHtml(altitudeText)}}</div>`);
+          }}
+          if (lastSeen !== "-") {{
+            detailLines.push(`<div>last_seen: ${{escapeHtml(lastSeen)}}</div>`);
+          }}
 
           return `
             <div class="object-item">
               <div class="object-label">${{escapeHtml(label)}}</div>
-              <div>position: ${{escapeHtml(positionText)}}</div>
-              <div>last_speed: ${{escapeHtml(formatOptional(speed))}}</div>
-              <div>last_altitude: ${{escapeHtml(formatOptional(altitude))}}</div>
-              <div>last_seen: ${{escapeHtml(lastSeen)}}</div>
+              ${{detailLines.join("")}}
             </div>
           `;
         }})
@@ -1021,7 +1036,7 @@ def _build_radar_html(
       ctx.arc(cx, cy, 5, 0, Math.PI * 2);
       ctx.fill();
 
-      drawFixedObjects(cx, cy, pxPerKm, radius);
+      drawFixedObjects(cx, cy, pxPerKm, radius, rangeKm);
 
       ctx.font = "bold 16px Courier New, monospace";
       ctx.textAlign = "center";
