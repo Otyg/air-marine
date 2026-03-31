@@ -5,8 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 from pathlib import Path
+import subprocess
 from threading import Thread
-from typing import Any
+from typing import Any, Callable, Sequence
 
 import uvicorn
 
@@ -65,6 +66,50 @@ class ScannerWorker:
             "is_alive": bool(self._thread and self._thread.is_alive()),
             "thread_name": self._thread.name if self._thread else None,
         }
+
+
+def is_radio_connected(
+    *,
+    logger,
+    command: Sequence[str] = ("rtl_test", "-t", "-d", "0"),
+    run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    timeout_seconds: float = 5.0,
+) -> bool:
+    """Probe for a connected RTL-SDR radio."""
+
+    try:
+        result = run_command(
+            list(command),
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except FileNotFoundError:
+        logger.warning(
+            "Skipping scanner startup because radio probe command %s was not found.",
+            " ".join(command),
+        )
+        return False
+    except Exception as exc:
+        logger.warning("Skipping scanner startup because radio probe failed: %s", exc)
+        return False
+
+    if result.returncode == 0:
+        return True
+
+    stderr = (result.stderr or "").strip()
+    if stderr:
+        logger.warning(
+            "Skipping scanner startup because no radio was detected (probe failed: %s).",
+            stderr.splitlines()[0],
+        )
+    else:
+        logger.warning(
+            "Skipping scanner startup because no radio was detected (probe exit code: %s).",
+            result.returncode,
+        )
+    return False
 
 
 def create_service_components(
@@ -129,6 +174,8 @@ def create_service_components(
 
         @app.on_event("startup")
         async def _startup() -> None:
+            if not is_radio_connected(logger=logger):
+                return
             worker.start()
             logger.info("Scanner background thread started.")
 

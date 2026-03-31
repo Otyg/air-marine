@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import subprocess
 
 from app.config import Config
 from app.main import (
     build_decoder_process_config,
     create_service_components,
+    is_radio_connected,
     recover_state_from_latest_targets,
     resolve_adsb_snapshot_path,
 )
@@ -95,3 +98,69 @@ def test_resolve_adsb_snapshot_path_falls_back_on_unwritable_dir(tmp_path) -> No
     resolved = resolve_adsb_snapshot_path(Path("/proc/readsb/aircraft.json"), logger=logger)
     assert resolved == Path("./data/readsb/aircraft.json")
     assert logger.messages
+
+
+def test_is_radio_connected_returns_true_when_probe_succeeds() -> None:
+    @dataclass
+    class FakeLogger:
+        messages: list[str]
+
+        def warning(self, message, *args):  # noqa: ANN001
+            self.messages.append(message % args)
+
+    logger = FakeLogger(messages=[])
+
+    def _run_command(*args, **kwargs):  # noqa: ANN002, ARG001
+        return subprocess.CompletedProcess(args=["rtl_test"], returncode=0, stdout="", stderr="")
+
+    assert is_radio_connected(logger=logger, run_command=_run_command) is True
+    assert logger.messages == []
+
+
+def test_is_radio_connected_returns_false_when_probe_fails() -> None:
+    @dataclass
+    class FakeLogger:
+        messages: list[str]
+
+        def warning(self, message, *args):  # noqa: ANN001
+            self.messages.append(message % args)
+
+    logger = FakeLogger(messages=[])
+
+    def _run_command(*args, **kwargs):  # noqa: ANN002, ARG001
+        return subprocess.CompletedProcess(
+            args=["rtl_test"],
+            returncode=1,
+            stdout="",
+            stderr="No supported devices found.",
+        )
+
+    assert is_radio_connected(logger=logger, run_command=_run_command) is False
+    assert logger.messages
+    assert "no radio was detected" in logger.messages[0].lower()
+
+
+def test_scanner_does_not_start_on_startup_when_no_radio(tmp_path, monkeypatch) -> None:
+    config = Config(
+        sqlite_path=tmp_path / "service.sqlite3",
+        adsb_window_seconds=0.01,
+        ais_window_seconds=0.01,
+    )
+    components = create_service_components(
+        config=config,
+        start_scanner=True,
+        recover_latest_targets=False,
+    )
+
+    probe_calls = {"count": 0}
+
+    def _probe(**kwargs):  # noqa: ANN003, ARG001
+        probe_calls["count"] += 1
+        return False
+
+    monkeypatch.setattr("app.main.is_radio_connected", _probe)
+
+    asyncio.run(components.app.router.startup())
+    assert probe_calls["count"] == 1
+    assert components.scanner_worker.status()["is_alive"] is False
+    asyncio.run(components.app.router.shutdown())
