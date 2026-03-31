@@ -59,6 +59,7 @@ class Config:
     api_port: int = 8000
     radar_center_lat: float = 0.0
     radar_center_lon: float = 0.0
+    fixed_objects_path: Path = Path("./data/fixed_objects.json")
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Config":
@@ -127,6 +128,13 @@ class Config:
                     f"{ENV_PREFIX}RADAR_LONGITUDE",
                     defaults.radar_center_lon,
                 ),
+            ),
+            fixed_objects_path=Path(
+                _read_str(
+                    env_map,
+                    f"{ENV_PREFIX}FIXED_OBJECTS_PATH",
+                    str(defaults.fixed_objects_path),
+                )
             ),
         )
         config._validate()

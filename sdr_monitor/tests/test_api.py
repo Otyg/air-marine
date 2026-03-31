@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 
 from app.api import APIRuntime, create_api_app
+from app.fixed_objects import FixedRadarObject
 from app.models import Freshness, NormalizedObservation, ScanBand, Source, Target, TargetKind
 from app.state import LiveState
 from app.store import SQLiteStore
@@ -192,6 +193,14 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
             store=None,
             radar_center_lat=59.3293,
             radar_center_lon=18.0686,
+            fixed_objects=[
+                FixedRadarObject(
+                    name="Lighthouse",
+                    lat=59.3201,
+                    lon=18.0711,
+                    symbol="*",
+                )
+            ],
         )
     )
 
@@ -209,6 +218,9 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
     assert "const basePollMs = 2000;" in response.text
     assert "renderObjectsPanel" in response.text
     assert "Objekt utanför aktivt område" in response.text
+    assert "const fixedObjects =" in response.text
+    assert "Lighthouse" in response.text
+    assert "drawFixedObjects" in response.text
     assert "#39FF14" in response.text
     assert "last_seen:" in response.text
     assert "59.32930000" in response.text

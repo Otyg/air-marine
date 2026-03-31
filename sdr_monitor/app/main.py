@@ -14,6 +14,7 @@ import uvicorn
 
 from app.api import APIRuntime, create_api_app
 from app.config import Config, load_config
+from app.fixed_objects import load_fixed_radar_objects
 from app.ingest_adsb import ADSBAircraftJsonIngestor
 from app.ingest_ais import AISTCPIngestor
 from app.logging_setup import configure_logging, get_logger
@@ -163,6 +164,13 @@ def create_service_components(
         ),
     )
     worker = ScannerWorker(scanner)
+    fixed_radar_objects = load_fixed_radar_objects(resolved.fixed_objects_path, logger=logger)
+    if fixed_radar_objects:
+        logger.info(
+            "Loaded %s fixed radar objects from %s.",
+            len(fixed_radar_objects),
+            resolved.fixed_objects_path,
+        )
 
     api_runtime = APIRuntime(
         state=state,
@@ -172,6 +180,7 @@ def create_service_components(
         radar_center_lat=resolved.radar_center_lat,
         radar_center_lon=resolved.radar_center_lon,
         radio_connected=False,
+        fixed_objects=fixed_radar_objects,
     )
     app = create_api_app(api_runtime)
 

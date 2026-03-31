@@ -15,6 +15,7 @@ def test_config_uses_defaults_when_env_not_set() -> None:
     assert config.max_positions_per_target == 5
     assert config.radar_center_lat == 0.0
     assert config.radar_center_lon == 0.0
+    assert str(config.fixed_objects_path) == "data/fixed_objects.json"
 
 
 def test_config_reads_environment_values() -> None:
@@ -32,6 +33,7 @@ def test_config_reads_environment_values() -> None:
             "SDR_MONITOR_API_PORT": "18000",
             "SDR_MONITOR_RADAR_CENTER_LAT": "59.3345",
             "SDR_MONITOR_RADAR_CENTER_LON": "18.0732",
+            "SDR_MONITOR_FIXED_OBJECTS_PATH": "/tmp/fixed-objects.json",
         }
     )
     assert config.service_name == "air-marine"
@@ -46,6 +48,7 @@ def test_config_reads_environment_values() -> None:
     assert config.api_port == 18000
     assert config.radar_center_lat == 59.3345
     assert config.radar_center_lon == 18.0732
+    assert str(config.fixed_objects_path) == "/tmp/fixed-objects.json"
 
 
 def test_config_rejects_invalid_freshness_thresholds() -> None:

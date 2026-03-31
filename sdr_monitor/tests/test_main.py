@@ -3,8 +3,11 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
 import subprocess
+
+import httpx
 
 from app.config import Config
 from app.main import (
@@ -38,6 +41,17 @@ def _target(target_id: str, last_seen: datetime) -> Target:
     )
 
 
+def _request(app, method: str, path: str, **kwargs) -> httpx.Response:
+    async def _run() -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            return await client.request(method, path, **kwargs)
+
+    return asyncio.run(_run())
+
+
 def test_recover_state_from_latest_targets(tmp_path) -> None:
     now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
     store = SQLiteStore(tmp_path / "recover.sqlite3")
@@ -54,10 +68,24 @@ def test_recover_state_from_latest_targets(tmp_path) -> None:
 
 
 def test_create_service_components_without_background_scanner(tmp_path) -> None:
+    fixed_objects_path = tmp_path / "fixed_objects.json"
+    fixed_objects_path.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "Harbor",
+                    "latitude": 56.1619519,
+                    "longitude": 15.5940978,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
     config = Config(
         sqlite_path=tmp_path / "service.sqlite3",
         adsb_window_seconds=0.5,
         ais_window_seconds=0.5,
+        fixed_objects_path=fixed_objects_path,
     )
 
     components = create_service_components(
@@ -69,6 +97,9 @@ def test_create_service_components_without_background_scanner(tmp_path) -> None:
     assert components.config.sqlite_path == config.sqlite_path
     assert components.store.sqlite_path == config.sqlite_path
     assert components.scanner_worker.status()["is_alive"] is False
+    response = _request(components.app, "GET", "/")
+    assert response.status_code == 200
+    assert "Harbor" in response.text
     assert components.app is not None
 
 

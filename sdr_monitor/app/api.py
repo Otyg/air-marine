@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+import json
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 
+from app.fixed_objects import FixedRadarObject
 from app.health import build_health_report
 from app.models import TargetKind
 from app.scanner import HybridBandScanner
@@ -25,6 +27,7 @@ class APIRuntime:
     radar_center_lat: float = 0.0
     radar_center_lon: float = 0.0
     radio_connected: bool = False
+    fixed_objects: list[FixedRadarObject] = field(default_factory=list)
 
 
 def create_api_app(runtime: APIRuntime) -> FastAPI:
@@ -38,6 +41,7 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
             center_lat=runtime.radar_center_lat,
             center_lon=runtime.radar_center_lon,
             service_name=runtime.service_name,
+            fixed_objects=runtime.fixed_objects,
         )
 
     @app.get("/ui/targets-latest")
@@ -152,7 +156,17 @@ def _to_iso(value: Any) -> str | None:
     return str(value)
 
 
-def _build_radar_html(*, center_lat: float, center_lon: float, service_name: str) -> str:
+def _build_radar_html(
+    *,
+    center_lat: float,
+    center_lon: float,
+    service_name: str,
+    fixed_objects: list[FixedRadarObject],
+) -> str:
+    fixed_objects_json = json.dumps(
+        [item.to_dict() for item in fixed_objects],
+        ensure_ascii=False,
+    ).replace("</", "<\\/")
     return f"""<!doctype html>
 <html lang="sv">
 <head>
@@ -389,6 +403,7 @@ def _build_radar_html(*, center_lat: float, center_lon: float, service_name: str
     const minRangeKm = 0.2;
     const maxRangeKm = 500.0;
     const trailColors = ["#39FF14", "#1fd400", "#57e140", "#8ce77c", "#b2eda8", "#d1f6cb"];
+    const fixedObjects = {fixed_objects_json};
     const canvas = document.getElementById("radar");
     const meta = document.getElementById("meta");
     const zoomInButton = document.getElementById("zoomIn");
@@ -677,6 +692,38 @@ def _build_radar_html(*, center_lat: float, center_lon: float, service_name: str
       ctx.restore();
     }}
 
+    function drawFixedObjects(cx, cy, pxPerKm, radius) {{
+      if (!Array.isArray(fixedObjects) || fixedObjects.length === 0) return;
+      ctx.save();
+      ctx.font = "13px Courier New, monospace";
+      ctx.textBaseline = "middle";
+      for (const item of fixedObjects) {{
+        const lat = toOptionalNumber(item.lat);
+        const lon = toOptionalNumber(item.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+
+        const {{ dx, dy }} = toOffsetKm(lat, lon, viewCenter);
+        const x = cx + (dx * pxPerKm);
+        const y = cy - (dy * pxPerKm);
+        const insideRadar = ((x - cx) * (x - cx)) + ((y - cy) * (y - cy)) <= (radius * radius);
+        if (!insideRadar) continue;
+
+        const rawSymbol = typeof item.symbol === "string" ? item.symbol.trim() : "";
+        const symbol = rawSymbol ? rawSymbol[0] : "O";
+        const name = typeof item.name === "string" ? item.name.trim() : "";
+
+        ctx.fillStyle = "#86d986";
+        ctx.textAlign = "center";
+        ctx.fillText(symbol, x, y);
+        if (name) {{
+          ctx.fillStyle = "#9be89b";
+          ctx.textAlign = "left";
+          ctx.fillText(name, x + 8, y);
+        }}
+      }}
+      ctx.restore();
+    }}
+
     function toOptionalNumber(value) {{
       if (typeof value === "number") return value;
       if (typeof value === "string" && value.trim() !== "") {{
@@ -740,6 +787,15 @@ def _build_radar_html(*, center_lat: float, center_lon: float, service_name: str
       );
     }}
 
+    function isDynamicTrackTarget(target) {{
+      if (!target || typeof target !== "object") return false;
+      const source = typeof target.source === "string" ? target.source : "";
+      const kind = typeof target.kind === "string" ? target.kind : "";
+      const validSource = source === "adsb" || source === "ais";
+      const validKind = kind === "aircraft" || kind === "vessel";
+      return validSource && validKind;
+    }}
+
     function draw() {{
       const {{
         width,
@@ -777,6 +833,8 @@ def _build_radar_html(*, center_lat: float, center_lon: float, service_name: str
       ctx.beginPath();
       ctx.arc(cx, cy, 5, 0, Math.PI * 2);
       ctx.fill();
+
+      drawFixedObjects(cx, cy, pxPerKm, radius);
 
       ctx.font = "bold 16px Courier New, monospace";
       ctx.textAlign = "center";
@@ -819,7 +877,8 @@ def _build_radar_html(*, center_lat: float, center_lon: float, service_name: str
         const response = await fetch("/ui/targets-latest", {{ cache: "no-store" }});
         if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
         const payload = await response.json();
-        targets = Array.isArray(payload.targets) ? payload.targets : [];
+        const loadedTargets = Array.isArray(payload.targets) ? payload.targets : [];
+        targets = loadedTargets.filter(isDynamicTrackTarget);
         radioConnected = Boolean(payload.radio_connected);
         error = null;
       }} catch (err) {{

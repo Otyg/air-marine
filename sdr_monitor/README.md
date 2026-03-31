@@ -64,6 +64,31 @@ Key runtime variables:
 - `SDR_MONITOR_API_PORT`: API bind port
 - `SDR_MONITOR_RADAR_CENTER_LAT`: radar center latitude (-90..90)
 - `SDR_MONITOR_RADAR_CENTER_LON`: radar center longitude (-180..180)
+- `SDR_MONITOR_FIXED_OBJECTS_PATH`: JSON file with static radar markers
+
+Example static radar objects file (`./data/fixed_objects.json`):
+
+```json
+[
+  {
+    "name": "Home Harbor",
+    "latitude": 56.1619519,
+    "longitude": 15.5940978,
+    "symbol": "H"
+  },
+  {
+    "name": "Reference Mast",
+    "latitude": 56.1692000,
+    "longitude": 15.6023000
+  }
+]
+```
+
+Notes:
+
+- `name`, `latitude`, and `longitude` are required
+- `symbol` is optional; default symbol is `O`
+- the label (`name`) is drawn next to the symbol on the radar screen
 
 ## Running
 
