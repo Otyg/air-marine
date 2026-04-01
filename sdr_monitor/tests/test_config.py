@@ -16,6 +16,14 @@ def test_config_uses_defaults_when_env_not_set() -> None:
     assert config.radar_center_lat == 0.0
     assert config.radar_center_lon == 0.0
     assert str(config.fixed_objects_path) == "data/fixed_objects.json"
+    assert config.map_source == "hydro"
+    assert config.map_cache_ttl_seconds == 600
+    assert config.hydro_base_url == "https://api.lantmateriet.se/ogc-features/v1/hydrografi"
+    assert config.elevation_stac_base_url == "https://api.lantmateriet.se/stac-hojd/v1/"
+    assert str(config.elevation_cache_dir) == "data/map/elevation_cache"
+    assert config.elevation_contour_interval_m == 10
+    assert config.elevation_max_tiles_per_request == 8
+    assert config.elevation_enable_background_sync is True
 
 
 def test_config_reads_environment_values() -> None:
@@ -34,6 +42,18 @@ def test_config_reads_environment_values() -> None:
             "SDR_MONITOR_RADAR_CENTER_LAT": "59.3345",
             "SDR_MONITOR_RADAR_CENTER_LON": "18.0732",
             "SDR_MONITOR_FIXED_OBJECTS_PATH": "/tmp/fixed-objects.json",
+            "SDR_MONITOR_MAP_SOURCE": "elevation",
+            "SDR_MONITOR_MAP_CACHE_TTL_SECONDS": "120",
+            "SDR_MONITOR_HYDRO_BASE_URL": "https://hydro.example.test",
+            "SDR_MONITOR_HYDRO_USERNAME": "hydro-user",
+            "SDR_MONITOR_HYDRO_PASSWORD": "hydro-pass",
+            "SDR_MONITOR_ELEVATION_STAC_BASE_URL": "https://elevation.example.test",
+            "SDR_MONITOR_ELEVATION_USERNAME": "elevation-user",
+            "SDR_MONITOR_ELEVATION_PASSWORD": "elevation-pass",
+            "SDR_MONITOR_ELEVATION_CACHE_DIR": "/tmp/elevation-cache",
+            "SDR_MONITOR_ELEVATION_CONTOUR_INTERVAL_M": "25",
+            "SDR_MONITOR_ELEVATION_MAX_TILES_PER_REQUEST": "4",
+            "SDR_MONITOR_ELEVATION_ENABLE_BACKGROUND_SYNC": "false",
         }
     )
     assert config.service_name == "air-marine"
@@ -49,6 +69,18 @@ def test_config_reads_environment_values() -> None:
     assert config.radar_center_lat == 59.3345
     assert config.radar_center_lon == 18.0732
     assert str(config.fixed_objects_path) == "/tmp/fixed-objects.json"
+    assert config.map_source == "elevation"
+    assert config.map_cache_ttl_seconds == 120
+    assert config.hydro_base_url == "https://hydro.example.test"
+    assert config.hydro_username == "hydro-user"
+    assert config.hydro_password == "hydro-pass"
+    assert config.elevation_stac_base_url == "https://elevation.example.test"
+    assert config.elevation_username == "elevation-user"
+    assert config.elevation_password == "elevation-pass"
+    assert str(config.elevation_cache_dir) == "/tmp/elevation-cache"
+    assert config.elevation_contour_interval_m == 25
+    assert config.elevation_max_tiles_per_request == 4
+    assert config.elevation_enable_background_sync is False
 
 
 def test_config_rejects_invalid_freshness_thresholds() -> None:
@@ -72,6 +104,20 @@ def test_config_rejects_invalid_radar_center_coordinates() -> None:
 def test_config_rejects_negative_inter_scan_pause() -> None:
     with pytest.raises(ValueError, match="INTER_SCAN_PAUSE_SECONDS"):
         Config.from_env({"SDR_MONITOR_INTER_SCAN_PAUSE_SECONDS": "-0.1"})
+
+
+def test_config_rejects_invalid_map_settings() -> None:
+    with pytest.raises(ValueError, match="MAP_SOURCE"):
+        Config.from_env({"SDR_MONITOR_MAP_SOURCE": "unsupported"})
+
+    with pytest.raises(ValueError, match="MAP_CACHE_TTL_SECONDS"):
+        Config.from_env({"SDR_MONITOR_MAP_CACHE_TTL_SECONDS": "0"})
+
+    with pytest.raises(ValueError, match="ELEVATION_CONTOUR_INTERVAL_M"):
+        Config.from_env({"SDR_MONITOR_ELEVATION_CONTOUR_INTERVAL_M": "0"})
+
+    with pytest.raises(ValueError, match="ELEVATION_ENABLE_BACKGROUND_SYNC"):
+        Config.from_env({"SDR_MONITOR_ELEVATION_ENABLE_BACKGROUND_SYNC": "maybe"})
 
 
 def test_config_reads_legacy_radar_coordinate_names() -> None:

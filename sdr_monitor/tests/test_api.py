@@ -8,6 +8,7 @@ import httpx
 
 from app.api import APIRuntime, create_api_app
 from app.fixed_objects import FixedRadarObject
+from app.map_contours import MapContourResult
 from app.models import Freshness, NormalizedObservation, ScanBand, Source, Target, TargetKind
 from app.state import LiveState
 from app.store import SQLiteStore
@@ -25,6 +26,22 @@ class FakeScanner:
         if mode not in allowed:
             raise ValueError("unsupported scan mode")
         self.payload["scan_mode"] = mode
+
+
+@dataclass
+class FakeMapContourService:
+    payload: MapContourResult
+    calls: list[dict]
+
+    def get_contours(self, *, bbox, source=None, range_km=None) -> MapContourResult:  # noqa: ANN001
+        self.calls.append(
+            {
+                "bbox": bbox,
+                "source": source,
+                "range_km": range_km,
+            }
+        )
+        return self.payload
 
 
 def _request(app, method: str, path: str, **kwargs) -> httpx.Response:
@@ -220,6 +237,7 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
     assert "id=\"rangeInput\"" in response.text
     assert "id=\"scanModeSelect\"" in response.text
     assert "id=\"showFixedNames\"" in response.text
+    assert "id=\"showMapContours\"" in response.text
     assert "id=\"objectsList\"" in response.text
     assert "id=\"outsideObjectsList\"" in response.text
     assert "id=\"showLowSpeed\"" in response.text
@@ -237,6 +255,9 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
     assert "Lighthouse" in response.text
     assert "\"max_visible_range_km\": 10.0" in response.text
     assert "drawFixedObjects" in response.text
+    assert "drawMapContours" in response.text
+    assert "async function loadMapContoursForView(rangeKm)" in response.text
+    assert "const defaultMapSource = \"hydro\";" in response.text
     assert "drawRecentPositions(trackedTarget, cx, cy, pxPerKm, radius);" in response.text
     assert "const trailPointWindowSeconds = 120;" in response.text
     assert "mergeTrailPoints" in response.text
@@ -279,6 +300,75 @@ def test_targets_latest_ui_endpoint_returns_store_rows(tmp_path) -> None:
     assert payload["scanner"]["active_scan_band"] is None
     assert payload["scanner"]["last_scan_switch"] is None
     assert payload["scanner"]["scan_mode"] is None
+
+
+def test_map_contours_endpoint_uses_runtime_service() -> None:
+    state = LiveState(clock=lambda: datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc))
+    contour_service = FakeMapContourService(
+        payload=MapContourResult(
+            source="hydro",
+            status="ok",
+            features=(
+                {
+                    "type": "Feature",
+                    "properties": {"collection": "LandWaterBoundary"},
+                    "geometry": {
+                        "type": "LineString",
+                        "coordinates": [[18.0, 59.0], [18.1, 59.1]],
+                    },
+                },
+            ),
+        ),
+        calls=[],
+    )
+    app = create_api_app(
+        APIRuntime(
+            state=state,
+            store=None,
+            map_contour_service=contour_service,
+            default_map_source="hydro",
+        )
+    )
+
+    response = _request(
+        app,
+        "GET",
+        "/ui/map-contours",
+        params={
+            "bbox": "17.9,58.9,18.2,59.2",
+            "range_km": "10",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["type"] == "FeatureCollection"
+    assert payload["source"] == "hydro"
+    assert payload["status"] == "ok"
+    assert len(payload["features"]) == 1
+    assert payload["bbox"] == [17.9, 58.9, 18.2, 59.2]
+    assert contour_service.calls == [
+        {
+            "bbox": (17.9, 58.9, 18.2, 59.2),
+            "source": None,
+            "range_km": 10.0,
+        }
+    ]
+
+
+def test_map_contours_endpoint_rejects_invalid_bbox() -> None:
+    state = LiveState(clock=lambda: datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc))
+    app = create_api_app(APIRuntime(state=state, store=None))
+
+    response = _request(
+        app,
+        "GET",
+        "/ui/map-contours",
+        params={"bbox": "18.2,59.2,17.9,58.9"},
+    )
+
+    assert response.status_code == 422
+    assert "min_lon" in response.json()["detail"]
 
 
 def test_targets_latest_ui_endpoint_includes_scanner_timing_fields(tmp_path) -> None:

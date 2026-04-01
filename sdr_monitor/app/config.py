@@ -9,6 +9,7 @@ from typing import Mapping
 
 ENV_PREFIX = "SDR_MONITOR_"
 VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+VALID_MAP_SOURCES = {"hydro", "elevation"}
 
 
 def _read_str(env: Mapping[str, str], key: str, default: str) -> str:
@@ -39,6 +40,18 @@ def _read_float(env: Mapping[str, str], key: str, default: float) -> float:
         raise ValueError(f"Invalid float for {key}: {raw_value!r}") from exc
 
 
+def _read_bool(env: Mapping[str, str], key: str, default: bool) -> bool:
+    raw_value = env.get(key)
+    if raw_value is None:
+        return default
+    normalized = raw_value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"Invalid boolean for {key}: {raw_value!r}")
+
+
 @dataclass(frozen=True, slots=True)
 class Config:
     """Resolved runtime settings for the monitor service."""
@@ -60,6 +73,18 @@ class Config:
     radar_center_lat: float = 0.0
     radar_center_lon: float = 0.0
     fixed_objects_path: Path = Path("./data/fixed_objects.json")
+    map_source: str = "hydro"
+    map_cache_ttl_seconds: int = 600
+    hydro_base_url: str = "https://api.lantmateriet.se/ogc-features/v1/hydrografi"
+    hydro_username: str = ""
+    hydro_password: str = ""
+    elevation_stac_base_url: str = "https://api.lantmateriet.se/stac-hojd/v1/"
+    elevation_username: str = ""
+    elevation_password: str = ""
+    elevation_cache_dir: Path = Path("./data/map/elevation_cache")
+    elevation_contour_interval_m: int = 10
+    elevation_max_tiles_per_request: int = 8
+    elevation_enable_background_sync: bool = True
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Config":
@@ -136,6 +161,68 @@ class Config:
                     str(defaults.fixed_objects_path),
                 )
             ),
+            map_source=_read_str(
+                env_map,
+                f"{ENV_PREFIX}MAP_SOURCE",
+                defaults.map_source,
+            ).lower(),
+            map_cache_ttl_seconds=_read_int(
+                env_map,
+                f"{ENV_PREFIX}MAP_CACHE_TTL_SECONDS",
+                defaults.map_cache_ttl_seconds,
+            ),
+            hydro_base_url=_read_str(
+                env_map,
+                f"{ENV_PREFIX}HYDRO_BASE_URL",
+                defaults.hydro_base_url,
+            ),
+            hydro_username=_read_str(
+                env_map,
+                f"{ENV_PREFIX}HYDRO_USERNAME",
+                defaults.hydro_username,
+            ),
+            hydro_password=_read_str(
+                env_map,
+                f"{ENV_PREFIX}HYDRO_PASSWORD",
+                defaults.hydro_password,
+            ),
+            elevation_stac_base_url=_read_str(
+                env_map,
+                f"{ENV_PREFIX}ELEVATION_STAC_BASE_URL",
+                defaults.elevation_stac_base_url,
+            ),
+            elevation_username=_read_str(
+                env_map,
+                f"{ENV_PREFIX}ELEVATION_USERNAME",
+                defaults.elevation_username,
+            ),
+            elevation_password=_read_str(
+                env_map,
+                f"{ENV_PREFIX}ELEVATION_PASSWORD",
+                defaults.elevation_password,
+            ),
+            elevation_cache_dir=Path(
+                _read_str(
+                    env_map,
+                    f"{ENV_PREFIX}ELEVATION_CACHE_DIR",
+                    str(defaults.elevation_cache_dir),
+                )
+            ),
+            elevation_contour_interval_m=_read_int(
+                env_map,
+                f"{ENV_PREFIX}ELEVATION_CONTOUR_INTERVAL_M",
+                defaults.elevation_contour_interval_m,
+            ),
+            elevation_max_tiles_per_request=_read_int(
+                env_map,
+                f"{ENV_PREFIX}ELEVATION_MAX_TILES_PER_REQUEST",
+                defaults.elevation_max_tiles_per_request,
+            ),
+            elevation_enable_background_sync=_read_bool(
+                env_map,
+                f"{ENV_PREFIX}ELEVATION_ENABLE_BACKGROUND_SYNC",
+                defaults.elevation_enable_background_sync,
+            ),
         )
         config._validate()
         return config
@@ -169,6 +256,18 @@ class Config:
             raise ValueError(f"{ENV_PREFIX}RADAR_CENTER_LAT must be in the range -90..90.")
         if not (-180 <= self.radar_center_lon <= 180):
             raise ValueError(f"{ENV_PREFIX}RADAR_CENTER_LON must be in the range -180..180.")
+        if self.map_source not in VALID_MAP_SOURCES:
+            valid_sources = ", ".join(sorted(VALID_MAP_SOURCES))
+            raise ValueError(
+                f"Invalid {ENV_PREFIX}MAP_SOURCE={self.map_source!r}. "
+                f"Expected one of: {valid_sources}."
+            )
+        if self.map_cache_ttl_seconds <= 0:
+            raise ValueError(f"{ENV_PREFIX}MAP_CACHE_TTL_SECONDS must be > 0.")
+        if self.elevation_contour_interval_m <= 0:
+            raise ValueError(f"{ENV_PREFIX}ELEVATION_CONTOUR_INTERVAL_M must be > 0.")
+        if self.elevation_max_tiles_per_request <= 0:
+            raise ValueError(f"{ENV_PREFIX}ELEVATION_MAX_TILES_PER_REQUEST must be > 0.")
 
 
 def load_config(env: Mapping[str, str] | None = None) -> Config:

@@ -65,6 +65,24 @@ Key runtime variables:
 - `SDR_MONITOR_RADAR_CENTER_LAT`: radar center latitude (-90..90)
 - `SDR_MONITOR_RADAR_CENTER_LON`: radar center longitude (-180..180)
 - `SDR_MONITOR_FIXED_OBJECTS_PATH`: JSON file with static radar markers
+- `SDR_MONITOR_MAP_SOURCE`: `hydro|elevation` (default `hydro`)
+- `SDR_MONITOR_MAP_CACHE_TTL_SECONDS`: contour cache TTL in seconds
+- `SDR_MONITOR_HYDRO_BASE_URL`: Hydrografi Direkt OGC Features base URL
+- `SDR_MONITOR_HYDRO_USERNAME`: server-side Hydrografi Direkt username
+- `SDR_MONITOR_HYDRO_PASSWORD`: server-side Hydrografi Direkt password
+- `SDR_MONITOR_ELEVATION_STAC_BASE_URL`: STAC-Höjd base URL
+- `SDR_MONITOR_ELEVATION_USERNAME`: STAC-Höjd username
+- `SDR_MONITOR_ELEVATION_PASSWORD`: STAC-Höjd password
+- `SDR_MONITOR_ELEVATION_CACHE_DIR`: local cache dir for elevation mode
+- `SDR_MONITOR_ELEVATION_CONTOUR_INTERVAL_M`: contour interval for elevation mode
+- `SDR_MONITOR_ELEVATION_MAX_TILES_PER_REQUEST`: DEM tile request cap per bbox
+- `SDR_MONITOR_ELEVATION_ENABLE_BACKGROUND_SYNC`: enable future background sync support
+
+Map background notes:
+
+- `hydro` is the production-ready source for coastline/lake contours
+- `elevation` now searches STAC-Höjd and caches matching DEM tiles locally
+- local contour generation for `elevation` still requires `gdal_contour` on the host
 
 Example static radar objects file (`./data/fixed_objects.json`):
 
@@ -111,6 +129,7 @@ The service starts:
 
 - `GET /` (radar-like web UI)
 - `GET /ui/targets-latest`
+- `GET /ui/map-contours?bbox=min_lon,min_lat,max_lon,max_lat&range_km=...&source=hydro|elevation`
 - `GET /health`
 - `GET /targets?kind=aircraft|vessel&fresh_only=true|false`
 - `GET /targets/{target_id}`

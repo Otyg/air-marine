@@ -14,10 +14,12 @@ import uvicorn
 
 from app.api import APIRuntime, create_api_app
 from app.config import Config, load_config
+from app.env_utils import load_local_dotenv
 from app.fixed_objects import load_fixed_radar_objects
 from app.ingest_adsb import ADSBAircraftJsonIngestor
 from app.ingest_ais import AISTCPIngestor
 from app.logging_setup import configure_logging, get_logger
+from app.map_contours import build_map_contour_service
 from app.models import NormalizedObservation, Target
 from app.scanner import HybridBandScanner, ScannerConfig
 from app.state import LiveState
@@ -28,6 +30,9 @@ try:
     from dotenv import load_dotenv
 except Exception:  # pragma: no cover - optional dependency fallback
     load_dotenv = None
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @dataclass(slots=True)
@@ -122,8 +127,7 @@ def create_service_components(
 ) -> ServiceComponents:
     """Initialize config, logging, persistence, scanner, and API app."""
 
-    if load_dotenv is not None:
-        load_dotenv()
+    load_local_dotenv(load_dotenv, project_root=PROJECT_ROOT)
 
     resolved = config or load_config()
     configure_logging(resolved)
@@ -176,11 +180,13 @@ def create_service_components(
         state=state,
         store=store,
         scanner=scanner,
+        map_contour_service=build_map_contour_service(resolved),
         service_name=resolved.service_name,
         radar_center_lat=resolved.radar_center_lat,
         radar_center_lon=resolved.radar_center_lon,
         radio_connected=False,
         fixed_objects=fixed_radar_objects,
+        default_map_source=resolved.map_source,
     )
     app = create_api_app(api_runtime)
 

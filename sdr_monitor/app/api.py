@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse
 
 from app.fixed_objects import FixedRadarObject
 from app.health import build_health_report
+from app.map_contours import BBox, MapContourService
 from app.models import TargetKind
 from app.scanner import SCAN_MODE_VALUES, HybridBandScanner
 from app.state import LiveState
@@ -23,11 +24,13 @@ class APIRuntime:
     state: LiveState
     store: SQLiteStore | None = None
     scanner: HybridBandScanner | None = None
+    map_contour_service: MapContourService | None = None
     service_name: str = "sdr-monitor"
     radar_center_lat: float = 0.0
     radar_center_lon: float = 0.0
     radio_connected: bool = False
     fixed_objects: list[FixedRadarObject] = field(default_factory=list)
+    default_map_source: str = "hydro"
 
 
 def create_api_app(runtime: APIRuntime) -> FastAPI:
@@ -42,6 +45,7 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
             center_lon=runtime.radar_center_lon,
             service_name=runtime.service_name,
             fixed_objects=runtime.fixed_objects,
+            default_map_source=runtime.default_map_source,
         )
 
     @app.get("/ui/targets-latest")
@@ -93,6 +97,50 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
             "radio_connected": runtime.radio_connected,
             "scanner": scanner_payload,
         }
+
+    @app.get("/ui/map-contours")
+    async def get_map_contours(
+        bbox: str = Query(..., description="min_lon,min_lat,max_lon,max_lat"),
+        range_km: float | None = Query(default=None, gt=0),
+        source: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        try:
+            parsed_bbox = _parse_bbox(bbox)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        contour_service = runtime.map_contour_service
+        if contour_service is None:
+            resolved_source = (source or runtime.default_map_source).strip().lower()
+            if resolved_source not in {"hydro", "elevation"}:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Unsupported map source: {resolved_source!r}. Expected one of elevation, hydro.",
+                )
+            return {
+                "type": "FeatureCollection",
+                "features": [],
+                "source": resolved_source,
+                "status": "unavailable",
+                "error": "Map contour service is not configured.",
+                "cache_hit": False,
+                "bbox": list(parsed_bbox),
+                "range_km": range_km,
+            }
+
+        try:
+            result = contour_service.get_contours(
+                bbox=parsed_bbox,
+                source=source,
+                range_km=range_km,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        return result.to_payload(
+            bbox=parsed_bbox,
+            range_km=range_km,
+        )
 
     @app.get("/scanner/mode")
     async def get_scanner_mode() -> dict[str, Any]:
@@ -204,12 +252,32 @@ def _to_iso(value: Any) -> str | None:
     return str(value)
 
 
+def _parse_bbox(raw_bbox: str) -> BBox:
+    parts = [part.strip() for part in raw_bbox.split(",")]
+    if len(parts) != 4:
+        raise ValueError("bbox must contain exactly four comma-separated coordinates.")
+    try:
+        min_lon, min_lat, max_lon, max_lat = (float(part) for part in parts)
+    except ValueError as exc:
+        raise ValueError("bbox must contain valid floating-point coordinates.") from exc
+    if min_lon >= max_lon:
+        raise ValueError("bbox min_lon must be smaller than max_lon.")
+    if min_lat >= max_lat:
+        raise ValueError("bbox min_lat must be smaller than max_lat.")
+    if not (-180 <= min_lon <= 180 and -180 <= max_lon <= 180):
+        raise ValueError("bbox longitude values must be within -180..180.")
+    if not (-90 <= min_lat <= 90 and -90 <= max_lat <= 90):
+        raise ValueError("bbox latitude values must be within -90..90.")
+    return (min_lon, min_lat, max_lon, max_lat)
+
+
 def _build_radar_html(
     *,
     center_lat: float,
     center_lon: float,
     service_name: str,
     fixed_objects: list[FixedRadarObject],
+    default_map_source: str,
 ) -> str:
     fixed_objects_json = json.dumps(
         [item.to_dict() for item in fixed_objects],
@@ -470,6 +538,10 @@ def _build_radar_html(
           <input id="showFixedNames" type="checkbox" checked />
           Visa namn fasta punkter
         </label>
+        <label class="toggle-control" for="showMapContours">
+          <input id="showMapContours" type="checkbox" checked />
+          Visa kust/sjö-konturer
+        </label>
         <div id="meta" class="dim">Center: {center_lat:.6f}, {center_lon:.6f}</div>
       </div>
     </div>
@@ -513,6 +585,7 @@ def _build_radar_html(
     const trailStaleStartSeconds = 30;
     const trailStaleFadeSeconds = 270;
     const trailColors = ["#39FF14", "#1fd400", "#57e140", "#8ce77c", "#b2eda8", "#d1f6cb"];
+    const defaultMapSource = {json.dumps(default_map_source)};
     const fixedObjects = {fixed_objects_json};
     const canvas = document.getElementById("radar");
     const meta = document.getElementById("meta");
@@ -522,6 +595,7 @@ def _build_radar_html(
     const scanModeSelect = document.getElementById("scanModeSelect");
     const rangeInput = document.getElementById("rangeInput");
     const showFixedNamesCheckbox = document.getElementById("showFixedNames");
+    const showMapContoursCheckbox = document.getElementById("showMapContours");
     const showLowSpeedCheckbox = document.getElementById("showLowSpeed");
     const objectsSummary = document.getElementById("objectsSummary");
     const objectsList = document.getElementById("objectsList");
@@ -539,6 +613,7 @@ def _build_radar_html(
     let dragCurrent = null;
     let showLowSpeed = false;
     let showFixedNames = true;
+    let showMapContours = true;
     let selectedTargetId = null;
     const selectedHistoryByTargetId = new Map();
     let pendingFitTargetId = null;
@@ -553,6 +628,13 @@ def _build_radar_html(
     let lastScannerState = null;
     let scanMode = "hybrid";
     let scanModeUpdateInFlight = false;
+    let mapContours = [];
+    let mapContourSource = defaultMapSource;
+    let mapContourStatus = "idle";
+    let mapContourError = null;
+    let mapContourRequestKey = null;
+    let mapContourLoadedKey = null;
+    let mapContourRequestInFlight = false;
 
     function clampPollMs(value) {{
       if (!Number.isFinite(value)) return defaultPollMs;
@@ -724,6 +806,26 @@ def _build_radar_html(
       const lat = referenceCenter.lat + (dyKm / kmPerDegLat);
       const lon = referenceCenter.lon + (dxKm / kmPerDegLon(referenceCenter.lat));
       return {{ lat, lon }};
+    }}
+
+    function computeMapContourBBox(rangeKm) {{
+      const latPadding = rangeKm / kmPerDegLat;
+      const lonPadding = rangeKm / kmPerDegLon(viewCenter.lat);
+      return [
+        viewCenter.lon - lonPadding,
+        viewCenter.lat - latPadding,
+        viewCenter.lon + lonPadding,
+        viewCenter.lat + latPadding,
+      ];
+    }}
+
+    function mapContourRequestKeyForView(rangeKm) {{
+      const bbox = computeMapContourBBox(rangeKm);
+      const bboxKey = bbox.map((value) => value.toFixed(4)).join(",");
+      return {{
+        bbox,
+        key: `${{mapContourSource}}|${{bboxKey}}`,
+      }};
     }}
 
     function computeRangeKm(items, referenceCenter) {{
@@ -1388,6 +1490,69 @@ def _build_radar_html(
       ctx.restore();
     }}
 
+    function normalizeMapContourFeatures(features) {{
+      if (!Array.isArray(features)) return [];
+      return features.filter((feature) => feature && typeof feature === "object");
+    }}
+
+    function drawLineCoordinates(coordinates, cx, cy, pxPerKm) {{
+      if (!Array.isArray(coordinates) || coordinates.length < 2) return;
+      let segmentOpen = false;
+      for (const coordinate of coordinates) {{
+        if (!Array.isArray(coordinate) || coordinate.length < 2) {{
+          segmentOpen = false;
+          continue;
+        }}
+        const lon = toOptionalNumber(coordinate[0]);
+        const lat = toOptionalNumber(coordinate[1]);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {{
+          segmentOpen = false;
+          continue;
+        }}
+        const {{ dx, dy }} = toOffsetKm(lat, lon, viewCenter);
+        const x = cx + (dx * pxPerKm);
+        const y = cy - (dy * pxPerKm);
+        if (!segmentOpen) {{
+          ctx.moveTo(x, y);
+          segmentOpen = true;
+        }} else {{
+          ctx.lineTo(x, y);
+        }}
+      }}
+    }}
+
+    function drawMapContours(cx, cy, pxPerKm, radius) {{
+      if (!showMapContours) return;
+      if (!Array.isArray(mapContours) || mapContours.length === 0) return;
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.strokeStyle = "#1d5f82";
+      ctx.lineWidth = 1;
+      ctx.globalAlpha = 0.9;
+      for (const feature of mapContours) {{
+        const geometry = feature.geometry;
+        if (!geometry || typeof geometry !== "object") continue;
+        const geometryType = geometry.type;
+        const coordinates = geometry.coordinates;
+        ctx.beginPath();
+        if (geometryType === "LineString") {{
+          drawLineCoordinates(coordinates, cx, cy, pxPerKm);
+        }} else if (geometryType === "MultiLineString" && Array.isArray(coordinates)) {{
+          for (const line of coordinates) {{
+            drawLineCoordinates(line, cx, cy, pxPerKm);
+          }}
+        }} else {{
+          continue;
+        }}
+        ctx.stroke();
+      }}
+      ctx.globalAlpha = 1;
+      ctx.restore();
+    }}
+
     function toOptionalNumber(value) {{
       if (typeof value === "number") return value;
       if (typeof value === "string" && value.trim() !== "") {{
@@ -1468,6 +1633,47 @@ def _build_radar_html(
       );
     }}
 
+    async function loadMapContoursForView(rangeKm) {{
+      if (!showMapContours || mapContourRequestInFlight) return;
+      const request = mapContourRequestKeyForView(rangeKm);
+      if (request.key === mapContourLoadedKey || request.key === mapContourRequestKey) return;
+
+      mapContourRequestInFlight = true;
+      mapContourRequestKey = request.key;
+      try {{
+        const params = new URLSearchParams({{
+          source: mapContourSource,
+          bbox: request.bbox.map((value) => value.toFixed(6)).join(","),
+          range_km: rangeKm.toFixed(3),
+        }});
+        const response = await fetch(`/ui/map-contours?${{params.toString()}}`, {{
+          cache: "no-store",
+        }});
+        if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
+        const payload = await response.json();
+        mapContours = normalizeMapContourFeatures(payload.features);
+        mapContourSource = typeof payload.source === "string" ? payload.source : mapContourSource;
+        mapContourStatus = typeof payload.status === "string" ? payload.status : "ok";
+        mapContourError = typeof payload.error === "string" && payload.error
+          ? payload.error
+          : null;
+        mapContourLoadedKey = request.key;
+      }} catch (err) {{
+        mapContours = [];
+        mapContourStatus = "error";
+        mapContourError = err instanceof Error ? err.message : String(err);
+      }} finally {{
+        mapContourRequestInFlight = false;
+        mapContourRequestKey = null;
+        draw();
+      }}
+    }}
+
+    function ensureMapContoursForView(rangeKm) {{
+      if (!showMapContours) return;
+      void loadMapContoursForView(rangeKm);
+    }}
+
     function isDynamicTrackTarget(target) {{
       if (!target || typeof target !== "object") return false;
       const source = typeof target.source === "string" ? target.source : "";
@@ -1515,6 +1721,7 @@ def _build_radar_html(
       ctx.arc(cx, cy, 5, 0, Math.PI * 2);
       ctx.fill();
 
+      drawMapContours(cx, cy, pxPerKm, radius);
       drawFixedObjects(cx, cy, pxPerKm, radius, rangeKm);
       drawSelectedHistoryPath(selectedTargetId, cx, cy, pxPerKm, radius);
 
@@ -1562,8 +1769,13 @@ def _build_radar_html(
       renderObjectsPanel(visibleTargets, outsideTargets);
       drawSelectionBox();
       syncRangeInput(rangeKm);
+      ensureMapContoursForView(rangeKm);
       const status = error ? `Error: ${{error}}` : `${{visible}} visible / ${{targets.length}} total`;
-      meta.textContent = `Home: ${{homeCenter.lat.toFixed(6)}}, ${{homeCenter.lon.toFixed(6)}} | View: ${{viewCenter.lat.toFixed(6)}}, ${{viewCenter.lon.toFixed(6)}} | Range: ${{rangeKm.toFixed(2)}} km | Ringavstand: ${{ringSpacingKm.toFixed(2)}} km | Läge: ${{scanModeLabel(scanMode)}} | UI-poll: ${{(nextPollMs / 1000).toFixed(2)}} s | ${{status}}`;
+      const contourStatus = showMapContours
+        ? `Kartlager: ${{mapContourSource}}/${{mapContourStatus}}`
+        : "Kartlager: av";
+      const contourErrorText = showMapContours && mapContourError ? ` | Konturer: ${{mapContourError}}` : "";
+      meta.textContent = `Home: ${{homeCenter.lat.toFixed(6)}}, ${{homeCenter.lon.toFixed(6)}} | View: ${{viewCenter.lat.toFixed(6)}}, ${{viewCenter.lon.toFixed(6)}} | Range: ${{rangeKm.toFixed(2)}} km | Ringavstand: ${{ringSpacingKm.toFixed(2)}} km | Läge: ${{scanModeLabel(scanMode)}} | UI-poll: ${{(nextPollMs / 1000).toFixed(2)}} s | ${{contourStatus}} | ${{status}}${{contourErrorText}}`;
     }}
 
     async function loadTargets() {{
@@ -1658,6 +1870,13 @@ def _build_radar_html(
     }});
     showFixedNamesCheckbox.addEventListener("change", () => {{
       showFixedNames = showFixedNamesCheckbox.checked;
+      draw();
+    }});
+    showMapContoursCheckbox.addEventListener("change", () => {{
+      showMapContours = showMapContoursCheckbox.checked;
+      if (!showMapContours) {{
+        mapContourError = null;
+      }}
       draw();
     }});
     canvas.addEventListener(
