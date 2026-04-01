@@ -7,13 +7,13 @@ from datetime import datetime
 import json
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 
 from app.fixed_objects import FixedRadarObject
 from app.health import build_health_report
 from app.models import TargetKind
-from app.scanner import HybridBandScanner
+from app.scanner import SCAN_MODE_VALUES, HybridBandScanner
 from app.state import LiveState
 from app.store import SQLiteStore
 
@@ -46,8 +46,25 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
 
     @app.get("/ui/targets-latest")
     async def get_targets_latest() -> dict[str, Any]:
+        scanner_status = runtime.scanner.status() if runtime.scanner else {}
+        scanner_payload = {
+            "active_scan_band": scanner_status.get("active_scan_band"),
+            "last_cycle_start": _to_iso(scanner_status.get("last_cycle_start")),
+            "last_scan_switch": _to_iso(scanner_status.get("last_scan_switch")),
+            "last_error": scanner_status.get("last_error"),
+            "cycle_count": scanner_status.get("cycle_count"),
+            "scan_mode": scanner_status.get("scan_mode"),
+            "adsb_window_seconds": scanner_status.get("adsb_window_seconds"),
+            "ais_window_seconds": scanner_status.get("ais_window_seconds"),
+            "inter_scan_pause_seconds": scanner_status.get("inter_scan_pause_seconds"),
+        }
         if runtime.store is None:
-            return {"count": 0, "targets": [], "radio_connected": runtime.radio_connected}
+            return {
+                "count": 0,
+                "targets": [],
+                "radio_connected": runtime.radio_connected,
+                "scanner": scanner_payload,
+            }
 
         try:
             targets = runtime.store.load_latest_targets()
@@ -74,6 +91,37 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
             "count": len(serialized),
             "targets": serialized,
             "radio_connected": runtime.radio_connected,
+            "scanner": scanner_payload,
+        }
+
+    @app.get("/scanner/mode")
+    async def get_scanner_mode() -> dict[str, Any]:
+        if runtime.scanner is None:
+            raise HTTPException(status_code=503, detail="Scanner is not configured.")
+        scanner_status = runtime.scanner.status()
+        return {
+            "scan_mode": scanner_status.get("scan_mode"),
+            "supported_scan_modes": list(SCAN_MODE_VALUES),
+        }
+
+    @app.post("/scanner/mode")
+    async def set_scanner_mode(payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        if runtime.scanner is None:
+            raise HTTPException(status_code=503, detail="Scanner is not configured.")
+
+        requested_mode = str(payload.get("scan_mode", "")).strip().lower()
+        if not requested_mode:
+            raise HTTPException(status_code=422, detail="scan_mode is required.")
+
+        try:
+            runtime.scanner.set_scan_mode(requested_mode)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        scanner_status = runtime.scanner.status()
+        return {
+            "scan_mode": scanner_status.get("scan_mode"),
+            "supported_scan_modes": list(SCAN_MODE_VALUES),
         }
 
     @app.get("/health")
@@ -213,6 +261,28 @@ def _build_radar_html(
       display: flex;
       align-items: center;
       gap: 12px;
+    }}
+    .scan-mode-control {{
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--panel-dim);
+      font-size: 12px;
+      white-space: nowrap;
+    }}
+    .scan-mode-control select {{
+      border: 1px solid #226322;
+      background: #041104;
+      color: var(--panel-fg);
+      font: inherit;
+      padding: 2px 6px;
+      height: 28px;
+      min-width: 170px;
+    }}
+    .scan-mode-control select:focus {{
+      outline: none;
+      border-color: #2f8b2f;
+      background: #0a1f0a;
     }}
     .zoom-controls {{
       display: inline-flex;
@@ -388,6 +458,14 @@ def _build_radar_html(
           <button id="zoomIn" type="button" aria-label="Öka range">+</button>
           <button id="zoomReset" type="button" aria-label="Reset range">Hem</button>
         </div>
+        <label class="scan-mode-control" for="scanModeSelect">
+          Mottagning
+          <select id="scanModeSelect" aria-label="Mottagningsläge">
+            <option value="hybrid">Scan AIS + ADS-B</option>
+            <option value="continuous_ais">Kontinuerlig AIS</option>
+            <option value="continuous_adsb">Kontinuerlig ADS-B</option>
+          </select>
+        </label>
         <label class="toggle-control" for="showFixedNames">
           <input id="showFixedNames" type="checkbox" checked />
           Visa namn fasta punkter
@@ -422,7 +500,11 @@ def _build_radar_html(
   <script>
     const homeCenter = {{ lat: {center_lat:.8f}, lon: {center_lon:.8f} }};
     const kmPerDegLat = 110.574;
-    const basePollMs = 2000;
+    const defaultPollMs = 2000;
+    const minPollMs = 700;
+    const maxPollMs = 12000;
+    const pollBackoffFactor = 1.25;
+    const observedIntervalLimit = 12;
     const defaultRangeKm = 10.0;
     const radarRingCount = 5;
     const minRangeKm = 0.2;
@@ -437,6 +519,7 @@ def _build_radar_html(
     const zoomInButton = document.getElementById("zoomIn");
     const zoomOutButton = document.getElementById("zoomOut");
     const zoomResetButton = document.getElementById("zoomReset");
+    const scanModeSelect = document.getElementById("scanModeSelect");
     const rangeInput = document.getElementById("rangeInput");
     const showFixedNamesCheckbox = document.getElementById("showFixedNames");
     const showLowSpeedCheckbox = document.getElementById("showLowSpeed");
@@ -461,6 +544,167 @@ def _build_radar_html(
     let pendingFitTargetId = null;
     const selectedHistoryLimit = 1000;
     const selectedTargetColor = "#ff4d4d";
+    let pollTimerId = null;
+    let nextPollMs = defaultPollMs;
+    let requestInFlight = false;
+    let lastSeenWatermarkMs = Number.NaN;
+    let lastDataChangeAtMs = Date.now();
+    const observedUpdateIntervalsMs = [];
+    let lastScannerState = null;
+    let scanMode = "hybrid";
+    let scanModeUpdateInFlight = false;
+
+    function clampPollMs(value) {{
+      if (!Number.isFinite(value)) return defaultPollMs;
+      return Math.max(minPollMs, Math.min(maxPollMs, Math.round(value)));
+    }}
+
+    function pushObservedUpdateInterval(intervalMs) {{
+      if (!Number.isFinite(intervalMs)) return;
+      if (intervalMs <= 0 || intervalMs > 15 * 60 * 1000) return;
+      observedUpdateIntervalsMs.push(intervalMs);
+      if (observedUpdateIntervalsMs.length > observedIntervalLimit) {{
+        observedUpdateIntervalsMs.shift();
+      }}
+    }}
+
+    function median(values) {{
+      if (!Array.isArray(values) || values.length === 0) return Number.NaN;
+      const sorted = [...values].sort((a, b) => a - b);
+      const middle = Math.floor(sorted.length / 2);
+      if ((sorted.length % 2) === 0) {{
+        return (sorted[middle - 1] + sorted[middle]) / 2;
+      }}
+      return sorted[middle];
+    }}
+
+    function deriveLatestLastSeenMs(items) {{
+      let latest = Number.NaN;
+      for (const item of items) {{
+        if (!item || typeof item !== "object") continue;
+        const tsMs = parseTimestampMs(item.last_seen);
+        if (!Number.isFinite(tsMs)) continue;
+        if (!Number.isFinite(latest) || tsMs > latest) {{
+          latest = tsMs;
+        }}
+      }}
+      return latest;
+    }}
+
+    function computeAdaptivePollMs() {{
+      const medianObservedIntervalMs = median(observedUpdateIntervalsMs);
+      if (!Number.isFinite(medianObservedIntervalMs)) {{
+        return clampPollMs(defaultPollMs);
+      }}
+      return clampPollMs(medianObservedIntervalMs * 0.55);
+    }}
+
+    function toPositiveMs(secondsValue) {{
+      const seconds = Number(secondsValue);
+      if (!Number.isFinite(seconds) || seconds <= 0) return Number.NaN;
+      return seconds * 1000;
+    }}
+
+    function normalizeScannerState(rawScanner) {{
+      if (!rawScanner || typeof rawScanner !== "object") return null;
+      const activeScanBand = typeof rawScanner.active_scan_band === "string"
+        ? rawScanner.active_scan_band
+        : null;
+      const lastScanSwitchMs = parseTimestampMs(rawScanner.last_scan_switch);
+      const adsbWindowMs = toPositiveMs(rawScanner.adsb_window_seconds);
+      const aisWindowMs = toPositiveMs(rawScanner.ais_window_seconds);
+      const pauseMs = toPositiveMs(rawScanner.inter_scan_pause_seconds);
+      return {{
+        active_scan_band: activeScanBand,
+        last_scan_switch_ms: lastScanSwitchMs,
+        adsb_window_ms: adsbWindowMs,
+        ais_window_ms: aisWindowMs,
+        inter_scan_pause_ms: Number.isFinite(pauseMs) ? pauseMs : 0,
+      }};
+    }}
+
+    function computeBandAwarePollMs(scannerState) {{
+      if (!scannerState || typeof scannerState !== "object") return Number.NaN;
+      const activeBand = scannerState.active_scan_band;
+      if (activeBand !== "adsb" && activeBand !== "ais") return Number.NaN;
+
+      const lastSwitchMs = scannerState.last_scan_switch_ms;
+      if (!Number.isFinite(lastSwitchMs)) return Number.NaN;
+
+      const adsbWindowMs = scannerState.adsb_window_ms;
+      const aisWindowMs = scannerState.ais_window_ms;
+      const pauseMs = Number.isFinite(scannerState.inter_scan_pause_ms)
+        ? scannerState.inter_scan_pause_ms
+        : 0;
+
+      const currentWindowMs = activeBand === "adsb" ? adsbWindowMs : aisWindowMs;
+      if (!Number.isFinite(currentWindowMs) || currentWindowMs <= 0) return Number.NaN;
+
+      const elapsedMs = Math.max(0, Date.now() - lastSwitchMs);
+      const remainingInBandMs = Math.max(0, currentWindowMs - elapsedMs);
+
+      // Poll around the next likely band handover where fresh rows usually arrive.
+      const handoverSafetyMs = 180;
+      const targetMs = remainingInBandMs + Math.max(0, pauseMs) + handoverSafetyMs;
+      return clampPollMs(targetMs);
+    }}
+
+    function blendPollMsWithBandTiming(baseMs, bandAwareMs) {{
+      if (!Number.isFinite(baseMs)) return clampPollMs(bandAwareMs);
+      if (!Number.isFinite(bandAwareMs)) return clampPollMs(baseMs);
+      return clampPollMs((baseMs * 0.65) + (bandAwareMs * 0.35));
+    }}
+
+    function scanModeLabel(mode) {{
+      if (mode === "continuous_ais") return "Kontinuerlig AIS";
+      if (mode === "continuous_adsb") return "Kontinuerlig ADS-B";
+      return "Scan AIS + ADS-B";
+    }}
+
+    function syncScanModeSelect() {{
+      if (!(scanModeSelect instanceof HTMLSelectElement)) return;
+      if (document.activeElement === scanModeSelect) return;
+      scanModeSelect.value = scanMode;
+    }}
+
+    async function setScanMode(nextMode) {{
+      if (!(scanModeSelect instanceof HTMLSelectElement)) return;
+      if (scanModeUpdateInFlight) return;
+      scanModeUpdateInFlight = true;
+      scanModeSelect.disabled = true;
+      try {{
+        const response = await fetch("/scanner/mode", {{
+          method: "POST",
+          headers: {{ "Content-Type": "application/json" }},
+          body: JSON.stringify({{ scan_mode: nextMode }}),
+        }});
+        if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
+        const payload = await response.json();
+        if (payload && typeof payload.scan_mode === "string") {{
+          scanMode = payload.scan_mode;
+        }} else {{
+          scanMode = nextMode;
+        }}
+        error = null;
+      }} catch (err) {{
+        error = err instanceof Error ? err.message : String(err);
+      }} finally {{
+        scanModeUpdateInFlight = false;
+        scanModeSelect.disabled = false;
+        syncScanModeSelect();
+        draw();
+      }}
+    }}
+
+    function scheduleNextLoad(delayMs = nextPollMs) {{
+      if (pollTimerId !== null) {{
+        clearTimeout(pollTimerId);
+      }}
+      const safeDelayMs = clampPollMs(delayMs);
+      pollTimerId = window.setTimeout(() => {{
+        void loadTargets();
+      }}, safeDelayMs);
+    }}
 
     function clampRangeKm(value) {{
       return Math.max(minRangeKm, Math.min(maxRangeKm, value));
@@ -1095,11 +1339,18 @@ def _build_radar_html(
       ctx.restore();
     }}
 
+    function fixedObjectMarkerFontPx(rangeKm) {{
+      const effectiveRange = Number.isFinite(rangeKm) ? Math.max(0, rangeKm) : 10;
+      const zoomOutSteps = Math.max(0, Math.floor((effectiveRange - 10) / 10));
+      return Math.max(7, 13 - zoomOutSteps);
+    }}
+
     function drawFixedObjects(cx, cy, pxPerKm, radius, rangeKm) {{
       if (!Array.isArray(fixedObjects) || fixedObjects.length === 0) return;
       ctx.save();
-      ctx.font = "13px Courier New, monospace";
       ctx.textBaseline = "middle";
+      const markerFontPx = fixedObjectMarkerFontPx(rangeKm);
+      const markerTextOffsetPx = Math.max(6, Math.round(markerFontPx * 0.65));
       for (const item of fixedObjects) {{
         const lat = toOptionalNumber(item.lat);
         const lon = toOptionalNumber(item.lon);
@@ -1119,16 +1370,18 @@ def _build_radar_html(
         const name = typeof item.name === "string" ? item.name.trim() : "";
         const nameLines = name ? name.split(/\\s+/).filter(Boolean) : [];
 
-        ctx.fillStyle = "#86d986";
+        ctx.fillStyle = "#2c7a2c";
+        ctx.font = `${{markerFontPx}}px Courier New, monospace`;
         ctx.textAlign = "center";
         ctx.fillText(symbol, x, y);
         if (showFixedNames && nameLines.length > 0) {{
           const lineHeight = 12;
           const startY = y - ((nameLines.length - 1) * lineHeight * 0.5);
           ctx.fillStyle = "#9be89b";
+          ctx.font = "12px Courier New, monospace";
           ctx.textAlign = "left";
           nameLines.forEach((line, index) => {{
-            ctx.fillText(line, x + 8, startY + (index * lineHeight));
+            ctx.fillText(line, x + markerTextOffsetPx, startY + (index * lineHeight));
           }});
         }}
       }}
@@ -1310,24 +1563,63 @@ def _build_radar_html(
       drawSelectionBox();
       syncRangeInput(rangeKm);
       const status = error ? `Error: ${{error}}` : `${{visible}} visible / ${{targets.length}} total`;
-      meta.textContent = `Home: ${{homeCenter.lat.toFixed(6)}}, ${{homeCenter.lon.toFixed(6)}} | View: ${{viewCenter.lat.toFixed(6)}}, ${{viewCenter.lon.toFixed(6)}} | Range: ${{rangeKm.toFixed(2)}} km | Ringavstand: ${{ringSpacingKm.toFixed(2)}} km | ${{status}}`;
+      meta.textContent = `Home: ${{homeCenter.lat.toFixed(6)}}, ${{homeCenter.lon.toFixed(6)}} | View: ${{viewCenter.lat.toFixed(6)}}, ${{viewCenter.lon.toFixed(6)}} | Range: ${{rangeKm.toFixed(2)}} km | Ringavstand: ${{ringSpacingKm.toFixed(2)}} km | Läge: ${{scanModeLabel(scanMode)}} | UI-poll: ${{(nextPollMs / 1000).toFixed(2)}} s | ${{status}}`;
     }}
 
     async function loadTargets() {{
+      if (requestInFlight) return;
+      requestInFlight = true;
       try {{
         const response = await fetch("/ui/targets-latest", {{ cache: "no-store" }});
         if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
         const payload = await response.json();
+        lastScannerState = normalizeScannerState(payload.scanner);
+        if (
+          payload
+          && payload.scanner
+          && typeof payload.scanner === "object"
+          && typeof payload.scanner.scan_mode === "string"
+        ) {{
+          scanMode = payload.scanner.scan_mode;
+          syncScanModeSelect();
+        }}
         const loadedTargets = Array.isArray(payload.targets) ? payload.targets : [];
         targets = loadedTargets.filter(isDynamicTrackTarget);
         updateTrailCacheFromTargets(targets);
         radioConnected = Boolean(payload.radio_connected);
+        const latestLastSeenMs = deriveLatestLastSeenMs(targets);
+        if (Number.isFinite(latestLastSeenMs)) {{
+          if (Number.isFinite(lastSeenWatermarkMs) && latestLastSeenMs > lastSeenWatermarkMs) {{
+            pushObservedUpdateInterval(latestLastSeenMs - lastSeenWatermarkMs);
+            nextPollMs = computeAdaptivePollMs();
+            lastDataChangeAtMs = Date.now();
+          }} else if (!Number.isFinite(lastSeenWatermarkMs)) {{
+            lastDataChangeAtMs = Date.now();
+          }}
+          lastSeenWatermarkMs = Number.isFinite(lastSeenWatermarkMs)
+            ? Math.max(lastSeenWatermarkMs, latestLastSeenMs)
+            : latestLastSeenMs;
+        }} else if (targets.length === 0) {{
+          nextPollMs = clampPollMs(Math.max(nextPollMs, defaultPollMs * 1.5));
+        }}
+        nextPollMs = blendPollMsWithBandTiming(nextPollMs, computeBandAwarePollMs(lastScannerState));
         error = null;
       }} catch (err) {{
         error = err instanceof Error ? err.message : String(err);
         radioConnected = false;
+        nextPollMs = clampPollMs(nextPollMs * pollBackoffFactor);
       }} finally {{
+        requestInFlight = false;
+        const idleMs = Date.now() - lastDataChangeAtMs;
+        if (idleMs >= nextPollMs * 2) {{
+          nextPollMs = clampPollMs(nextPollMs * pollBackoffFactor);
+        }}
+        const bandAwareAfterIdleMs = computeBandAwarePollMs(lastScannerState);
+        if (Number.isFinite(bandAwareAfterIdleMs)) {{
+          nextPollMs = Math.min(nextPollMs, bandAwareAfterIdleMs);
+        }}
         draw();
+        scheduleNextLoad(nextPollMs);
       }}
     }}
 
@@ -1335,6 +1627,11 @@ def _build_radar_html(
     zoomInButton.addEventListener("click", increaseRange);
     zoomOutButton.addEventListener("click", decreaseRange);
     zoomResetButton.addEventListener("click", resetZoom);
+    if (scanModeSelect instanceof HTMLSelectElement) {{
+      scanModeSelect.addEventListener("change", () => {{
+        void setScanMode(scanModeSelect.value);
+      }});
+    }}
     rangeInput.addEventListener("change", applyRangeInput);
     rangeInput.addEventListener("blur", applyRangeInput);
     rangeInput.addEventListener("keydown", (event) => {{
@@ -1379,9 +1676,14 @@ def _build_radar_html(
     canvas.addEventListener("mousemove", updateSelection);
     canvas.addEventListener("mouseleave", cancelSelection);
     window.addEventListener("mouseup", endSelection);
+    document.addEventListener("visibilitychange", () => {{
+      if (document.visibilityState === "visible") {{
+        nextPollMs = Math.min(nextPollMs, defaultPollMs);
+        scheduleNextLoad(minPollMs);
+      }}
+    }});
     draw();
-    loadTargets();
-    setInterval(loadTargets, basePollMs);
+    void loadTargets();
   </script>
 </body>
 </html>

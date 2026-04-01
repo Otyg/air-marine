@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from app.models import NormalizedObservation, ScanBand, Source, TargetKind
 from app.scanner import HybridBandScanner, ScannerConfig
 from app.state import LiveState
@@ -181,3 +183,53 @@ def test_run_forever_prunes_targets_latest_older_than_five_minutes() -> None:
     assert store.prune_cutoffs is not None
     assert len(store.prune_cutoffs) == 1
     assert store.prune_cutoffs[0] == now - timedelta(minutes=5)
+
+
+def test_continuous_ais_mode_keeps_decoder_running() -> None:
+    now = datetime(2026, 3, 31, 8, 0, tzinfo=timezone.utc)
+    adsb_reader = FakeReader([_obs("adsb:abc123", Source.ADSB)])
+    ais_reader = FakeReader([_obs("ais:265123456", Source.AIS)])
+    scanner = HybridBandScanner(
+        adsb_reader=adsb_reader,
+        ais_reader=ais_reader,
+        state=LiveState(clock=lambda: now),
+        store=None,
+        supervisor=FakeSupervisor(switches=[]),  # type: ignore[arg-type]
+        config=ScannerConfig(
+            adsb_window_seconds=0.01,
+            ais_window_seconds=0.01,
+            inter_scan_pause_seconds=2.0,
+        ),
+        sleep_fn=lambda seconds: None,
+        now_fn=lambda: now,
+    )
+
+    scanner.set_scan_mode("continuous_ais")
+    scanner.run_cycle()
+
+    status = scanner.status()
+    assert status["scan_mode"] == "continuous_ais"
+    assert status["supervisor"]["switches"] == ["ais"]
+    assert status["supervisor"]["stop_calls"] == 0
+    assert ais_reader.call_count == 1
+    assert adsb_reader.call_count == 0
+
+
+def test_set_scan_mode_rejects_invalid_value() -> None:
+    scanner = HybridBandScanner(
+        adsb_reader=FakeReader([]),
+        ais_reader=FakeReader([]),
+        state=LiveState(clock=lambda: datetime(2026, 3, 31, 8, 0, tzinfo=timezone.utc)),
+        store=None,
+        supervisor=FakeSupervisor(switches=[]),  # type: ignore[arg-type]
+        config=ScannerConfig(
+            adsb_window_seconds=0.01,
+            ais_window_seconds=0.01,
+            inter_scan_pause_seconds=0.0,
+        ),
+        sleep_fn=lambda seconds: None,
+        now_fn=lambda: datetime(2026, 3, 31, 8, 0, tzinfo=timezone.utc),
+    )
+
+    with pytest.raises(ValueError, match="Unsupported scan mode"):
+        scanner.set_scan_mode("invalid-mode")

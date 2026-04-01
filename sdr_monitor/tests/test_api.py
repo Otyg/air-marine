@@ -20,6 +20,12 @@ class FakeScanner:
     def status(self) -> dict:
         return dict(self.payload)
 
+    def set_scan_mode(self, mode: str) -> None:
+        allowed = {"hybrid", "continuous_ais", "continuous_adsb"}
+        if mode not in allowed:
+            raise ValueError("unsupported scan mode")
+        self.payload["scan_mode"] = mode
+
 
 def _request(app, method: str, path: str, **kwargs) -> httpx.Response:
     async def _run() -> httpx.Response:
@@ -212,12 +218,19 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
     assert "id=\"zoomIn\"" in response.text
     assert "id=\"zoomOut\"" in response.text
     assert "id=\"rangeInput\"" in response.text
+    assert "id=\"scanModeSelect\"" in response.text
     assert "id=\"showFixedNames\"" in response.text
     assert "id=\"objectsList\"" in response.text
     assert "id=\"outsideObjectsList\"" in response.text
     assert "id=\"showLowSpeed\"" in response.text
     assert "drawCourseVector" in response.text
-    assert "const basePollMs = 2000;" in response.text
+    assert "const defaultPollMs = 2000;" in response.text
+    assert "const minPollMs = 700;" in response.text
+    assert "function computeAdaptivePollMs()" in response.text
+    assert "function computeBandAwarePollMs(scannerState)" in response.text
+    assert "function setScanMode(nextMode)" in response.text
+    assert "scheduleNextLoad(nextPollMs);" in response.text
+    assert "void loadTargets();" in response.text
     assert "renderObjectsPanel" in response.text
     assert "Objekt utanför aktivt område" in response.text
     assert "const fixedObjects =" in response.text
@@ -231,6 +244,17 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
     assert "trailOpacityForAgeRank" in response.text
     assert "updateTrailCacheFromTargets" in response.text
     assert "retainedTrailTargets" in response.text
+    assert "let selectedTargetId = null;" in response.text
+    assert "const selectedHistoryByTargetId = new Map();" in response.text
+    assert "let pendingFitTargetId = null;" in response.text
+    assert "function fitSelectionToView(targetId, options = {})" in response.text
+    assert "function drawSelectedHistoryPath(targetId, cx, cy, pxPerKm, radius)" in response.text
+    assert "limit=${selectedHistoryLimit}" in response.text
+    assert "data-target-id" in response.text
+    assert "objectsList.addEventListener(\"click\"" in response.text
+    assert "outsideObjectsList.addEventListener(\"click\"" in response.text
+    assert ".object-item.selected" in response.text
+    assert "#ff4d4d" in response.text
     assert "#39FF14" in response.text
     assert "last_seen:" in response.text
     assert "59.32930000" in response.text
@@ -247,10 +271,72 @@ def test_targets_latest_ui_endpoint_returns_store_rows(tmp_path) -> None:
     app = create_api_app(APIRuntime(state=state, store=store))
     response = _request(app, "GET", "/ui/targets-latest")
     assert response.status_code == 200
-    assert response.json()["count"] == 1
-    assert response.json()["radio_connected"] is False
-    assert response.json()["targets"][0]["target_id"] == "adsb:abcdef"
-    assert response.json()["targets"][0]["recent_positions"] == []
+    payload = response.json()
+    assert payload["count"] == 1
+    assert payload["radio_connected"] is False
+    assert payload["targets"][0]["target_id"] == "adsb:abcdef"
+    assert payload["targets"][0]["recent_positions"] == []
+    assert payload["scanner"]["active_scan_band"] is None
+    assert payload["scanner"]["last_scan_switch"] is None
+    assert payload["scanner"]["scan_mode"] is None
+
+
+def test_targets_latest_ui_endpoint_includes_scanner_timing_fields(tmp_path) -> None:
+    now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+    state = LiveState(clock=lambda: now)
+    store = SQLiteStore(tmp_path / "radar_scanner.sqlite3")
+    store.initialize()
+    store.upsert_latest_target(_target("adsb:abcdef", now))
+    scanner = FakeScanner(
+        payload={
+            "active_scan_band": "ais",
+            "last_cycle_start": now,
+            "last_scan_switch": now,
+            "last_error": None,
+            "cycle_count": 17,
+            "scan_mode": "continuous_ais",
+            "adsb_window_seconds": 7.0,
+            "ais_window_seconds": 9.0,
+            "inter_scan_pause_seconds": 0.25,
+        }
+    )
+
+    app = create_api_app(APIRuntime(state=state, store=store, scanner=scanner))
+    response = _request(app, "GET", "/ui/targets-latest")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["scanner"]["active_scan_band"] == "ais"
+    assert payload["scanner"]["last_scan_switch"] == now.isoformat()
+    assert payload["scanner"]["cycle_count"] == 17
+    assert payload["scanner"]["scan_mode"] == "continuous_ais"
+    assert payload["scanner"]["adsb_window_seconds"] == 7.0
+    assert payload["scanner"]["ais_window_seconds"] == 9.0
+    assert payload["scanner"]["inter_scan_pause_seconds"] == 0.25
+
+
+def test_scanner_mode_endpoints_get_and_set() -> None:
+    now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+    state = LiveState(clock=lambda: now)
+    scanner = FakeScanner(payload={"scan_mode": "hybrid"})
+    app = create_api_app(APIRuntime(state=state, store=None, scanner=scanner))
+
+    mode_before = _request(app, "GET", "/scanner/mode")
+    assert mode_before.status_code == 200
+    assert mode_before.json()["scan_mode"] == "hybrid"
+    assert "continuous_adsb" in mode_before.json()["supported_scan_modes"]
+
+    updated = _request(
+        app,
+        "POST",
+        "/scanner/mode",
+        json={"scan_mode": "continuous_adsb"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["scan_mode"] == "continuous_adsb"
+
+    mode_after = _request(app, "GET", "/scanner/mode")
+    assert mode_after.status_code == 200
+    assert mode_after.json()["scan_mode"] == "continuous_adsb"
 
 
 def test_targets_latest_ui_endpoint_includes_recent_positions_when_radio_connected(tmp_path) -> None:
