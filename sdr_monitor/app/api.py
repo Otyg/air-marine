@@ -48,6 +48,16 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
             default_map_source=runtime.default_map_source,
         )
 
+    @app.get("/history-radar", response_class=HTMLResponse)
+    async def get_history_radar_screen() -> str:
+        return _build_history_radar_html(
+            center_lat=runtime.radar_center_lat,
+            center_lon=runtime.radar_center_lon,
+            service_name=runtime.service_name,
+            fixed_objects=runtime.fixed_objects,
+            default_map_source=runtime.default_map_source,
+        )
+
     @app.get("/ui/targets-latest")
     async def get_targets_latest() -> dict[str, Any]:
         scanner_status = runtime.scanner.status() if runtime.scanner else {}
@@ -96,6 +106,28 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
             "targets": serialized,
             "radio_connected": runtime.radio_connected,
             "scanner": scanner_payload,
+        }
+
+    @app.get("/ui/history-targets")
+    async def get_history_targets() -> dict[str, Any]:
+        if runtime.store is None:
+            return {
+                "count": 0,
+                "targets": [],
+            }
+
+        try:
+            targets = runtime.store.list_historical_targets()
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to load historical targets: {exc}",
+            ) from exc
+
+        serialized = [target.to_dict() for target in targets]
+        return {
+            "count": len(serialized),
+            "targets": serialized,
         }
 
     @app.get("/ui/map-contours")
@@ -322,6 +354,27 @@ def _build_radar_html(
       font-size: 14px;
       letter-spacing: 0.03em;
     }}
+    .hud-title {{
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }}
+    .view-links {{
+      display: inline-flex;
+      gap: 10px;
+      font-size: 12px;
+      letter-spacing: normal;
+    }}
+    .view-links a {{
+      color: var(--panel-dim);
+      text-decoration: none;
+    }}
+    .view-links a[aria-current="page"] {{
+      color: var(--panel-fg);
+    }}
+    .view-links a:hover {{
+      color: var(--radar-fg);
+    }}
     .hud .dim {{
       color: var(--panel-dim);
     }}
@@ -517,7 +570,13 @@ def _build_radar_html(
 <body>
   <div class="layout">
     <div class="hud">
-      <div>{service_name} / RADAR VIEW</div>
+      <div class="hud-title">
+        <div>{service_name} / RADAR VIEW</div>
+        <div class="view-links">
+          <a href="/" aria-current="page">Live radar</a>
+          <a href="/history-radar">Historiska spår</a>
+        </div>
+      </div>
       <div class="hud-right">
         <div class="zoom-controls">
           <button id="zoomOut" type="button" aria-label="Minska range">-</button>
@@ -1024,6 +1083,55 @@ def _build_radar_html(
       ctx.restore();
     }}
 
+    function isInsideRadarCircle(x, y, cx, cy, radius) {{
+      return ((x - cx) * (x - cx)) + ((y - cy) * (y - cy)) <= (radius * radius);
+    }}
+
+    function clipSegmentToCircle(start, end, cx, cy, radius) {{
+      if (!start || !end) return null;
+      const dx = end.x - start.x;
+      const dy = end.y - start.y;
+      const a = (dx * dx) + (dy * dy);
+      if (a <= 0.000001) {{
+        return isInsideRadarCircle(start.x, start.y, cx, cy, radius)
+          ? {{ start, end }}
+          : null;
+      }}
+
+      const startInside = isInsideRadarCircle(start.x, start.y, cx, cy, radius);
+      const endInside = isInsideRadarCircle(end.x, end.y, cx, cy, radius);
+      if (startInside && endInside) {{
+        return {{ start, end }};
+      }}
+
+      const fx = start.x - cx;
+      const fy = start.y - cy;
+      const b = 2 * ((fx * dx) + (fy * dy));
+      const c = (fx * fx) + (fy * fy) - (radius * radius);
+      const discriminant = (b * b) - (4 * a * c);
+      if (discriminant < 0) return null;
+
+      const sqrtDiscriminant = Math.sqrt(discriminant);
+      const t1 = (-b - sqrtDiscriminant) / (2 * a);
+      const t2 = (-b + sqrtDiscriminant) / (2 * a);
+      const enterT = Math.max(0, Math.min(t1, t2));
+      const exitT = Math.min(1, Math.max(t1, t2));
+      if (enterT > exitT) return null;
+
+      const clippedStartT = startInside ? 0 : enterT;
+      const clippedEndT = endInside ? 1 : exitT;
+      return {{
+        start: {{
+          x: start.x + (dx * clippedStartT),
+          y: start.y + (dy * clippedStartT),
+        }},
+        end: {{
+          x: start.x + (dx * clippedEndT),
+          y: start.y + (dy * clippedEndT),
+        }},
+      }};
+    }}
+
     function normalizeRecentPositions(value) {{
       if (!Array.isArray(value)) return [];
       return value;
@@ -1336,15 +1444,32 @@ def _build_radar_html(
         .sort((a, b) => a.ts_ms - b.ts_ms);
       if (orderedTrailPoints.length === 0) return;
 
+      let effectiveCurrentPoint = null;
+      if (Number.isFinite(currentX) && Number.isFinite(currentY)) {{
+        effectiveCurrentPoint = {{ x: currentX, y: currentY }};
+      }} else {{
+        const currentLat = toOptionalNumber(target.lat);
+        const currentLon = toOptionalNumber(target.lon);
+        if (Number.isFinite(currentLat) && Number.isFinite(currentLon)) {{
+          const {{ dx, dy }} = toOffsetKm(currentLat, currentLon, viewCenter);
+          effectiveCurrentPoint = {{
+            x: cx + (dx * pxPerKm),
+            y: cy - (dy * pxPerKm),
+          }};
+        }}
+      }}
+
       const points = [];
       for (const sample of orderedTrailPoints) {{
         const {{ dx, dy }} = toOffsetKm(sample.lat, sample.lon, viewCenter);
         const x = cx + (dx * pxPerKm);
         const y = cy - (dy * pxPerKm);
-        const insideRadar = ((x - cx) * (x - cx)) + ((y - cy) * (y - cy)) <= (radius * radius);
+        const insideRadar = isInsideRadarCircle(x, y, cx, cy, radius);
         if (!insideRadar) continue;
-        if (Number.isFinite(currentX) && Number.isFinite(currentY)) {{
-          const sameAsCurrent = ((x - currentX) * (x - currentX)) + ((y - currentY) * (y - currentY)) < 1;
+        if (effectiveCurrentPoint) {{
+          const sameAsCurrent =
+            ((x - effectiveCurrentPoint.x) * (x - effectiveCurrentPoint.x))
+            + ((y - effectiveCurrentPoint.y) * (y - effectiveCurrentPoint.y)) < 1;
           if (sameAsCurrent) continue;
         }}
         points.push({{ x, y }});
@@ -1358,15 +1483,24 @@ def _build_radar_html(
       ctx.save();
       ctx.lineWidth = 1;
       ctx.setLineDash([4, 3]);
-      if (Number.isFinite(currentX) && Number.isFinite(currentY)) {{
+      if (effectiveCurrentPoint) {{
         const newestOpacity = trailOpacityForAgeRank(0, fadeProgress);
         if (newestOpacity > 0.02) {{
-          ctx.globalAlpha = newestOpacity;
-          ctx.strokeStyle = trailColors[1];
-          ctx.beginPath();
-          ctx.moveTo(currentX, currentY);
-          ctx.lineTo(points[0].x, points[0].y);
-          ctx.stroke();
+          const clippedSegment = clipSegmentToCircle(
+            effectiveCurrentPoint,
+            points[0],
+            cx,
+            cy,
+            radius,
+          );
+          if (clippedSegment) {{
+            ctx.globalAlpha = newestOpacity;
+            ctx.strokeStyle = trailColors[1];
+            ctx.beginPath();
+            ctx.moveTo(clippedSegment.start.x, clippedSegment.start.y);
+            ctx.lineTo(clippedSegment.end.x, clippedSegment.end.y);
+            ctx.stroke();
+          }}
         }}
       }}
       for (let i = 0; i < points.length - 1; i += 1) {{
@@ -1412,8 +1546,7 @@ def _build_radar_html(
         const {{ dx, dy }} = toOffsetKm(lat, lon, viewCenter);
         const x = cx + (dx * pxPerKm);
         const y = cy - (dy * pxPerKm);
-        const insideRadar = ((x - cx) * (x - cx)) + ((y - cy) * (y - cy)) <= (radius * radius);
-        if (!insideRadar) continue;
+        if (!isInsideRadarCircle(x, y, cx, cy, radius)) continue;
         canvasPoints.push({{ x, y }});
       }}
       if (canvasPoints.length === 0) return;
@@ -1744,16 +1877,12 @@ def _build_radar_html(
         const y = cy - (dy * pxPerKm);
         const insideRadar = ((x - cx) * (x - cx)) + ((y - cy) * (y - cy)) <= (radius * radius);
         if (!insideRadar) {{
-          if (!isSelected || !selectedHistoryByTargetId.has(targetId)) {{
-            drawRecentPositions(trackedTarget, cx, cy, pxPerKm, radius);
-          }}
+          drawRecentPositions(trackedTarget, cx, cy, pxPerKm, radius);
           outsideTargets.push(target);
           continue;
         }}
         const course = toOptionalNumber(target.course);
-        if (!isSelected || !selectedHistoryByTargetId.has(targetId)) {{
-          drawRecentPositions(trackedTarget, cx, cy, pxPerKm, radius, x, y);
-        }}
+        drawRecentPositions(trackedTarget, cx, cy, pxPerKm, radius, x, y);
         const markerColor = isSelected ? selectedTargetColor : trailColors[0];
         drawCourseVector(x, y, course, speed, markerColor);
         ctx.fillStyle = markerColor;
@@ -1903,6 +2032,1107 @@ def _build_radar_html(
     }});
     draw();
     void loadTargets();
+  </script>
+</body>
+</html>
+"""
+
+
+def _build_history_radar_html(
+    *,
+    center_lat: float,
+    center_lon: float,
+    service_name: str,
+    fixed_objects: list[FixedRadarObject],
+    default_map_source: str,
+) -> str:
+    fixed_objects_json = json.dumps(
+        [item.to_dict() for item in fixed_objects],
+        ensure_ascii=False,
+    ).replace("</", "<\\/")
+    return f"""<!doctype html>
+<html lang="sv">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{service_name} Historiska Spår</title>
+  <style>
+    :root {{
+      --radar-bg: #000000;
+      --radar-fg: #90ee90;
+      --radar-ring: #2c7a2c;
+      --radar-center: #d3d3d3;
+      --panel-fg: #9be89b;
+      --panel-dim: #5b9e5b;
+    }}
+    html, body {{
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      background: var(--radar-bg);
+      color: var(--radar-fg);
+      font-family: "Courier New", Courier, monospace;
+    }}
+    .layout {{
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }}
+    .hud {{
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 12px;
+      padding: 10px 14px;
+      border-bottom: 1px solid #154815;
+      color: var(--panel-fg);
+      font-size: 14px;
+      letter-spacing: 0.03em;
+    }}
+    .hud-title {{
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }}
+    .view-links {{
+      display: inline-flex;
+      gap: 10px;
+      font-size: 12px;
+      letter-spacing: normal;
+    }}
+    .view-links a {{
+      color: var(--panel-dim);
+      text-decoration: none;
+    }}
+    .view-links a[aria-current="page"] {{
+      color: var(--panel-fg);
+    }}
+    .view-links a:hover {{
+      color: var(--radar-fg);
+    }}
+    .hud .dim {{
+      color: var(--panel-dim);
+    }}
+    .hud-right {{
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }}
+    .zoom-controls {{
+      display: inline-flex;
+      border: 1px solid #226322;
+      align-items: stretch;
+      background: #051805;
+    }}
+    .zoom-controls button {{
+      background: transparent;
+      color: var(--panel-fg);
+      border: 0;
+      border-right: 1px solid #226322;
+      min-width: 40px;
+      height: 28px;
+      cursor: pointer;
+      font: inherit;
+    }}
+    .zoom-controls button:hover {{
+      background: #0a260a;
+    }}
+    .zoom-controls input {{
+      width: 62px;
+      border: 0;
+      border-right: 1px solid #226322;
+      background: #020b02;
+      color: var(--panel-fg);
+      text-align: right;
+      padding: 0 8px;
+      font: inherit;
+    }}
+    .zoom-controls input:focus {{
+      outline: none;
+      background: #0a1f0a;
+    }}
+    .zoom-controls .range-unit {{
+      display: inline-flex;
+      align-items: center;
+      padding: 0 8px;
+      color: var(--panel-dim);
+      border-right: 1px solid #226322;
+      font-size: 12px;
+    }}
+    .zoom-controls > *:last-child {{
+      border-right: 0;
+    }}
+    .toggle-control {{
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--panel-dim);
+      font-size: 12px;
+      user-select: none;
+      white-space: nowrap;
+    }}
+    .screen {{
+      flex: 1;
+      min-height: 0;
+      padding: 12px;
+      display: flex;
+      gap: 12px;
+    }}
+    .radar-wrap {{
+      flex: 1;
+      min-width: 0;
+    }}
+    .side-panel {{
+      width: 360px;
+      max-width: 44vw;
+      border: 1px solid #154815;
+      background: #020b02;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }}
+    .side-panel-head {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      padding: 10px;
+      border-bottom: 1px solid #154815;
+      color: var(--panel-fg);
+      font-size: 13px;
+    }}
+    .side-panel-summary {{
+      padding: 8px 10px;
+      color: var(--panel-dim);
+      border-bottom: 1px solid #103810;
+      font-size: 12px;
+    }}
+    .objects-list {{
+      flex: 1;
+      overflow: auto;
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }}
+    .object-item {{
+      border: 1px solid #124212;
+      background: #041104;
+      padding: 8px;
+      color: var(--panel-fg);
+      font-size: 12px;
+      line-height: 1.45;
+      cursor: pointer;
+      transition: border-color 120ms ease, background 120ms ease;
+    }}
+    .object-item:hover {{
+      border-color: #2f8b2f;
+    }}
+    .object-item.selected {{
+      border-color: #9e2f2f;
+      background: #200808;
+    }}
+    .object-label {{
+      color: var(--radar-fg);
+      font-size: 13px;
+      margin-bottom: 4px;
+    }}
+    .object-item.selected .object-label {{
+      color: #ff9c9c;
+    }}
+    .objects-empty {{
+      padding: 10px;
+      color: var(--panel-dim);
+      font-size: 12px;
+    }}
+    @media (max-width: 1000px) {{
+      .screen {{
+        flex-direction: column;
+      }}
+      .side-panel {{
+        width: auto;
+        max-width: none;
+        min-height: 240px;
+      }}
+    }}
+    canvas {{
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: var(--radar-bg);
+      border: 1px solid #154815;
+    }}
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <div class="hud">
+      <div class="hud-title">
+        <div>{service_name} / HISTORY VIEW</div>
+        <div class="view-links">
+          <a href="/">Live radar</a>
+          <a href="/history-radar" aria-current="page">Historiska spår</a>
+        </div>
+      </div>
+      <div class="hud-right">
+        <div class="zoom-controls">
+          <button id="zoomOut" type="button" aria-label="Minska range">-</button>
+          <input id="rangeInput" type="text" inputmode="decimal" value="10" aria-label="Range km" />
+          <span class="range-unit">km</span>
+          <button id="zoomIn" type="button" aria-label="Öka range">+</button>
+          <button id="zoomReset" type="button" aria-label="Reset range">Hem</button>
+        </div>
+        <label class="toggle-control" for="showFixedNames">
+          <input id="showFixedNames" type="checkbox" checked />
+          Visa namn fasta punkter
+        </label>
+        <label class="toggle-control" for="showMapContours">
+          <input id="showMapContours" type="checkbox" checked />
+          Visa kust/sjö-konturer
+        </label>
+        <div id="meta" class="dim">Center: {center_lat:.6f}, {center_lon:.6f}</div>
+      </div>
+    </div>
+    <div class="screen">
+      <div class="radar-wrap">
+        <canvas id="radar"></canvas>
+      </div>
+      <aside class="side-panel">
+        <div class="side-panel-head">
+          <div>Historiska objekt</div>
+        </div>
+        <div id="historyObjectsSummary" class="side-panel-summary">0 objekt med historik</div>
+        <div id="historyObjectsList" class="objects-list">
+          <div class="objects-empty">Inga historiska objekt.</div>
+        </div>
+      </aside>
+    </div>
+  </div>
+  <script>
+    const homeCenter = {{ lat: {center_lat:.8f}, lon: {center_lon:.8f} }};
+    const kmPerDegLat = 110.574;
+    const defaultRangeKm = 10.0;
+    const radarRingCount = 5;
+    const minRangeKm = 0.2;
+    const maxRangeKm = 500.0;
+    const selectedTargetColor = "#ff4d4d";
+    const defaultMapSource = {json.dumps(default_map_source)};
+    const fixedObjects = {fixed_objects_json};
+    const canvas = document.getElementById("radar");
+    const meta = document.getElementById("meta");
+    const zoomInButton = document.getElementById("zoomIn");
+    const zoomOutButton = document.getElementById("zoomOut");
+    const zoomResetButton = document.getElementById("zoomReset");
+    const rangeInput = document.getElementById("rangeInput");
+    const showFixedNamesCheckbox = document.getElementById("showFixedNames");
+    const showMapContoursCheckbox = document.getElementById("showMapContours");
+    const historyObjectsSummary = document.getElementById("historyObjectsSummary");
+    const historyObjectsList = document.getElementById("historyObjectsList");
+    const ctx = canvas.getContext("2d");
+
+    let historyTargets = [];
+    let selectedTargetId = null;
+    let selectedTargetKind = null;
+    let selectedTargetLabel = null;
+    let selectedPositionCount = 0;
+    let selectedLastSeen = null;
+    let selectedHistoryPoints = [];
+    let error = null;
+    let viewCenter = {{ ...homeCenter }};
+    let manualRangeKm = defaultRangeKm;
+    let dragStart = null;
+    let dragCurrent = null;
+    let showFixedNames = true;
+    let showMapContours = true;
+    let mapContours = [];
+    let mapContourSource = defaultMapSource;
+    let mapContourStatus = "idle";
+    let mapContourError = null;
+    let mapContourRequestKey = null;
+    let mapContourLoadedKey = null;
+    let mapContourRequestInFlight = false;
+
+    function clampRangeKm(value) {{
+      return Math.max(minRangeKm, Math.min(maxRangeKm, value));
+    }}
+
+    function kmPerDegLon(lat) {{
+      return 111.320 * Math.cos((lat * Math.PI) / 180);
+    }}
+
+    function toOffsetKm(lat, lon, referenceCenter) {{
+      const dy = (lat - referenceCenter.lat) * kmPerDegLat;
+      const dx = (lon - referenceCenter.lon) * kmPerDegLon(referenceCenter.lat);
+      return {{ dx, dy }};
+    }}
+
+    function offsetKmToLatLon(dxKm, dyKm, referenceCenter) {{
+      const lat = referenceCenter.lat + (dyKm / kmPerDegLat);
+      const lon = referenceCenter.lon + (dxKm / kmPerDegLon(referenceCenter.lat));
+      return {{ lat, lon }};
+    }}
+
+    function toOptionalNumber(value) {{
+      if (typeof value === "number") return value;
+      if (typeof value === "string" && value.trim() !== "") {{
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : NaN;
+      }}
+      return NaN;
+    }}
+
+    function parseTimestampMs(value) {{
+      if (typeof value === "number" && Number.isFinite(value)) return value;
+      if (typeof value !== "string" || !value.trim()) return NaN;
+      const parsed = Date.parse(value);
+      return Number.isFinite(parsed) ? parsed : NaN;
+    }}
+
+    function escapeHtml(value) {{
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }}
+
+    function formatRangeValue(value) {{
+      return Number.isInteger(value)
+        ? String(value)
+        : value.toFixed(2).replace(/0+$/, "").replace(/\\.$/, "");
+    }}
+
+    function computeHistoryRangeKm(points, referenceCenter) {{
+      let maxDistance = 3;
+      for (const point of points) {{
+        if (!point) continue;
+        const lat = toOptionalNumber(point.lat);
+        const lon = toOptionalNumber(point.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+        const {{ dx, dy }} = toOffsetKm(lat, lon, referenceCenter);
+        const distance = Math.sqrt((dx * dx) + (dy * dy));
+        if (distance > maxDistance) maxDistance = distance;
+      }}
+      return clampRangeKm(Math.max(3, Math.ceil(maxDistance + 1)));
+    }}
+
+    function resizeCanvas() {{
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      const w = Math.max(1, Math.floor(rect.width * dpr));
+      const h = Math.max(1, Math.floor(rect.height * dpr));
+      if (canvas.width !== w || canvas.height !== h) {{
+        canvas.width = w;
+        canvas.height = h;
+      }}
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }}
+
+    function getViewMetrics() {{
+      resizeCanvas();
+      const width = canvas.clientWidth;
+      const height = canvas.clientHeight;
+      const cx = width / 2;
+      const cy = height / 2;
+      const radius = Math.max(30, Math.min(width, height) * 0.45);
+      const autoRangeKm = computeHistoryRangeKm(selectedHistoryPoints, viewCenter);
+      const rangeKm = clampRangeKm(manualRangeKm ?? autoRangeKm ?? defaultRangeKm);
+      const pxPerKm = radius / rangeKm;
+      return {{ width, height, cx, cy, radius, autoRangeKm, rangeKm, pxPerKm }};
+    }}
+
+    function syncRangeInput(rangeKm) {{
+      if (document.activeElement === rangeInput) return;
+      rangeInput.value = formatRangeValue(rangeKm);
+    }}
+
+    function parseRangeInputValue(value) {{
+      const normalized = String(value).trim().replace(",", ".");
+      if (!normalized) return NaN;
+      return Number(normalized);
+    }}
+
+    function setRangeKm(nextRangeKm) {{
+      manualRangeKm = clampRangeKm(nextRangeKm);
+      draw();
+    }}
+
+    function increaseRange() {{
+      const rangeKm = getViewMetrics().rangeKm;
+      setRangeKm(rangeKm + 1);
+    }}
+
+    function decreaseRange() {{
+      const rangeKm = getViewMetrics().rangeKm;
+      setRangeKm(rangeKm - 1);
+    }}
+
+    function resetZoom() {{
+      if (selectedHistoryPoints.length > 0) {{
+        fitHistoryToView(selectedHistoryPoints);
+      }} else {{
+        viewCenter = {{ ...homeCenter }};
+        manualRangeKm = defaultRangeKm;
+      }}
+      draw();
+    }}
+
+    function applyRangeInput() {{
+      const parsed = parseRangeInputValue(rangeInput.value);
+      if (!Number.isFinite(parsed)) {{
+        syncRangeInput(getViewMetrics().rangeKm);
+        return;
+      }}
+      setRangeKm(parsed);
+    }}
+
+    function canvasPointFromEvent(event) {{
+      const rect = canvas.getBoundingClientRect();
+      const x = Math.max(0, Math.min(rect.width, event.clientX - rect.left));
+      const y = Math.max(0, Math.min(rect.height, event.clientY - rect.top));
+      return {{ x, y }};
+    }}
+
+    function beginSelection(event) {{
+      if (event.button !== 0) return;
+      dragStart = canvasPointFromEvent(event);
+      dragCurrent = dragStart;
+      draw();
+    }}
+
+    function updateSelection(event) {{
+      if (!dragStart) return;
+      dragCurrent = canvasPointFromEvent(event);
+      draw();
+    }}
+
+    function applySelectionZoom() {{
+      if (!dragStart || !dragCurrent) return;
+      const {{ cx, cy, pxPerKm }} = getViewMetrics();
+      const x1 = Math.min(dragStart.x, dragCurrent.x);
+      const x2 = Math.max(dragStart.x, dragCurrent.x);
+      const y1 = Math.min(dragStart.y, dragCurrent.y);
+      const y2 = Math.max(dragStart.y, dragCurrent.y);
+      const widthPx = x2 - x1;
+      const heightPx = y2 - y1;
+      if (widthPx < 10 || heightPx < 10) return;
+
+      const centerX = x1 + (widthPx / 2);
+      const centerY = y1 + (heightPx / 2);
+      const dxKm = (centerX - cx) / pxPerKm;
+      const dyKm = (cy - centerY) / pxPerKm;
+      viewCenter = offsetKmToLatLon(dxKm, dyKm, viewCenter);
+
+      const halfWidthKm = (widthPx / 2) / pxPerKm;
+      const halfHeightKm = (heightPx / 2) / pxPerKm;
+      manualRangeKm = clampRangeKm(Math.max(halfWidthKm, halfHeightKm) * 1.2);
+    }}
+
+    function endSelection(event) {{
+      if (!dragStart) return;
+      dragCurrent = canvasPointFromEvent(event);
+      applySelectionZoom();
+      dragStart = null;
+      dragCurrent = null;
+      draw();
+    }}
+
+    function cancelSelection() {{
+      if (!dragStart) return;
+      dragStart = null;
+      dragCurrent = null;
+      draw();
+    }}
+
+    function drawSelectionBox() {{
+      if (!dragStart || !dragCurrent) return;
+      const x = Math.min(dragStart.x, dragCurrent.x);
+      const y = Math.min(dragStart.y, dragCurrent.y);
+      const width = Math.abs(dragCurrent.x - dragStart.x);
+      const height = Math.abs(dragCurrent.y - dragStart.y);
+      ctx.save();
+      ctx.setLineDash([6, 4]);
+      ctx.strokeStyle = "#7cff7c";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x, y, width, height);
+      ctx.fillStyle = "rgba(124, 255, 124, 0.08)";
+      ctx.fillRect(x, y, width, height);
+      ctx.restore();
+    }}
+
+    function computeMapContourBBox(rangeKm) {{
+      const latPadding = rangeKm / kmPerDegLat;
+      const lonPadding = rangeKm / kmPerDegLon(viewCenter.lat);
+      return [
+        viewCenter.lon - lonPadding,
+        viewCenter.lat - latPadding,
+        viewCenter.lon + lonPadding,
+        viewCenter.lat + latPadding,
+      ];
+    }}
+
+    function mapContourRequestKeyForView(rangeKm) {{
+      const bbox = computeMapContourBBox(rangeKm);
+      const bboxKey = bbox.map((value) => value.toFixed(4)).join(",");
+      return {{
+        bbox,
+        key: `${{mapContourSource}}|${{bboxKey}}`,
+      }};
+    }}
+
+    function normalizeMapContourFeatures(features) {{
+      if (!Array.isArray(features)) return [];
+      return features.filter((feature) => feature && typeof feature === "object");
+    }}
+
+    function drawLineCoordinates(coordinates, cx, cy, pxPerKm) {{
+      if (!Array.isArray(coordinates) || coordinates.length < 2) return;
+      let segmentOpen = false;
+      for (const coordinate of coordinates) {{
+        if (!Array.isArray(coordinate) || coordinate.length < 2) {{
+          segmentOpen = false;
+          continue;
+        }}
+        const lon = toOptionalNumber(coordinate[0]);
+        const lat = toOptionalNumber(coordinate[1]);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {{
+          segmentOpen = false;
+          continue;
+        }}
+        const {{ dx, dy }} = toOffsetKm(lat, lon, viewCenter);
+        const x = cx + (dx * pxPerKm);
+        const y = cy - (dy * pxPerKm);
+        if (!segmentOpen) {{
+          ctx.moveTo(x, y);
+          segmentOpen = true;
+        }} else {{
+          ctx.lineTo(x, y);
+        }}
+      }}
+    }}
+
+    function drawMapContours(cx, cy, pxPerKm, radius) {{
+      if (!showMapContours) return;
+      if (!Array.isArray(mapContours) || mapContours.length === 0) return;
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.strokeStyle = "#1d5f82";
+      ctx.lineWidth = 1;
+      ctx.globalAlpha = 0.9;
+      for (const feature of mapContours) {{
+        const geometry = feature.geometry;
+        if (!geometry || typeof geometry !== "object") continue;
+        const geometryType = geometry.type;
+        const coordinates = geometry.coordinates;
+        ctx.beginPath();
+        if (geometryType === "LineString") {{
+          drawLineCoordinates(coordinates, cx, cy, pxPerKm);
+        }} else if (geometryType === "MultiLineString" && Array.isArray(coordinates)) {{
+          for (const line of coordinates) {{
+            drawLineCoordinates(line, cx, cy, pxPerKm);
+          }}
+        }} else {{
+          continue;
+        }}
+        ctx.stroke();
+      }}
+      ctx.globalAlpha = 1;
+      ctx.restore();
+    }}
+
+    async function loadMapContoursForView(rangeKm) {{
+      if (!showMapContours || mapContourRequestInFlight) return;
+      const request = mapContourRequestKeyForView(rangeKm);
+      if (request.key === mapContourLoadedKey || request.key === mapContourRequestKey) return;
+
+      mapContourRequestInFlight = true;
+      mapContourRequestKey = request.key;
+      try {{
+        const params = new URLSearchParams({{
+          source: mapContourSource,
+          bbox: request.bbox.map((value) => value.toFixed(6)).join(","),
+          range_km: rangeKm.toFixed(3),
+        }});
+        const response = await fetch(`/ui/map-contours?${{params.toString()}}`, {{
+          cache: "no-store",
+        }});
+        if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
+        const payload = await response.json();
+        mapContours = normalizeMapContourFeatures(payload.features);
+        mapContourSource = typeof payload.source === "string" ? payload.source : mapContourSource;
+        mapContourStatus = typeof payload.status === "string" ? payload.status : "ok";
+        mapContourError = typeof payload.error === "string" && payload.error
+          ? payload.error
+          : null;
+        mapContourLoadedKey = request.key;
+      }} catch (err) {{
+        mapContours = [];
+        mapContourStatus = "error";
+        mapContourError = err instanceof Error ? err.message : String(err);
+      }} finally {{
+        mapContourRequestInFlight = false;
+        mapContourRequestKey = null;
+        draw();
+      }}
+    }}
+
+    function ensureMapContoursForView(rangeKm) {{
+      if (!showMapContours) return;
+      void loadMapContoursForView(rangeKm);
+    }}
+
+    function fixedObjectMarkerFontPx(rangeKm) {{
+      const effectiveRange = Number.isFinite(rangeKm) ? Math.max(0, rangeKm) : 10;
+      const zoomOutSteps = Math.max(0, Math.floor((effectiveRange - 10) / 10));
+      return Math.max(7, 13 - zoomOutSteps);
+    }}
+
+    function drawFixedObjects(cx, cy, pxPerKm, radius, rangeKm) {{
+      if (!Array.isArray(fixedObjects) || fixedObjects.length === 0) return;
+      ctx.save();
+      ctx.textBaseline = "middle";
+      const markerFontPx = fixedObjectMarkerFontPx(rangeKm);
+      const markerTextOffsetPx = Math.max(6, Math.round(markerFontPx * 0.65));
+      for (const item of fixedObjects) {{
+        const lat = toOptionalNumber(item.lat);
+        const lon = toOptionalNumber(item.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+
+        const {{ dx, dy }} = toOffsetKm(lat, lon, viewCenter);
+        const x = cx + (dx * pxPerKm);
+        const y = cy - (dy * pxPerKm);
+        const insideRadar = ((x - cx) * (x - cx)) + ((y - cy) * (y - cy)) <= (radius * radius);
+        if (!insideRadar) continue;
+
+        const maxVisibleRangeKm = toOptionalNumber(item.max_visible_range_km);
+        if (Number.isFinite(maxVisibleRangeKm) && rangeKm > maxVisibleRangeKm) continue;
+
+        const rawSymbol = typeof item.symbol === "string" ? item.symbol.trim() : "";
+        const symbol = rawSymbol ? rawSymbol[0] : "O";
+        const name = typeof item.name === "string" ? item.name.trim() : "";
+        const nameLines = name ? name.split(/\\s+/).filter(Boolean) : [];
+
+        ctx.fillStyle = "#2c7a2c";
+        ctx.font = `${{markerFontPx}}px Courier New, monospace`;
+        ctx.textAlign = "center";
+        ctx.fillText(symbol, x, y);
+        if (showFixedNames && nameLines.length > 0) {{
+          const lineHeight = 12;
+          const startY = y - ((nameLines.length - 1) * lineHeight * 0.5);
+          ctx.fillStyle = "#9be89b";
+          ctx.font = "12px Courier New, monospace";
+          ctx.textAlign = "left";
+          nameLines.forEach((line, index) => {{
+            ctx.fillText(line, x + markerTextOffsetPx, startY + (index * lineHeight));
+          }});
+        }}
+      }}
+      ctx.restore();
+    }}
+
+    function isInsideRadarCircle(x, y, cx, cy, radius) {{
+      return ((x - cx) * (x - cx)) + ((y - cy) * (y - cy)) <= (radius * radius);
+    }}
+
+    function clipSegmentToCircle(start, end, cx, cy, radius) {{
+      if (!start || !end) return null;
+      const dx = end.x - start.x;
+      const dy = end.y - start.y;
+      const a = (dx * dx) + (dy * dy);
+      if (a <= 0.000001) {{
+        return isInsideRadarCircle(start.x, start.y, cx, cy, radius)
+          ? {{ start, end }}
+          : null;
+      }}
+
+      const startInside = isInsideRadarCircle(start.x, start.y, cx, cy, radius);
+      const endInside = isInsideRadarCircle(end.x, end.y, cx, cy, radius);
+      if (startInside && endInside) {{
+        return {{ start, end }};
+      }}
+
+      const fx = start.x - cx;
+      const fy = start.y - cy;
+      const b = 2 * ((fx * dx) + (fy * dy));
+      const c = (fx * fx) + (fy * fy) - (radius * radius);
+      const discriminant = (b * b) - (4 * a * c);
+      if (discriminant < 0) return null;
+
+      const sqrtDiscriminant = Math.sqrt(discriminant);
+      const t1 = (-b - sqrtDiscriminant) / (2 * a);
+      const t2 = (-b + sqrtDiscriminant) / (2 * a);
+      const enterT = Math.max(0, Math.min(t1, t2));
+      const exitT = Math.min(1, Math.max(t1, t2));
+      if (enterT > exitT) return null;
+
+      const clippedStartT = startInside ? 0 : enterT;
+      const clippedEndT = endInside ? 1 : exitT;
+      return {{
+        start: {{
+          x: start.x + (dx * clippedStartT),
+          y: start.y + (dy * clippedStartT),
+        }},
+        end: {{
+          x: start.x + (dx * clippedEndT),
+          y: start.y + (dy * clippedEndT),
+        }},
+      }};
+    }}
+
+    function normalizeHistoryPoints(observations) {{
+      if (!Array.isArray(observations)) return [];
+      return observations
+        .map((item, index) => {{
+          if (!item || typeof item !== "object") return null;
+          const lat = toOptionalNumber(item.lat);
+          const lon = toOptionalNumber(item.lon);
+          if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+          const observedAtMs = parseTimestampMs(item.observed_at);
+          return {{
+            lat,
+            lon,
+            ts_ms: Number.isFinite(observedAtMs) ? observedAtMs : index,
+          }};
+        }})
+        .filter(Boolean)
+        .sort((a, b) => a.ts_ms - b.ts_ms);
+    }}
+
+    function fitHistoryToView(points) {{
+      if (!Array.isArray(points) || points.length === 0) return false;
+
+      let minLat = points[0].lat;
+      let maxLat = points[0].lat;
+      let minLon = points[0].lon;
+      let maxLon = points[0].lon;
+      for (const point of points) {{
+        minLat = Math.min(minLat, point.lat);
+        maxLat = Math.max(maxLat, point.lat);
+        minLon = Math.min(minLon, point.lon);
+        maxLon = Math.max(maxLon, point.lon);
+      }}
+
+      const nextCenter = {{
+        lat: (minLat + maxLat) / 2,
+        lon: (minLon + maxLon) / 2,
+      }};
+      let maxDxKm = 0;
+      let maxDyKm = 0;
+      for (const point of points) {{
+        const {{ dx, dy }} = toOffsetKm(point.lat, point.lon, nextCenter);
+        maxDxKm = Math.max(maxDxKm, Math.abs(dx));
+        maxDyKm = Math.max(maxDyKm, Math.abs(dy));
+      }}
+
+      viewCenter = nextCenter;
+      manualRangeKm = clampRangeKm(Math.max(maxDxKm, maxDyKm, minRangeKm) * 1.15);
+      return true;
+    }}
+
+    function drawSelectedHistoryPath(cx, cy, pxPerKm, radius) {{
+      if (!Array.isArray(selectedHistoryPoints) || selectedHistoryPoints.length === 0) return;
+
+      const canvasPoints = [];
+      for (const point of selectedHistoryPoints) {{
+        const {{ dx, dy }} = toOffsetKm(point.lat, point.lon, viewCenter);
+        const x = cx + (dx * pxPerKm);
+        const y = cy - (dy * pxPerKm);
+        canvasPoints.push({{ x, y }});
+      }}
+      if (canvasPoints.length === 0) return;
+
+      ctx.save();
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([]);
+      ctx.strokeStyle = selectedTargetColor;
+      ctx.fillStyle = selectedTargetColor;
+      ctx.globalAlpha = 0.95;
+      if (canvasPoints.length > 1) {{
+        for (let i = 1; i < canvasPoints.length; i += 1) {{
+          const clippedSegment = clipSegmentToCircle(
+            canvasPoints[i - 1],
+            canvasPoints[i],
+            cx,
+            cy,
+            radius,
+          );
+          if (!clippedSegment) continue;
+          ctx.beginPath();
+          ctx.moveTo(clippedSegment.start.x, clippedSegment.start.y);
+          ctx.lineTo(clippedSegment.end.x, clippedSegment.end.y);
+          ctx.stroke();
+        }}
+      }}
+      for (const point of canvasPoints) {{
+        if (!isInsideRadarCircle(point.x, point.y, cx, cy, radius)) continue;
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, 1.9, 0, Math.PI * 2);
+        ctx.fill();
+      }}
+      ctx.globalAlpha = 1;
+      ctx.restore();
+    }}
+
+    function drawSelectedTargetMarker(cx, cy, pxPerKm, radius) {{
+      if (!Array.isArray(selectedHistoryPoints) || selectedHistoryPoints.length === 0) return;
+      const latestPoint = selectedHistoryPoints[selectedHistoryPoints.length - 1];
+      if (!latestPoint) return;
+      const {{ dx, dy }} = toOffsetKm(latestPoint.lat, latestPoint.lon, viewCenter);
+      const x = cx + (dx * pxPerKm);
+      const y = cy - (dy * pxPerKm);
+      if (!isInsideRadarCircle(x, y, cx, cy, radius)) return;
+
+      ctx.save();
+      ctx.font = "bold 16px Courier New, monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = selectedTargetColor;
+      const symbol = selectedTargetKind === "vessel" ? "#" : "+";
+      ctx.fillText(symbol, x, y);
+      ctx.restore();
+    }}
+
+    function renderHistoryCards(items) {{
+      if (items.length === 0) {{
+        return `<div class="objects-empty">${{escapeHtml("Inga historiska objekt.")}}</div>`;
+      }}
+
+      return items
+        .map((target) => {{
+          const targetId = typeof target.target_id === "string" ? target.target_id : "";
+          const label = target.label || target.target_id || "okänt";
+          const lastSeen = target.last_seen ? String(target.last_seen) : "-";
+          const positionCount = Number.isFinite(Number(target.position_count))
+            ? Number(target.position_count)
+            : 0;
+          const selectedClass = targetId && selectedTargetId === targetId ? " selected" : "";
+          const targetAttr = targetId
+            ? ` data-target-id="${{escapeHtml(targetId)}}" role="button" tabindex="0"`
+            : "";
+
+          return `
+            <div class="object-item${{selectedClass}}"${{targetAttr}}>
+              <div class="object-label">${{escapeHtml(label)}}</div>
+              <div>positioner: ${{escapeHtml(String(positionCount))}}</div>
+              <div>last_seen: ${{escapeHtml(lastSeen)}}</div>
+            </div>
+          `;
+        }})
+        .join("");
+    }}
+
+    function renderHistoryPanel() {{
+      historyObjectsSummary.textContent = `${{historyTargets.length}} objekt med historik`;
+      historyObjectsList.innerHTML = renderHistoryCards(historyTargets);
+    }}
+
+    function findHistoryTargetById(targetId) {{
+      if (!targetId) return null;
+      return historyTargets.find((item) => item && item.target_id === targetId) || null;
+    }}
+
+    async function loadHistoryTargets() {{
+      try {{
+        const response = await fetch("/ui/history-targets", {{ cache: "no-store" }});
+        if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
+        const payload = await response.json();
+        historyTargets = Array.isArray(payload.targets) ? payload.targets : [];
+        if (selectedTargetId && !findHistoryTargetById(selectedTargetId)) {{
+          selectedTargetId = null;
+          selectedTargetKind = null;
+          selectedTargetLabel = null;
+          selectedPositionCount = 0;
+          selectedLastSeen = null;
+          selectedHistoryPoints = [];
+        }}
+        error = null;
+      }} catch (err) {{
+        historyTargets = [];
+        error = err instanceof Error ? err.message : String(err);
+      }} finally {{
+        renderHistoryPanel();
+        draw();
+      }}
+    }}
+
+    async function loadSelectedHistory(targetId, positionCount) {{
+      if (!targetId) return [];
+      const safeLimit = Math.max(1, Number(positionCount) || 1);
+      const response = await fetch(
+        `/history/${{encodeURIComponent(targetId)}}?limit=${{safeLimit}}`,
+        {{ cache: "no-store" }},
+      );
+      if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
+      const payload = await response.json();
+      const observations = Array.isArray(payload.observations) ? payload.observations : [];
+      return normalizeHistoryPoints(observations);
+    }}
+
+    async function selectTarget(targetId) {{
+      if (!targetId) return;
+      if (selectedTargetId === targetId) {{
+        selectedTargetId = null;
+        selectedTargetKind = null;
+        selectedTargetLabel = null;
+        selectedPositionCount = 0;
+        selectedLastSeen = null;
+        selectedHistoryPoints = [];
+        draw();
+        renderHistoryPanel();
+        return;
+      }}
+
+      const selectedTarget = findHistoryTargetById(targetId);
+      if (!selectedTarget) return;
+      selectedTargetId = targetId;
+      selectedTargetKind = typeof selectedTarget.kind === "string" ? selectedTarget.kind : null;
+      selectedTargetLabel = selectedTarget.label || selectedTarget.target_id || null;
+      selectedPositionCount = Number(selectedTarget.position_count) || 0;
+      selectedLastSeen = selectedTarget.last_seen || null;
+      selectedHistoryPoints = [];
+      renderHistoryPanel();
+      draw();
+
+      const activeSelection = targetId;
+      try {{
+        const historyPoints = await loadSelectedHistory(targetId, selectedPositionCount);
+        if (selectedTargetId !== activeSelection) return;
+        selectedHistoryPoints = historyPoints;
+        fitHistoryToView(historyPoints);
+        error = null;
+      }} catch (err) {{
+        if (selectedTargetId !== activeSelection) return;
+        selectedHistoryPoints = [];
+        error = err instanceof Error ? err.message : String(err);
+      }}
+      draw();
+    }}
+
+    function getTargetIdFromPanelEvent(event) {{
+      if (!(event.target instanceof Element)) return null;
+      const card = event.target.closest(".object-item[data-target-id]");
+      if (!(card instanceof HTMLElement)) return null;
+      const targetId = card.dataset.targetId;
+      if (typeof targetId !== "string" || !targetId) return null;
+      return targetId;
+    }}
+
+    function onHistoryPanelClick(event) {{
+      const targetId = getTargetIdFromPanelEvent(event);
+      if (!targetId) return;
+      void selectTarget(targetId);
+    }}
+
+    function onHistoryPanelKeyDown(event) {{
+      if (event.key !== "Enter" && event.key !== " ") return;
+      const targetId = getTargetIdFromPanelEvent(event);
+      if (!targetId) return;
+      event.preventDefault();
+      void selectTarget(targetId);
+    }}
+
+    function draw() {{
+      const {{
+        width,
+        height,
+        cx,
+        cy,
+        radius,
+        rangeKm,
+        pxPerKm,
+      }} = getViewMetrics();
+
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = "#000000";
+      ctx.fillRect(0, 0, width, height);
+
+      ctx.strokeStyle = "#2c7a2c";
+      ctx.lineWidth = 1;
+      const ringSpacingKm = rangeKm / radarRingCount;
+      for (let i = 1; i <= radarRingCount; i += 1) {{
+        ctx.beginPath();
+        ctx.arc(cx, cy, i * ringSpacingKm * pxPerKm, 0, Math.PI * 2);
+        ctx.stroke();
+      }}
+
+      ctx.strokeStyle = "#2c7a2c";
+      ctx.beginPath();
+      ctx.moveTo(cx - radius, cy);
+      ctx.lineTo(cx + radius, cy);
+      ctx.moveTo(cx, cy - radius);
+      ctx.lineTo(cx, cy + radius);
+      ctx.stroke();
+
+      ctx.fillStyle = "#d3d3d3";
+      ctx.beginPath();
+      ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+      ctx.fill();
+
+      drawMapContours(cx, cy, pxPerKm, radius);
+      drawFixedObjects(cx, cy, pxPerKm, radius, rangeKm);
+      drawSelectedHistoryPath(cx, cy, pxPerKm, radius);
+      drawSelectedTargetMarker(cx, cy, pxPerKm, radius);
+      drawSelectionBox();
+      syncRangeInput(rangeKm);
+      ensureMapContoursForView(rangeKm);
+
+      const contourStatus = showMapContours
+        ? `Kartlager: ${{mapContourSource}}/${{mapContourStatus}}`
+        : "Kartlager: av";
+      const contourErrorText = showMapContours && mapContourError ? ` | Konturer: ${{mapContourError}}` : "";
+      const selectedText = selectedTargetId
+        ? `Vald: ${{selectedTargetLabel || selectedTargetId}} | Positioner: ${{selectedPositionCount}} | Last seen: ${{selectedLastSeen || "-"}}`
+        : "Vald: inget objekt";
+      const errorText = error ? ` | Error: ${{error}}` : "";
+      meta.textContent = `Home: ${{homeCenter.lat.toFixed(6)}}, ${{homeCenter.lon.toFixed(6)}} | View: ${{viewCenter.lat.toFixed(6)}}, ${{viewCenter.lon.toFixed(6)}} | Range: ${{rangeKm.toFixed(2)}} km | Ringavstand: ${{ringSpacingKm.toFixed(2)}} km | ${{contourStatus}} | ${{selectedText}}${{contourErrorText}}${{errorText}}`;
+    }}
+
+    window.addEventListener("resize", draw);
+    zoomInButton.addEventListener("click", increaseRange);
+    zoomOutButton.addEventListener("click", decreaseRange);
+    zoomResetButton.addEventListener("click", resetZoom);
+    rangeInput.addEventListener("change", applyRangeInput);
+    rangeInput.addEventListener("blur", applyRangeInput);
+    rangeInput.addEventListener("keydown", (event) => {{
+      if (event.key === "Enter") {{
+        event.preventDefault();
+        applyRangeInput();
+      }}
+    }});
+    historyObjectsList.addEventListener("click", onHistoryPanelClick);
+    historyObjectsList.addEventListener("keydown", onHistoryPanelKeyDown);
+    showFixedNamesCheckbox.addEventListener("change", () => {{
+      showFixedNames = showFixedNamesCheckbox.checked;
+      draw();
+    }});
+    showMapContoursCheckbox.addEventListener("change", () => {{
+      showMapContours = showMapContoursCheckbox.checked;
+      if (!showMapContours) {{
+        mapContourError = null;
+      }}
+      draw();
+    }});
+    canvas.addEventListener(
+      "wheel",
+      (event) => {{
+        event.preventDefault();
+        if (event.deltaY < 0) {{
+          decreaseRange();
+        }} else {{
+          increaseRange();
+        }}
+      }},
+      {{ passive: false }},
+    );
+    canvas.addEventListener("mousedown", beginSelection);
+    canvas.addEventListener("mousemove", updateSelection);
+    canvas.addEventListener("mouseleave", cancelSelection);
+    window.addEventListener("mouseup", endSelection);
+    draw();
+    void loadHistoryTargets();
   </script>
 </body>
 </html>

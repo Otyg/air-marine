@@ -240,6 +240,7 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
     assert "id=\"showMapContours\"" in response.text
     assert "id=\"objectsList\"" in response.text
     assert "id=\"outsideObjectsList\"" in response.text
+    assert "href=\"/history-radar\"" in response.text
     assert "id=\"showLowSpeed\"" in response.text
     assert "drawCourseVector" in response.text
     assert "const defaultPollMs = 2000;" in response.text
@@ -270,6 +271,8 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
     assert "let pendingFitTargetId = null;" in response.text
     assert "function fitSelectionToView(targetId, options = {})" in response.text
     assert "function drawSelectedHistoryPath(targetId, cx, cy, pxPerKm, radius)" in response.text
+    assert "function clipSegmentToCircle(start, end, cx, cy, radius)" in response.text
+    assert "const clippedSegment = clipSegmentToCircle(" in response.text
     assert "limit=${selectedHistoryLimit}" in response.text
     assert "data-target-id" in response.text
     assert "objectsList.addEventListener(\"click\"" in response.text
@@ -280,6 +283,55 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
     assert "last_seen:" in response.text
     assert "59.32930000" in response.text
     assert "18.06860000" in response.text
+
+
+def test_history_radar_ui_renders_html_with_history_panel() -> None:
+    state = LiveState(clock=lambda: datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc))
+    app = create_api_app(
+        APIRuntime(
+            state=state,
+            store=None,
+            radar_center_lat=59.3293,
+            radar_center_lon=18.0686,
+            fixed_objects=[],
+        )
+    )
+
+    response = _request(app, "GET", "/history-radar")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "HISTORY VIEW" in response.text
+    assert "id=\"historyObjectsList\"" in response.text
+    assert "Historiska objekt" in response.text
+    assert "fetch(\"/ui/history-targets\"" in response.text
+    assert "function drawSelectedHistoryPath(cx, cy, pxPerKm, radius)" in response.text
+    assert "function fitHistoryToView(points)" in response.text
+    assert "href=\"/\"" in response.text
+
+
+def test_history_targets_ui_endpoint_returns_history_summaries(tmp_path) -> None:
+    now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+    state = LiveState(clock=lambda: now)
+    store = SQLiteStore(tmp_path / "history_targets.sqlite3")
+    store.initialize()
+    obs = _obs(
+        target_id="adsb:abcdef",
+        source=Source.ADSB,
+        observed_at=now,
+        lat=59.0,
+        lon=18.0,
+    )
+    store.persist_observation_and_target(obs, _target("adsb:abcdef", now))
+
+    app = create_api_app(APIRuntime(state=state, store=store))
+    response = _request(app, "GET", "/ui/history-targets")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 1
+    assert payload["targets"][0]["target_id"] == "adsb:abcdef"
+    assert payload["targets"][0]["label"] == "FLT1"
+    assert payload["targets"][0]["position_count"] == 1
+    assert payload["targets"][0]["last_seen"] == now.isoformat()
 
 
 def test_targets_latest_ui_endpoint_returns_store_rows(tmp_path) -> None:

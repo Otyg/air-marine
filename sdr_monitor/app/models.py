@@ -234,6 +234,26 @@ class Target:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class HistoricalTargetSummary:
+    target_id: str
+    source: Source
+    kind: TargetKind
+    label: str | None
+    last_seen: datetime
+    position_count: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "target_id": self.target_id,
+            "source": self.source.value,
+            "kind": self.kind.value,
+            "label": self.label,
+            "last_seen": _serialize_dt(self.last_seen),
+            "position_count": self.position_count,
+        }
+
+
 @dataclass(slots=True)
 class LiveTargetState:
     target: Target

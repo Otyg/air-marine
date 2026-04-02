@@ -110,6 +110,26 @@ def test_fetch_history_returns_descending_with_limit(tmp_path) -> None:
     assert history[1].altitude == 1100.0
 
 
+def test_list_historical_targets_returns_counts_and_resolved_labels(tmp_path) -> None:
+    seen_at = datetime(2026, 3, 30, 12, 0, tzinfo=timezone.utc)
+    store = SQLiteStore(tmp_path / "history_targets.sqlite3")
+    store.initialize()
+
+    store.insert_observation(_observation("adsb:hist-a", seen_at, altitude=1000.0))
+    store.insert_observation(
+        _observation("adsb:hist-a", seen_at + timedelta(seconds=1), altitude=1100.0)
+    )
+    store.insert_observation(_observation("adsb:hist-b", seen_at + timedelta(seconds=2), altitude=1200.0))
+    store.upsert_latest_target(_target("adsb:hist-a", seen_at + timedelta(seconds=1), altitude=1100.0))
+
+    summaries = store.list_historical_targets()
+
+    assert [item.target_id for item in summaries] == ["adsb:hist-b", "adsb:hist-a"]
+    assert summaries[0].position_count == 1
+    assert summaries[1].position_count == 2
+    assert summaries[1].label == "SAS123"
+
+
 def test_delete_latest_targets_older_than_removes_only_stale_rows(tmp_path) -> None:
     now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
     store = SQLiteStore(tmp_path / "prune.sqlite3")

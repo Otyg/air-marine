@@ -8,7 +8,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
 
-from app.models import Freshness, NormalizedObservation, ScanBand, Source, Target, TargetKind
+from app.models import (
+    Freshness,
+    HistoricalTargetSummary,
+    NormalizedObservation,
+    ScanBand,
+    Source,
+    Target,
+    TargetKind,
+)
 
 
 class SQLiteStore:
@@ -192,6 +200,66 @@ class SQLiteStore:
                 )
             )
         return observations
+
+    def list_historical_targets(self, limit: int | None = None) -> list[HistoricalTargetSummary]:
+        """List tracked objects that have persisted historical observations."""
+
+        query = """
+            SELECT
+                observations.target_id AS target_id,
+                observations.source AS source,
+                observations.kind AS kind,
+                COUNT(*) AS position_count,
+                MAX(observations.observed_at) AS last_seen,
+                COALESCE(target_names.name, targets_latest.label) AS resolved_label
+            FROM observations
+            LEFT JOIN targets_latest
+                ON targets_latest.target_id = observations.target_id
+            LEFT JOIN target_names
+                ON target_names.id = (
+                    CASE
+                        WHEN observations.source = 'ais'
+                            THEN COALESCE(
+                                targets_latest.mmsi,
+                                substr(observations.target_id, instr(observations.target_id, ':') + 1)
+                            )
+                        WHEN observations.source = 'adsb'
+                            THEN lower(COALESCE(
+                                targets_latest.icao24,
+                                substr(observations.target_id, instr(observations.target_id, ':') + 1)
+                            ))
+                        ELSE substr(observations.target_id, instr(observations.target_id, ':') + 1)
+                    END
+                )
+            GROUP BY
+                observations.target_id,
+                observations.source,
+                observations.kind,
+                target_names.name,
+                targets_latest.label
+            ORDER BY MAX(observations.observed_at) DESC
+        """
+        params: tuple[object, ...] = ()
+        if limit is not None:
+            if limit <= 0:
+                raise ValueError("limit must be > 0")
+            query += " LIMIT ?"
+            params = (limit,)
+
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+
+        return [
+            HistoricalTargetSummary(
+                target_id=row["target_id"],
+                source=Source(row["source"]),
+                kind=TargetKind(row["kind"]),
+                label=row["resolved_label"],
+                last_seen=_parse_dt(row["last_seen"]),
+                position_count=int(row["position_count"]),
+            )
+            for row in rows
+        ]
 
     def load_latest_targets(self, limit: int | None = None) -> list[Target]:
         """Load latest target states from persistence for optional warm start."""
