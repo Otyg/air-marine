@@ -242,6 +242,7 @@ class HistoricalTargetSummary:
     label: str | None
     last_seen: datetime
     position_count: int
+    max_observed_speed: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -251,6 +252,7 @@ class HistoricalTargetSummary:
             "label": self.label,
             "last_seen": _serialize_dt(self.last_seen),
             "position_count": self.position_count,
+            "max_observed_speed": self.max_observed_speed,
         }
 
 

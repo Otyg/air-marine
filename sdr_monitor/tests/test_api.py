@@ -237,6 +237,7 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
     assert "id=\"rangeInput\"" in response.text
     assert "id=\"scanModeSelect\"" in response.text
     assert "id=\"showFixedNames\"" in response.text
+    assert "id=\"showTargetLabels\"" in response.text
     assert "id=\"showMapContours\"" in response.text
     assert "id=\"objectsList\"" in response.text
     assert "id=\"outsideObjectsList\"" in response.text
@@ -281,6 +282,8 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
     assert ".object-item.selected" in response.text
     assert "object-type-icon" in response.text
     assert "function targetTypeIcon(kind)" in response.text
+    assert "function targetDisplayLabel(target)" in response.text
+    assert "function drawMapTargetLabel(label, x, y, color)" in response.text
     assert "function matchesTargetTypeFilter(target, filterValue)" in response.text
     assert "#ff4d4d" in response.text
     assert "#39FF14" in response.text
@@ -307,13 +310,17 @@ def test_history_radar_ui_renders_html_with_history_panel() -> None:
     assert "HISTORY VIEW" in response.text
     assert "id=\"historyObjectsList\"" in response.text
     assert "id=\"historyTargetTypeFilter\"" in response.text
+    assert "id=\"historyMinSpeedFilter\"" in response.text
+    assert "id=\"showTargetLabels\"" in response.text
     assert "Historiska objekt" in response.text
     assert "fetch(\"/ui/history-targets\"" in response.text
     assert "fetch(`/ui/history-targets-in-view?${params.toString()}`" in response.text
     assert "object-type-icon" in response.text
     assert "object-view-badge" in response.text
     assert "function targetTypeIcon(kind)" in response.text
+    assert "function drawMapTargetLabel(label, x, y, color)" in response.text
     assert "function matchesTargetTypeFilter(target, filterValue)" in response.text
+    assert "function matchesHistorySpeedFilter(target, minSpeed)" in response.text
     assert "function ensureHistoryTargetsInView(rangeKm)" in response.text
     assert "if (leftInView !== rightInView)" in response.text
     assert "function drawSelectedHistoryPath(cx, cy, pxPerKm, radius)" in response.text
@@ -344,6 +351,7 @@ def test_history_targets_ui_endpoint_returns_history_summaries(tmp_path) -> None
     assert payload["targets"][0]["target_id"] == "adsb:abcdef"
     assert payload["targets"][0]["label"] == "FLT1"
     assert payload["targets"][0]["position_count"] == 1
+    assert payload["targets"][0]["max_observed_speed"] == 120.0
     assert payload["targets"][0]["last_seen"] == now.isoformat()
 
 

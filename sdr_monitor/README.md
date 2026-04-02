@@ -86,6 +86,7 @@ Map background notes:
 - local contour generation is currently based on a coarse sampled grid and simple contour segmentation
 - larger views automatically use a coarser effective sample step to stay within the request point cap
 - successful contour responses are persisted on disk and reused across restarts; external APIs are only called when a matching local cache file is missing
+- hydro contour cache files can be migrated into SQLite for feature reuse across repeated bbox requests
 
 Example static radar objects file (`./data/fixed_objects.json`):
 
@@ -159,3 +160,17 @@ Optional flags:
 
 - `--sqlite-path /path/to/sdr_monitor.sqlite3`
 - `--limit 50000`
+
+Migrate persisted hydro contour cache files into SQLite:
+
+```bash
+cd sdr_monitor
+python scripts/migrate_hydro_cache_to_sqlite.py
+```
+
+Optional flags:
+
+- `--sqlite-path /path/to/sdr_monitor.sqlite3`
+- `--cache-dir /path/to/data/map/cache/hydro`
+- `--limit 100`
+- `--dry-run`

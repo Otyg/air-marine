@@ -18,7 +18,10 @@ def test_config_uses_defaults_when_env_not_set() -> None:
     assert str(config.fixed_objects_path) == "data/fixed_objects.json"
     assert config.map_source == "hydro"
     assert config.map_cache_ttl_seconds == 600
-    assert str(config.map_cache_dir) == "data/map/cache"
+    assert config.map_cache_dir.is_absolute()
+    assert config.map_cache_dir.is_dir()
+    assert config.map_cache_dir.parts[-3:] == ("data", "map", "cache")
+    assert config.map_cache_dir.as_posix().startswith("/tmp/sdr-monitor-")
     assert config.hydro_base_url == "https://api.lantmateriet.se/ogc-features/v1/hydrografi"
     assert (
         config.markhojd_direct_base_url
@@ -87,6 +90,17 @@ def test_config_reads_environment_values() -> None:
     assert config.markhojd_direct_sample_step_m == 40
     assert config.markhojd_direct_contour_interval_m == 20
     assert config.markhojd_direct_max_points_per_request == 900
+
+
+def test_direct_config_default_places_map_cache_in_unique_tmp_dir() -> None:
+    first = Config()
+    second = Config()
+
+    assert first.map_cache_dir != second.map_cache_dir
+    assert first.map_cache_dir.is_dir()
+    assert second.map_cache_dir.is_dir()
+    assert first.map_cache_dir.parts[-3:] == ("data", "map", "cache")
+    assert second.map_cache_dir.parts[-3:] == ("data", "map", "cache")
 
 
 def test_config_rejects_invalid_freshness_thresholds() -> None:

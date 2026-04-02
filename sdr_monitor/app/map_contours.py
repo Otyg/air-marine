@@ -9,15 +9,19 @@ import json
 import math
 from pathlib import Path
 import time
+from threading import Lock, Thread
 from typing import Any, Callable, Protocol
 from urllib.parse import urlencode, urljoin
 from urllib.request import Request, urlopen
 
 from app.config import Config
+from app.logging_setup import get_logger
+from app.store import SQLiteStore
 
 VALID_MAP_SOURCES = ("hydro", "elevation")
 GeoJSONFeature = dict[str, Any]
 BBox = tuple[float, float, float, float]
+LOGGER = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +54,14 @@ class MapContourResult:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class HydroContourPage:
+    collection: str
+    request_url: str
+    next_url: str | None
+    features: tuple[GeoJSONFeature, ...]
+
+
 class MapContourProvider(Protocol):
     def fetch(self, request: MapContourRequest) -> MapContourResult:
         """Return contours for the requested bbox."""
@@ -59,6 +71,12 @@ class MapContourProvider(Protocol):
 class _CacheEntry:
     expires_at: float
     result: MapContourResult
+
+
+@dataclass(slots=True)
+class _BackgroundHydroTask:
+    thread: Thread
+    last_result: MapContourResult | None = None
 
 
 class CachingMapContourProvider:
@@ -84,10 +102,11 @@ class CachingMapContourProvider:
             return replace(cached.result, cache_hit=True)
 
         result = replace(self._provider.fetch(request), cache_hit=False)
-        self._entries[key] = _CacheEntry(
-            expires_at=now + self._ttl_seconds,
-            result=result,
-        )
+        if result.status == "ok":
+            self._entries[key] = _CacheEntry(
+                expires_at=now + self._ttl_seconds,
+                result=result,
+            )
         return result
 
 
@@ -178,6 +197,260 @@ class PersistentMapContourProvider:
         return self._cache_dir / request.source / f"{digest}.json"
 
 
+class DatabaseHydroContourProvider:
+    """Persist hydro contour features in SQLite and reuse them across bbox requests."""
+
+    def __init__(
+        self,
+        provider: "HydroContourProvider",
+        *,
+        store: SQLiteStore,
+    ) -> None:
+        self._provider = provider
+        self._store = store
+
+    @property
+    def is_available(self) -> bool:
+        return self._provider.is_available
+
+    def fetch(self, request: MapContourRequest) -> MapContourResult:
+        try:
+            cached = self._store.load_hydro_contours_by_bbox(bbox=request.bbox)
+        except Exception:
+            cached = None
+
+        if cached is not None:
+            return MapContourResult(
+                source=request.source,
+                features=tuple(cached),
+                status="ok",
+                cache_hit=False,
+            )
+
+        if not self._provider.is_available:
+            return MapContourResult(
+                source=request.source,
+                features=(),
+                status="unavailable",
+                error="Hydrografi credentials are not configured.",
+            )
+
+        try:
+            resume_collection, resume_url, reset_download = self._resolve_resume_state(
+                bbox=request.bbox
+            )
+            self._store.begin_hydro_bbox_download(
+                bbox=request.bbox,
+                resume_collection=resume_collection,
+                resume_url=resume_url,
+                reset=reset_download,
+            )
+            self._download_to_store(
+                bbox=request.bbox,
+                resume_collection=resume_collection,
+                resume_url=resume_url,
+            )
+            completed = self._store.load_hydro_contours_by_bbox(bbox=request.bbox)
+            if completed is None:
+                raise RuntimeError("Hydro contour bbox download finished without a complete cache entry.")
+            return MapContourResult(
+                source=request.source,
+                features=tuple(completed),
+                status="ok",
+                cache_hit=False,
+            )
+        except Exception as exc:
+            return MapContourResult(
+                source=request.source,
+                features=(),
+                status="error",
+                error=f"Hydrografi fetch failed: {exc}",
+            )
+
+    def _resolve_resume_state(self, *, bbox: BBox) -> tuple[str, str, bool]:
+        state = self._store.load_hydro_bbox_download_state(bbox=bbox)
+        if state is None or state.is_complete:
+            first_collection = self._provider.COLLECTIONS[0]
+            return (first_collection, self._provider.build_items_url(collection=first_collection, bbox=bbox), True)
+
+        resume_collection = state.resume_collection or self._provider.COLLECTIONS[0]
+        resume_url = state.resume_url
+        if resume_url is None:
+            resume_url = self._provider.build_items_url(collection=resume_collection, bbox=bbox)
+        LOGGER.info(
+            "Resuming incomplete Lantmateriet hydro download: bbox=%s collection=%s url=%s stored_features=%d",
+            ",".join(f"{value:.6f}" for value in bbox),
+            resume_collection,
+            resume_url,
+            state.feature_count,
+        )
+        return (resume_collection, resume_url, False)
+
+    def _download_to_store(
+        self,
+        *,
+        bbox: BBox,
+        resume_collection: str,
+        resume_url: str,
+    ) -> None:
+        collection_index = self._provider.COLLECTIONS.index(resume_collection)
+        current_resume_url: str | None = resume_url
+
+        for index in range(collection_index, len(self._provider.COLLECTIONS)):
+            collection = self._provider.COLLECTIONS[index]
+            current_url = current_resume_url or self._provider.build_items_url(collection=collection, bbox=bbox)
+
+            while current_url:
+                page = self._provider.fetch_collection_page(
+                    collection=collection,
+                    bbox=bbox,
+                    url=current_url,
+                )
+                next_collection: str | None = collection
+                next_url = page.next_url
+                is_complete = False
+                if next_url is None:
+                    if index + 1 < len(self._provider.COLLECTIONS):
+                        next_collection = self._provider.COLLECTIONS[index + 1]
+                        next_url = self._provider.build_items_url(
+                            collection=next_collection,
+                            bbox=bbox,
+                        )
+                    else:
+                        next_collection = None
+                        is_complete = True
+                self._store.append_hydro_contour_page(
+                    bbox=bbox,
+                    features=page.features,
+                    next_collection=next_collection,
+                    next_url=next_url,
+                    is_complete=is_complete,
+                )
+                current_url = page.next_url
+
+            current_resume_url = None
+
+
+class BackgroundHydroContourProvider:
+    """Run hydro downloads in a background thread and report pending state immediately."""
+
+    def __init__(
+        self,
+        provider: DatabaseHydroContourProvider,
+        *,
+        store: SQLiteStore,
+        poll_hint_seconds: float = 0.75,
+    ) -> None:
+        self._provider = provider
+        self._store = store
+        self._poll_hint_seconds = poll_hint_seconds
+        self._lock = Lock()
+        self._tasks: dict[tuple[str, BBox], _BackgroundHydroTask] = {}
+
+    def fetch(self, request: MapContourRequest) -> MapContourResult:
+        key = (request.source, _normalize_bbox_key(request.bbox))
+        cached = self._load_complete(request)
+        if cached is not None:
+            with self._lock:
+                self._tasks.pop(key, None)
+            return cached
+
+        if not self._provider.is_available:
+            return MapContourResult(
+                source=request.source,
+                features=(),
+                status="unavailable",
+                error="Hydrografi credentials are not configured.",
+            )
+
+        download_state = self._load_download_state(request)
+        pending_result = self._build_pending_result(request, download_state)
+
+        with self._lock:
+            task = self._tasks.get(key)
+            if task is not None and task.thread.is_alive():
+                return pending_result
+            if task is not None and task.last_result is not None:
+                self._tasks.pop(key, None)
+                if task.last_result.status != "ok":
+                    return replace(task.last_result, cache_hit=False)
+
+            worker = Thread(
+                target=self._run_download,
+                args=(key, request),
+                name=f"map-hydro-download-{abs(hash(key))}",
+                daemon=True,
+            )
+            self._tasks[key] = _BackgroundHydroTask(thread=worker)
+            worker.start()
+
+        return pending_result
+
+    def _run_download(self, key: tuple[str, BBox], request: MapContourRequest) -> None:
+        try:
+            result = replace(self._provider.fetch(request), cache_hit=False)
+        except Exception as exc:  # pragma: no cover - defensive safeguard
+            result = MapContourResult(
+                source=request.source,
+                features=(),
+                status="error",
+                error=f"Hydrografi fetch failed: {exc}",
+            )
+
+        with self._lock:
+            task = self._tasks.get(key)
+            if task is not None:
+                task.last_result = result
+
+    def _load_complete(self, request: MapContourRequest) -> MapContourResult | None:
+        try:
+            cached = self._store.load_hydro_contours_by_bbox(bbox=request.bbox)
+        except Exception:
+            return None
+        if cached is None:
+            return None
+        return MapContourResult(
+            source=request.source,
+            features=tuple(cached),
+            status="ok",
+            cache_hit=False,
+        )
+
+    def _load_download_state(self, request: MapContourRequest) -> Any | None:
+        try:
+            return self._store.load_hydro_bbox_download_state(bbox=request.bbox)
+        except Exception:
+            return None
+
+    def _build_pending_result(
+        self,
+        request: MapContourRequest,
+        download_state: Any | None,
+    ) -> MapContourResult:
+        partial_features: tuple[GeoJSONFeature, ...] = ()
+        try:
+            cached_partial = self._store.load_hydro_partial_contours_by_bbox(bbox=request.bbox)
+        except Exception:
+            cached_partial = None
+        if cached_partial is not None:
+            partial_features = tuple(cached_partial)
+
+        details: dict[str, Any] = {
+            "poll_after_seconds": self._poll_hint_seconds,
+            "download_in_progress": True,
+        }
+        if download_state is not None:
+            details["partial_feature_count"] = download_state.feature_count
+            details["resume_collection"] = download_state.resume_collection
+            details["resume_url"] = download_state.resume_url
+        return MapContourResult(
+            source=request.source,
+            features=partial_features,
+            status="pending",
+            details=details,
+        )
+
+
 class MapContourService:
     """Select the configured provider and return UI-friendly payloads."""
 
@@ -235,8 +508,12 @@ class HydroContourProvider:
         self._password = password
         self._fetch_json = fetch_json or _fetch_json
 
+    @property
+    def is_available(self) -> bool:
+        return bool(self._username and self._password)
+
     def fetch(self, request: MapContourRequest) -> MapContourResult:
-        if not self._username or not self._password:
+        if not self.is_available:
             return MapContourResult(
                 source=request.source,
                 features=(),
@@ -262,20 +539,18 @@ class HydroContourProvider:
             )
 
     def _fetch_collection(self, *, collection: str, bbox: BBox) -> list[GeoJSONFeature]:
-        url = self._build_items_url(collection=collection, bbox=bbox)
         headers = {"Authorization": _build_basic_auth_header(self._username, self._password)}
         features: list[GeoJSONFeature] = []
+        url = self.build_items_url(collection=collection, bbox=bbox)
 
         while url:
-            payload = self._fetch_json(url, headers)
-            raw_features = payload.get("features")
-            if isinstance(raw_features, list):
-                features.extend(self._normalize_features(collection=collection, raw_features=raw_features))
-            url = _extract_next_link(base_url=url, payload=payload)
+            page = self.fetch_collection_page(collection=collection, bbox=bbox, url=url, headers=headers)
+            features.extend(page.features)
+            url = page.next_url
 
         return features
 
-    def _build_items_url(self, *, collection: str, bbox: BBox) -> str:
+    def build_items_url(self, *, collection: str, bbox: BBox) -> str:
         params = urlencode(
             {
                 "bbox": ",".join(f"{value:.6f}" for value in bbox),
@@ -284,6 +559,38 @@ class HydroContourProvider:
             }
         )
         return f"{self._base_url}/collections/{collection}/items?{params}"
+
+    def fetch_collection_page(
+        self,
+        *,
+        collection: str,
+        bbox: BBox,
+        url: str | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> HydroContourPage:
+        resolved_url = url or self.build_items_url(collection=collection, bbox=bbox)
+        resolved_headers = headers or {
+            "Authorization": _build_basic_auth_header(self._username, self._password)
+        }
+        LOGGER.info(
+            "Calling Lantmateriet hydro API: collection=%s bbox=%s url=%s",
+            collection,
+            ",".join(f"{value:.6f}" for value in bbox),
+            resolved_url,
+        )
+        payload = self._fetch_json(resolved_url, resolved_headers)
+        raw_features = payload.get("features")
+        features: tuple[GeoJSONFeature, ...] = ()
+        if isinstance(raw_features, list):
+            features = tuple(
+                self._normalize_features(collection=collection, raw_features=raw_features)
+            )
+        return HydroContourPage(
+            collection=collection,
+            request_url=resolved_url,
+            next_url=_extract_next_link(base_url=resolved_url, payload=payload),
+            features=features,
+        )
 
     def _normalize_features(
         self,
@@ -505,6 +812,13 @@ class MarkhojdDirectContourProvider:
                 min_step_m=self._sample_step_m,
                 max_points=self._max_points_per_request,
             )
+            LOGGER.info(
+                "Calling Lantmateriet Markhojd Direkt: bbox=%s sample_points=%d srid=%d url=%s/hojd",
+                ",".join(f"{value:.6f}" for value in request.bbox),
+                len(grid.points),
+                self._srid,
+                self._base_url,
+            )
             response_feature = self._fetch_heights(grid)
             nodata_value = _read_nodata_value(response_feature)
             heights = _decode_height_grid(
@@ -570,18 +884,35 @@ class SamplingGrid:
     effective_step_m: float
 
 
-def build_map_contour_service(config: Config) -> MapContourService:
+def build_map_contour_service(
+    config: Config,
+    *,
+    store: SQLiteStore | None = None,
+) -> MapContourService:
     """Create cached contour providers from resolved runtime config."""
 
-    hydro_provider = CachingMapContourProvider(
-        PersistentMapContourProvider(
-            HydroContourProvider(
-                base_url=config.hydro_base_url,
-                username=config.hydro_username,
-                password=config.hydro_password,
-            ),
+    hydro_origin = HydroContourProvider(
+        base_url=config.hydro_base_url,
+        username=config.hydro_username,
+        password=config.hydro_password,
+    )
+    if store is not None:
+        hydro_source = DatabaseHydroContourProvider(
+            hydro_origin,
+            store=store,
+        )
+        hydro_source = BackgroundHydroContourProvider(
+            hydro_source,
+            store=store,
+        )
+    else:
+        hydro_source = PersistentMapContourProvider(
+            hydro_origin,
             cache_dir=config.map_cache_dir,
-        ),
+        )
+
+    hydro_provider = CachingMapContourProvider(
+        hydro_source,
         ttl_seconds=config.map_cache_ttl_seconds,
     )
     elevation_provider = CachingMapContourProvider(

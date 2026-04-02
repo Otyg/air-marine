@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 from app.models import Freshness, NormalizedObservation, ScanBand, Source, Target, TargetKind
@@ -58,6 +59,9 @@ def test_initialize_creates_schema(tmp_path) -> None:
     assert "observations" in tables
     assert "targets_latest" in tables
     assert "target_names" in tables
+    assert "map_hydro_features" in tables
+    assert "map_hydro_bbox_cache" in tables
+    assert "map_hydro_bbox_features" in tables
 
 
 def test_persist_observation_and_target_and_count(tmp_path) -> None:
@@ -116,9 +120,11 @@ def test_list_historical_targets_returns_counts_and_resolved_labels(tmp_path) ->
     store.initialize()
 
     store.insert_observation(_observation("adsb:hist-a", seen_at, altitude=1000.0))
-    store.insert_observation(
-        _observation("adsb:hist-a", seen_at + timedelta(seconds=1), altitude=1100.0)
+    second = replace(
+        _observation("adsb:hist-a", seen_at + timedelta(seconds=1), altitude=1100.0),
+        speed=230.0,
     )
+    store.insert_observation(second)
     store.insert_observation(_observation("adsb:hist-b", seen_at + timedelta(seconds=2), altitude=1200.0))
     store.upsert_latest_target(_target("adsb:hist-a", seen_at + timedelta(seconds=1), altitude=1100.0))
 
@@ -128,6 +134,7 @@ def test_list_historical_targets_returns_counts_and_resolved_labels(tmp_path) ->
     assert summaries[0].position_count == 1
     assert summaries[1].position_count == 2
     assert summaries[1].label == "SAS123"
+    assert summaries[1].max_observed_speed == 230.0
 
 
 def test_list_historical_target_ids_in_view_returns_only_targets_inside_radar_circle(tmp_path) -> None:
@@ -163,8 +170,6 @@ def test_list_historical_target_ids_in_view_returns_only_targets_inside_radar_ci
     )
 
     assert target_ids == ["adsb:inside"]
-
-
 def test_delete_latest_targets_older_than_removes_only_stale_rows(tmp_path) -> None:
     now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
     store = SQLiteStore(tmp_path / "prune.sqlite3")
@@ -246,3 +251,157 @@ def test_populate_target_names_from_observations_backfills_adsb_and_ais(tmp_path
     with sqlite3.connect(store.sqlite_path) as conn:
         rows = conn.execute("SELECT id, name FROM target_names ORDER BY id ASC").fetchall()
     assert rows == [("265123456", "VESSEL-X"), ("abc123", "SAS900")]
+
+
+def test_save_hydro_contours_for_bbox_reuses_features_by_inspire_id(tmp_path) -> None:
+    store = SQLiteStore(tmp_path / "hydro.sqlite3")
+    store.initialize()
+    first_bbox = (18.0, 59.0, 18.2, 59.2)
+    second_bbox = (18.1, 59.1, 18.3, 59.3)
+    shared_feature = {
+        "type": "Feature",
+        "properties": {
+            "collection": "LandWaterBoundary",
+            "inspireId": "shared-coast",
+        },
+        "geometry": {
+            "type": "LineString",
+            "coordinates": [[18.0, 59.0], [18.2, 59.1]],
+        },
+    }
+
+    store.save_hydro_contours_for_bbox(bbox=first_bbox, features=[shared_feature])
+    store.save_hydro_contours_for_bbox(bbox=second_bbox, features=[shared_feature])
+
+    first_cached = store.load_hydro_contours_by_bbox(bbox=first_bbox)
+    second_cached = store.load_hydro_contours_by_bbox(bbox=second_bbox)
+    assert first_cached is not None
+    assert second_cached is not None
+    assert first_cached[0]["properties"]["inspireId"] == "shared-coast"
+    assert second_cached[0]["properties"]["inspireId"] == "shared-coast"
+
+    stored_feature = store.load_hydro_feature_by_inspire_id("shared-coast")
+    assert stored_feature is not None
+    assert stored_feature["geometry"]["type"] == "LineString"
+
+    with sqlite3.connect(store.sqlite_path) as conn:
+        feature_count = conn.execute("SELECT COUNT(*) FROM map_hydro_features").fetchone()[0]
+        bbox_count = conn.execute("SELECT COUNT(*) FROM map_hydro_bbox_cache").fetchone()[0]
+        mapping_count = conn.execute("SELECT COUNT(*) FROM map_hydro_bbox_features").fetchone()[0]
+
+    assert feature_count == 1
+    assert bbox_count == 2
+    assert mapping_count == 2
+
+
+def test_hydro_bbox_download_state_tracks_incomplete_and_resume_pointer(tmp_path) -> None:
+    store = SQLiteStore(tmp_path / "hydro-state.sqlite3")
+    store.initialize()
+    bbox = (18.0, 59.0, 18.2, 59.2)
+
+    store.begin_hydro_bbox_download(
+        bbox=bbox,
+        resume_collection="LandWaterBoundary",
+        resume_url="https://hydro.example.test/page-1",
+        reset=True,
+    )
+    state = store.load_hydro_bbox_download_state(bbox=bbox)
+    assert state is not None
+    assert state.is_complete is False
+    assert state.resume_collection == "LandWaterBoundary"
+    assert state.resume_url == "https://hydro.example.test/page-1"
+    assert state.feature_count == 0
+    assert store.load_hydro_contours_by_bbox(bbox=bbox) is None
+
+    store.append_hydro_contour_page(
+        bbox=bbox,
+        features=[
+            {
+                "type": "Feature",
+                "properties": {
+                    "collection": "LandWaterBoundary",
+                    "inspireId": "coast-1",
+                },
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [[18.0, 59.0], [18.1, 59.1]],
+                },
+            }
+        ],
+        next_collection="StandingWater",
+        next_url="https://hydro.example.test/page-2",
+        is_complete=False,
+    )
+    state = store.load_hydro_bbox_download_state(bbox=bbox)
+    assert state is not None
+    assert state.is_complete is False
+    assert state.resume_collection == "StandingWater"
+    assert state.resume_url == "https://hydro.example.test/page-2"
+    assert state.feature_count == 1
+
+    store.append_hydro_contour_page(
+        bbox=bbox,
+        features=[],
+        next_collection=None,
+        next_url=None,
+        is_complete=True,
+    )
+    state = store.load_hydro_bbox_download_state(bbox=bbox)
+    assert state is not None
+    assert state.is_complete is True
+    assert state.resume_collection is None
+    assert state.resume_url is None
+    assert state.feature_count == 1
+    cached = store.load_hydro_contours_by_bbox(bbox=bbox)
+    assert cached is not None
+    assert cached[0]["properties"]["inspireId"] == "coast-1"
+
+
+def test_load_hydro_partial_contours_by_bbox_returns_features_for_incomplete_bbox(tmp_path) -> None:
+    store = SQLiteStore(tmp_path / "hydro-partial.sqlite3")
+    store.initialize()
+    bbox = (18.0, 59.0, 18.2, 59.2)
+
+    store.begin_hydro_bbox_download(
+        bbox=bbox,
+        resume_collection="StandingWater",
+        resume_url="https://hydro.example.test/page-2",
+        reset=True,
+    )
+    store.append_hydro_contour_page(
+        bbox=bbox,
+        features=[
+            {
+                "type": "Feature",
+                "properties": {
+                    "collection": "LandWaterBoundary",
+                    "inspireId": "coast-1",
+                },
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [[18.0, 59.0], [18.1, 59.1]],
+                },
+            }
+        ],
+        next_collection="StandingWater",
+        next_url="https://hydro.example.test/page-2",
+        is_complete=False,
+    )
+
+    assert store.load_hydro_contours_by_bbox(bbox=bbox) is None
+    partial = store.load_hydro_partial_contours_by_bbox(bbox=bbox)
+    assert partial is not None
+    assert partial[0]["properties"]["inspireId"] == "coast-1"
+
+
+def test_load_hydro_contours_by_bbox_returns_empty_tuple_for_cached_empty_bbox(tmp_path) -> None:
+    store = SQLiteStore(tmp_path / "hydro-empty.sqlite3")
+    store.initialize()
+
+    store.save_hydro_contours_for_bbox(
+        bbox=(18.0, 59.0, 18.2, 59.2),
+        features=[],
+    )
+
+    cached = store.load_hydro_contours_by_bbox(bbox=(18.0, 59.0, 18.2, 59.2))
+    assert cached == ()

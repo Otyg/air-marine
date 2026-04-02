@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
+import hashlib
 import math
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
+from typing import Any, Sequence
 
 from app.models import (
     Freshness,
@@ -18,6 +21,15 @@ from app.models import (
     Target,
     TargetKind,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class HydroBBoxDownloadState:
+    bbox_key: str
+    is_complete: bool
+    resume_collection: str | None
+    resume_url: str | None
+    feature_count: int
 
 
 class SQLiteStore:
@@ -76,7 +88,64 @@ class SQLiteStore:
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS map_hydro_features (
+                    feature_id TEXT PRIMARY KEY,
+                    inspire_id TEXT,
+                    collection TEXT NOT NULL,
+                    properties_json TEXT NOT NULL,
+                    geometry_json TEXT NOT NULL,
+                    feature_min_lon REAL,
+                    feature_min_lat REAL,
+                    feature_max_lon REAL,
+                    feature_max_lat REAL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_map_hydro_features_inspire_id
+                ON map_hydro_features(inspire_id);
+
+                CREATE TABLE IF NOT EXISTS map_hydro_bbox_cache (
+                    bbox_key TEXT PRIMARY KEY,
+                    min_lon REAL NOT NULL,
+                    min_lat REAL NOT NULL,
+                    max_lon REAL NOT NULL,
+                    max_lat REAL NOT NULL,
+                    is_complete INTEGER NOT NULL DEFAULT 1,
+                    resume_collection TEXT,
+                    resume_url TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS map_hydro_bbox_features (
+                    bbox_key TEXT NOT NULL,
+                    feature_order INTEGER NOT NULL,
+                    feature_id TEXT NOT NULL,
+                    PRIMARY KEY (bbox_key, feature_order)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_map_hydro_bbox_features_feature_id
+                ON map_hydro_bbox_features(feature_id);
                 """
+            )
+            self._ensure_column(
+                conn,
+                table_name="map_hydro_bbox_cache",
+                column_name="is_complete",
+                definition="INTEGER NOT NULL DEFAULT 1",
+            )
+            self._ensure_column(
+                conn,
+                table_name="map_hydro_bbox_cache",
+                column_name="resume_collection",
+                definition="TEXT",
+            )
+            self._ensure_column(
+                conn,
+                table_name="map_hydro_bbox_cache",
+                column_name="resume_url",
+                definition="TEXT",
             )
 
     def persist_observation_and_target(
@@ -212,6 +281,7 @@ class SQLiteStore:
                 observations.kind AS kind,
                 COUNT(*) AS position_count,
                 MAX(observations.observed_at) AS last_seen,
+                MAX(observations.speed) AS max_observed_speed,
                 COALESCE(target_names.name, targets_latest.label) AS resolved_label
             FROM observations
             LEFT JOIN targets_latest
@@ -258,6 +328,11 @@ class SQLiteStore:
                 label=row["resolved_label"],
                 last_seen=_parse_dt(row["last_seen"]),
                 position_count=int(row["position_count"]),
+                max_observed_speed=(
+                    float(row["max_observed_speed"])
+                    if row["max_observed_speed"] is not None
+                    else None
+                ),
             )
             for row in rows
         ]
@@ -369,6 +444,461 @@ class SQLiteStore:
             )
             for row in rows
         ]
+
+    def load_hydro_contours_by_bbox(
+        self,
+        *,
+        bbox: Sequence[float],
+    ) -> tuple[dict[str, Any], ...] | None:
+        """Return cached hydro contour features for one bbox, or None on cache miss."""
+
+        bbox_key = _hydro_bbox_key(bbox)
+        with self._lock, self._connect() as conn:
+            bbox_row = conn.execute(
+                """
+                SELECT bbox_key, is_complete
+                FROM map_hydro_bbox_cache
+                WHERE bbox_key = ?
+                """,
+                (bbox_key,),
+            ).fetchone()
+            if bbox_row is None:
+                return None
+            if not bool(bbox_row["is_complete"]):
+                return None
+
+            rows = conn.execute(
+                """
+                SELECT
+                    map_hydro_features.feature_id,
+                    map_hydro_features.inspire_id,
+                    map_hydro_features.collection,
+                    map_hydro_features.properties_json,
+                    map_hydro_features.geometry_json
+                FROM map_hydro_bbox_features
+                LEFT JOIN map_hydro_features
+                    ON map_hydro_features.feature_id = map_hydro_bbox_features.feature_id
+                WHERE map_hydro_bbox_features.bbox_key = ?
+                ORDER BY map_hydro_bbox_features.feature_order ASC
+                """,
+                (bbox_key,),
+            ).fetchall()
+
+        features: list[dict[str, Any]] = []
+        for row in rows:
+            if row["feature_id"] is None:
+                return None
+            features.append(_deserialize_hydro_feature_row(row))
+        return tuple(features)
+
+    def load_hydro_partial_contours_by_bbox(
+        self,
+        *,
+        bbox: Sequence[float],
+    ) -> tuple[dict[str, Any], ...] | None:
+        """Return stored hydro contour features for one bbox, even if it is still incomplete."""
+
+        bbox_key = _hydro_bbox_key(bbox)
+        with self._lock, self._connect() as conn:
+            bbox_row = conn.execute(
+                """
+                SELECT bbox_key
+                FROM map_hydro_bbox_cache
+                WHERE bbox_key = ?
+                """,
+                (bbox_key,),
+            ).fetchone()
+            if bbox_row is None:
+                return None
+
+            rows = conn.execute(
+                """
+                SELECT
+                    map_hydro_features.feature_id,
+                    map_hydro_features.inspire_id,
+                    map_hydro_features.collection,
+                    map_hydro_features.properties_json,
+                    map_hydro_features.geometry_json
+                FROM map_hydro_bbox_features
+                LEFT JOIN map_hydro_features
+                    ON map_hydro_features.feature_id = map_hydro_bbox_features.feature_id
+                WHERE map_hydro_bbox_features.bbox_key = ?
+                ORDER BY map_hydro_bbox_features.feature_order ASC
+                """,
+                (bbox_key,),
+            ).fetchall()
+
+        features: list[dict[str, Any]] = []
+        for row in rows:
+            if row["feature_id"] is None:
+                return None
+            features.append(_deserialize_hydro_feature_row(row))
+        return tuple(features)
+
+    def load_hydro_bbox_download_state(
+        self,
+        *,
+        bbox: Sequence[float],
+    ) -> HydroBBoxDownloadState | None:
+        """Return cached hydro bbox download state, including resume pointers."""
+
+        bbox_key = _hydro_bbox_key(bbox)
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    map_hydro_bbox_cache.bbox_key,
+                    map_hydro_bbox_cache.is_complete,
+                    map_hydro_bbox_cache.resume_collection,
+                    map_hydro_bbox_cache.resume_url,
+                    COUNT(map_hydro_bbox_features.feature_id) AS feature_count
+                FROM map_hydro_bbox_cache
+                LEFT JOIN map_hydro_bbox_features
+                    ON map_hydro_bbox_features.bbox_key = map_hydro_bbox_cache.bbox_key
+                WHERE map_hydro_bbox_cache.bbox_key = ?
+                GROUP BY
+                    map_hydro_bbox_cache.bbox_key,
+                    map_hydro_bbox_cache.is_complete,
+                    map_hydro_bbox_cache.resume_collection,
+                    map_hydro_bbox_cache.resume_url
+                """,
+                (bbox_key,),
+            ).fetchone()
+
+        if row is None:
+            return None
+        return HydroBBoxDownloadState(
+            bbox_key=str(row["bbox_key"]),
+            is_complete=bool(row["is_complete"]),
+            resume_collection=(
+                str(row["resume_collection"]) if row["resume_collection"] is not None else None
+            ),
+            resume_url=str(row["resume_url"]) if row["resume_url"] is not None else None,
+            feature_count=int(row["feature_count"]),
+        )
+
+    def begin_hydro_bbox_download(
+        self,
+        *,
+        bbox: Sequence[float],
+        resume_collection: str,
+        resume_url: str,
+        reset: bool = False,
+    ) -> None:
+        """Mark a hydro bbox as incomplete and record where paging should resume."""
+
+        normalized_collection = resume_collection.strip()
+        normalized_url = resume_url.strip()
+        if not normalized_collection:
+            raise ValueError("resume_collection must not be empty.")
+        if not normalized_url:
+            raise ValueError("resume_url must not be empty.")
+
+        bbox_key = _hydro_bbox_key(bbox)
+        min_lon, min_lat, max_lon, max_lat = [float(value) for value in bbox]
+        now = _to_iso(datetime.now(timezone.utc))
+
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO map_hydro_bbox_cache (
+                    bbox_key,
+                    min_lon,
+                    min_lat,
+                    max_lon,
+                    max_lat,
+                    is_complete,
+                    resume_collection,
+                    resume_url,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+                ON CONFLICT(bbox_key)
+                DO UPDATE SET
+                    min_lon = excluded.min_lon,
+                    min_lat = excluded.min_lat,
+                    max_lon = excluded.max_lon,
+                    max_lat = excluded.max_lat,
+                    is_complete = excluded.is_complete,
+                    resume_collection = excluded.resume_collection,
+                    resume_url = excluded.resume_url,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    bbox_key,
+                    min_lon,
+                    min_lat,
+                    max_lon,
+                    max_lat,
+                    normalized_collection,
+                    normalized_url,
+                    now,
+                    now,
+                ),
+            )
+            if reset:
+                conn.execute(
+                    """
+                    DELETE FROM map_hydro_bbox_features
+                    WHERE bbox_key = ?
+                    """,
+                    (bbox_key,),
+                )
+
+    def append_hydro_contour_page(
+        self,
+        *,
+        bbox: Sequence[float],
+        features: Sequence[dict[str, Any]],
+        next_collection: str | None,
+        next_url: str | None,
+        is_complete: bool,
+    ) -> None:
+        """Append one page of hydro features and update bbox resume status."""
+
+        if is_complete and (next_collection is not None or next_url is not None):
+            raise ValueError("Completed bbox downloads must not keep resume pointers.")
+        if not is_complete and next_collection is None:
+            raise ValueError("Incomplete bbox downloads require a resume collection.")
+
+        bbox_key = _hydro_bbox_key(bbox)
+        min_lon, min_lat, max_lon, max_lat = [float(value) for value in bbox]
+        now = _to_iso(datetime.now(timezone.utc))
+
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COALESCE(MAX(feature_order), -1) AS max_feature_order
+                FROM map_hydro_bbox_features
+                WHERE bbox_key = ?
+                """,
+                (bbox_key,),
+            ).fetchone()
+            next_feature_order = int(row["max_feature_order"]) + 1
+
+            conn.execute(
+                """
+                INSERT INTO map_hydro_bbox_cache (
+                    bbox_key,
+                    min_lon,
+                    min_lat,
+                    max_lon,
+                    max_lat,
+                    is_complete,
+                    resume_collection,
+                    resume_url,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(bbox_key)
+                DO UPDATE SET
+                    min_lon = excluded.min_lon,
+                    min_lat = excluded.min_lat,
+                    max_lon = excluded.max_lon,
+                    max_lat = excluded.max_lat,
+                    is_complete = excluded.is_complete,
+                    resume_collection = excluded.resume_collection,
+                    resume_url = excluded.resume_url,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    bbox_key,
+                    min_lon,
+                    min_lat,
+                    max_lon,
+                    max_lat,
+                    1 if is_complete else 0,
+                    next_collection,
+                    next_url,
+                    now,
+                    now,
+                ),
+            )
+
+            for feature_order, feature in enumerate(features, start=next_feature_order):
+                normalized = _normalize_hydro_feature(feature)
+                conn.execute(
+                    """
+                    INSERT INTO map_hydro_features (
+                        feature_id,
+                        inspire_id,
+                        collection,
+                        properties_json,
+                        geometry_json,
+                        feature_min_lon,
+                        feature_min_lat,
+                        feature_max_lon,
+                        feature_max_lat,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(feature_id)
+                    DO UPDATE SET
+                        inspire_id = excluded.inspire_id,
+                        collection = excluded.collection,
+                        properties_json = excluded.properties_json,
+                        geometry_json = excluded.geometry_json,
+                        feature_min_lon = excluded.feature_min_lon,
+                        feature_min_lat = excluded.feature_min_lat,
+                        feature_max_lon = excluded.feature_max_lon,
+                        feature_max_lat = excluded.feature_max_lat,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        normalized["feature_id"],
+                        normalized["inspire_id"],
+                        normalized["collection"],
+                        normalized["properties_json"],
+                        normalized["geometry_json"],
+                        normalized["feature_min_lon"],
+                        normalized["feature_min_lat"],
+                        normalized["feature_max_lon"],
+                        normalized["feature_max_lat"],
+                        now,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO map_hydro_bbox_features (
+                        bbox_key,
+                        feature_order,
+                        feature_id
+                    )
+                    VALUES (?, ?, ?)
+                    """,
+                    (bbox_key, feature_order, normalized["feature_id"]),
+                )
+
+    def save_hydro_contours_for_bbox(
+        self,
+        *,
+        bbox: Sequence[float],
+        features: Sequence[dict[str, Any]],
+    ) -> None:
+        """Upsert hydro contour features and map one bbox to their identifiers."""
+
+        bbox_key = _hydro_bbox_key(bbox)
+        min_lon, min_lat, max_lon, max_lat = [float(value) for value in bbox]
+        now = _to_iso(datetime.now(timezone.utc))
+
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO map_hydro_bbox_cache (
+                    bbox_key,
+                    min_lon,
+                    min_lat,
+                    max_lon,
+                    max_lat,
+                    is_complete,
+                    resume_collection,
+                    resume_url,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, 1, NULL, NULL, ?, ?)
+                ON CONFLICT(bbox_key)
+                DO UPDATE SET
+                    min_lon = excluded.min_lon,
+                    min_lat = excluded.min_lat,
+                    max_lon = excluded.max_lon,
+                    max_lat = excluded.max_lat,
+                    is_complete = excluded.is_complete,
+                    resume_collection = excluded.resume_collection,
+                    resume_url = excluded.resume_url,
+                    updated_at = excluded.updated_at
+                """,
+                (bbox_key, min_lon, min_lat, max_lon, max_lat, now, now),
+            )
+            conn.execute(
+                """
+                DELETE FROM map_hydro_bbox_features
+                WHERE bbox_key = ?
+                """,
+                (bbox_key,),
+            )
+
+            for feature_order, feature in enumerate(features):
+                normalized = _normalize_hydro_feature(feature)
+                conn.execute(
+                    """
+                    INSERT INTO map_hydro_features (
+                        feature_id,
+                        inspire_id,
+                        collection,
+                        properties_json,
+                        geometry_json,
+                        feature_min_lon,
+                        feature_min_lat,
+                        feature_max_lon,
+                        feature_max_lat,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(feature_id)
+                    DO UPDATE SET
+                        inspire_id = excluded.inspire_id,
+                        collection = excluded.collection,
+                        properties_json = excluded.properties_json,
+                        geometry_json = excluded.geometry_json,
+                        feature_min_lon = excluded.feature_min_lon,
+                        feature_min_lat = excluded.feature_min_lat,
+                        feature_max_lon = excluded.feature_max_lon,
+                        feature_max_lat = excluded.feature_max_lat,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        normalized["feature_id"],
+                        normalized["inspire_id"],
+                        normalized["collection"],
+                        normalized["properties_json"],
+                        normalized["geometry_json"],
+                        normalized["feature_min_lon"],
+                        normalized["feature_min_lat"],
+                        normalized["feature_max_lon"],
+                        normalized["feature_max_lat"],
+                        now,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO map_hydro_bbox_features (
+                        bbox_key,
+                        feature_order,
+                        feature_id
+                    )
+                    VALUES (?, ?, ?)
+                    """,
+                    (bbox_key, feature_order, normalized["feature_id"]),
+                )
+
+    def load_hydro_feature_by_inspire_id(self, inspire_id: str) -> dict[str, Any] | None:
+        """Return one stored hydro feature by inspireId."""
+
+        normalized_inspire_id = inspire_id.strip()
+        if not normalized_inspire_id:
+            raise ValueError("inspire_id must not be empty.")
+
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    feature_id,
+                    inspire_id,
+                    collection,
+                    properties_json,
+                    geometry_json
+                FROM map_hydro_features
+                WHERE inspire_id = ?
+                """,
+                (normalized_inspire_id,),
+            ).fetchone()
+
+        if row is None:
+            return None
+        return _deserialize_hydro_feature_row(row)
 
     def count_observations(self) -> int:
         """Return total number of observation rows."""
@@ -506,6 +1036,22 @@ class SQLiteStore:
         conn.row_factory = sqlite3.Row
         return conn
 
+    def _ensure_column(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        table_name: str,
+        column_name: str,
+        definition: str,
+    ) -> None:
+        columns = {
+            str(row["name"])
+            for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
+        if column_name in columns:
+            return
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
     def _infer_band(self, source: str) -> ScanBand:
         return ScanBand.ADSB if source == Source.ADSB.value else ScanBand.AIS
 
@@ -604,6 +1150,90 @@ def _parse_payload_json(value: str) -> dict[str, object]:
     if isinstance(payload, dict):
         return payload
     return {}
+
+
+def _hydro_bbox_key(bbox: Sequence[float]) -> str:
+    if len(bbox) != 4:
+        raise ValueError("bbox must contain exactly four coordinates.")
+    return ",".join(f"{float(value):.6f}" for value in bbox)
+
+
+def _normalize_hydro_feature(feature: dict[str, Any]) -> dict[str, Any]:
+    geometry = feature.get("geometry")
+    if not isinstance(geometry, dict):
+        raise ValueError("Hydro contour feature is missing a geometry object.")
+
+    properties = feature.get("properties")
+    if not isinstance(properties, dict):
+        properties = {}
+
+    inspire_id = properties.get("inspireId")
+    normalized_inspire_id = None
+    if isinstance(inspire_id, str):
+        normalized_inspire_id = inspire_id.strip() or None
+
+    geometry_json = json.dumps(geometry, ensure_ascii=False, sort_keys=True)
+    properties_json = json.dumps(properties, ensure_ascii=False, sort_keys=True)
+    feature_id = normalized_inspire_id or (
+        "anon:" + hashlib.sha256(f"{geometry_json}|{properties_json}".encode("utf-8")).hexdigest()
+    )
+    collection = str(properties.get("collection") or "unknown")
+    feature_bounds = _hydro_geometry_bounds(geometry)
+
+    return {
+        "feature_id": feature_id,
+        "inspire_id": normalized_inspire_id,
+        "collection": collection,
+        "properties_json": properties_json,
+        "geometry_json": geometry_json,
+        "feature_min_lon": feature_bounds[0],
+        "feature_min_lat": feature_bounds[1],
+        "feature_max_lon": feature_bounds[2],
+        "feature_max_lat": feature_bounds[3],
+    }
+
+
+def _deserialize_hydro_feature_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "type": "Feature",
+        "properties": json.loads(row["properties_json"]),
+        "geometry": json.loads(row["geometry_json"]),
+    }
+
+
+def _hydro_geometry_bounds(
+    geometry: dict[str, Any],
+) -> tuple[float | None, float | None, float | None, float | None]:
+    geometry_type = geometry.get("type")
+    coordinates = geometry.get("coordinates")
+    points: list[tuple[float, float]] = []
+
+    if geometry_type == "LineString" and isinstance(coordinates, list):
+        points = _flatten_coordinate_pairs(coordinates)
+    elif geometry_type == "MultiLineString" and isinstance(coordinates, list):
+        for line in coordinates:
+            if isinstance(line, list):
+                points.extend(_flatten_coordinate_pairs(line))
+
+    if not points:
+        return (None, None, None, None)
+
+    longitudes = [point[0] for point in points]
+    latitudes = [point[1] for point in points]
+    return (min(longitudes), min(latitudes), max(longitudes), max(latitudes))
+
+
+def _flatten_coordinate_pairs(raw_pairs: list[Any]) -> list[tuple[float, float]]:
+    pairs: list[tuple[float, float]] = []
+    for pair in raw_pairs:
+        if (
+            isinstance(pair, list)
+            and len(pair) >= 2
+            and isinstance(pair[0], (int, float))
+            and isinstance(pair[1], (int, float))
+        ):
+            pairs.append((float(pair[0]), float(pair[1])))
+    return pairs
 
 
 def _clean_payload_text(value: object) -> str | None:

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+from threading import Event
+import time
 
 from app.config import Config
 from app.map_contours import (
+    BackgroundHydroContourProvider,
     CachingMapContourProvider,
+    DatabaseHydroContourProvider,
     HydroContourProvider,
     MapContourRequest,
     MapContourResult,
@@ -17,6 +22,7 @@ from app.map_contours import (
     _project_bbox,
     build_map_contour_service,
 )
+from app.store import SQLiteStore
 
 
 class StaticProvider:
@@ -112,6 +118,285 @@ def test_persistent_map_contour_provider_does_not_store_error_results(tmp_path) 
     assert not list((tmp_path / "map-cache").rglob("*.json"))
 
 
+def test_database_hydro_contour_provider_reuses_cached_bbox_and_supports_inspire_lookup(
+    tmp_path,
+) -> None:
+    calls: list[str] = []
+
+    def fake_fetch_json(url: str, headers: dict[str, str]) -> dict:
+        calls.append(url)
+        assert headers["Authorization"].startswith("Basic ")
+        if "LandWaterBoundary" in url:
+            return {
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {"inspireId": "coast-1"},
+                        "geometry": {
+                            "type": "LineString",
+                            "coordinates": [[18.0, 59.0], [18.2, 59.1]],
+                        },
+                    }
+                ]
+            }
+        if "StandingWater" in url:
+            return {
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {"inspireId": "lake-1"},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [
+                                [[18.3, 59.2], [18.4, 59.2], [18.4, 59.3], [18.3, 59.2]]
+                            ],
+                        },
+                    }
+                ]
+            }
+        raise AssertionError(f"Unexpected url: {url}")
+
+    store = SQLiteStore(tmp_path / "hydro.sqlite3")
+    store.initialize()
+    provider = DatabaseHydroContourProvider(
+        HydroContourProvider(
+            base_url="https://hydro.example.test/ogc",
+            username="user",
+            password="pass",
+            fetch_json=fake_fetch_json,
+        ),
+        store=store,
+    )
+    request = MapContourRequest(source="hydro", bbox=(18.0, 59.0, 18.8, 59.8))
+
+    first = provider.fetch(request)
+    second = provider.fetch(request)
+
+    assert len(calls) == 2
+    assert first.status == "ok"
+    assert second.status == "ok"
+    assert len(second.features) == 2
+    assert second.features[1]["geometry"]["type"] == "MultiLineString"
+    stored = store.load_hydro_feature_by_inspire_id("lake-1")
+    assert stored is not None
+    assert stored["geometry"]["type"] == "MultiLineString"
+
+
+def test_database_hydro_contour_provider_resumes_from_incomplete_pagination(tmp_path) -> None:
+    calls: list[str] = []
+    failed_once = {"value": False}
+
+    def fake_fetch_json(url: str, headers: dict[str, str]) -> dict:
+        calls.append(url)
+        assert headers["Authorization"].startswith("Basic ")
+        if "LandWaterBoundary" in url and "page=2" not in url:
+            return {
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {"inspireId": "coast-1"},
+                        "geometry": {
+                            "type": "LineString",
+                            "coordinates": [[18.0, 59.0], [18.2, 59.1]],
+                        },
+                    }
+                ],
+                "links": [{"rel": "next", "href": "?page=2"}],
+            }
+        if "LandWaterBoundary" in url and "page=2" in url:
+            if not failed_once["value"]:
+                failed_once["value"] = True
+                raise RuntimeError("temporary upstream failure")
+            return {
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {"inspireId": "coast-2"},
+                        "geometry": {
+                            "type": "LineString",
+                            "coordinates": [[18.2, 59.1], [18.3, 59.2]],
+                        },
+                    }
+                ]
+            }
+        if "StandingWater" in url:
+            return {
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {"inspireId": "lake-1"},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [
+                                [[18.3, 59.2], [18.4, 59.2], [18.4, 59.3], [18.3, 59.2]]
+                            ],
+                        },
+                    }
+                ]
+            }
+        raise AssertionError(f"Unexpected url: {url}")
+
+    store = SQLiteStore(tmp_path / "hydro-resume.sqlite3")
+    store.initialize()
+    provider = DatabaseHydroContourProvider(
+        HydroContourProvider(
+            base_url="https://hydro.example.test/ogc",
+            username="user",
+            password="pass",
+            fetch_json=fake_fetch_json,
+        ),
+        store=store,
+    )
+    request = MapContourRequest(source="hydro", bbox=(18.0, 59.0, 18.8, 59.8))
+
+    first = provider.fetch(request)
+    state = store.load_hydro_bbox_download_state(bbox=request.bbox)
+    assert first.status == "error"
+    assert state is not None
+    assert state.is_complete is False
+    assert state.resume_collection == "LandWaterBoundary"
+    assert state.resume_url == "https://hydro.example.test/ogc/collections/LandWaterBoundary/items?page=2"
+    assert state.feature_count == 1
+    assert store.load_hydro_contours_by_bbox(bbox=request.bbox) is None
+
+    second = provider.fetch(request)
+    state = store.load_hydro_bbox_download_state(bbox=request.bbox)
+    assert second.status == "ok"
+    assert len(second.features) == 3
+    assert state is not None
+    assert state.is_complete is True
+    assert state.resume_collection is None
+    assert state.resume_url is None
+    assert sum("LandWaterBoundary" in url and "page=2" not in url for url in calls) == 1
+
+
+def test_background_hydro_contour_provider_returns_pending_while_worker_runs(tmp_path) -> None:
+    started = Event()
+    release = Event()
+
+    def fake_fetch_json(url: str, headers: dict[str, str]) -> dict:
+        assert headers["Authorization"].startswith("Basic ")
+        started.set()
+        release.wait(timeout=1.0)
+        if "LandWaterBoundary" in url:
+            return {
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {"inspireId": "coast-1"},
+                        "geometry": {
+                            "type": "LineString",
+                            "coordinates": [[18.0, 59.0], [18.2, 59.1]],
+                        },
+                    }
+                ]
+            }
+        if "StandingWater" in url:
+            return {"features": []}
+        raise AssertionError(f"Unexpected url: {url}")
+
+    store = SQLiteStore(tmp_path / "hydro-background.sqlite3")
+    store.initialize()
+    background = BackgroundHydroContourProvider(
+        DatabaseHydroContourProvider(
+            HydroContourProvider(
+                base_url="https://hydro.example.test/ogc",
+                username="user",
+                password="pass",
+                fetch_json=fake_fetch_json,
+            ),
+            store=store,
+        ),
+        store=store,
+        poll_hint_seconds=0.01,
+    )
+    request = MapContourRequest(source="hydro", bbox=(18.0, 59.0, 18.8, 59.8))
+
+    first = background.fetch(request)
+    assert first.status == "pending"
+    assert first.details["download_in_progress"] is True
+    assert len(first.features) == 0
+    assert started.wait(timeout=1.0) is True
+
+    second = background.fetch(request)
+    assert second.status == "pending"
+
+    release.set()
+    deadline = time.monotonic() + 1.0
+    completed = None
+    while time.monotonic() < deadline:
+        completed = background.fetch(request)
+        if completed.status == "ok":
+            break
+        time.sleep(0.01)
+
+    assert completed is not None
+    assert completed.status == "ok"
+    assert len(completed.features) == 1
+
+
+def test_background_hydro_contour_provider_returns_partial_features_while_pending(tmp_path) -> None:
+    release = Event()
+
+    def fake_fetch_json(url: str, headers: dict[str, str]) -> dict:
+        assert headers["Authorization"].startswith("Basic ")
+        if "LandWaterBoundary" in url and "page=2" not in url:
+            return {
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {"inspireId": "coast-1"},
+                        "geometry": {
+                            "type": "LineString",
+                            "coordinates": [[18.0, 59.0], [18.2, 59.1]],
+                        },
+                    }
+                ],
+                "links": [{"rel": "next", "href": "?page=2"}],
+            }
+        if "LandWaterBoundary" in url and "page=2" in url:
+            release.wait(timeout=1.0)
+            return {"features": []}
+        if "StandingWater" in url:
+            return {"features": []}
+        raise AssertionError(f"Unexpected url: {url}")
+
+    store = SQLiteStore(tmp_path / "hydro-background-partial.sqlite3")
+    store.initialize()
+    background = BackgroundHydroContourProvider(
+        DatabaseHydroContourProvider(
+            HydroContourProvider(
+                base_url="https://hydro.example.test/ogc",
+                username="user",
+                password="pass",
+                fetch_json=fake_fetch_json,
+            ),
+            store=store,
+        ),
+        store=store,
+        poll_hint_seconds=0.01,
+    )
+    request = MapContourRequest(source="hydro", bbox=(18.0, 59.0, 18.8, 59.8))
+
+    first = background.fetch(request)
+    assert first.status == "pending"
+
+    deadline = time.monotonic() + 1.0
+    pending_with_partial = None
+    while time.monotonic() < deadline:
+        pending_with_partial = background.fetch(request)
+        if pending_with_partial.status == "pending" and len(pending_with_partial.features) == 1:
+            break
+        time.sleep(0.01)
+
+    assert pending_with_partial is not None
+    assert pending_with_partial.status == "pending"
+    assert len(pending_with_partial.features) == 1
+    assert pending_with_partial.features[0]["properties"]["inspireId"] == "coast-1"
+
+    release.set()
+
+
 def test_hydro_provider_converts_polygons_and_follows_pagination() -> None:
     calls: list[str] = []
 
@@ -183,6 +468,30 @@ def test_hydro_provider_converts_polygons_and_follows_pagination() -> None:
     assert result.features[2]["geometry"]["type"] == "MultiLineString"
     assert result.features[2]["properties"]["collection"] == "StandingWater"
     assert any("page=2" in url for url in calls)
+
+
+def test_hydro_provider_logs_when_calling_lantmateriet(caplog) -> None:
+    def fake_fetch_json(url: str, headers: dict[str, str]) -> dict:
+        assert headers["Authorization"].startswith("Basic ")
+        return {"features": []}
+
+    provider = HydroContourProvider(
+        base_url="https://hydro.example.test/ogc",
+        username="user",
+        password="pass",
+        fetch_json=fake_fetch_json,
+    )
+
+    with caplog.at_level(logging.INFO, logger="app.map_contours"):
+        result = provider.fetch(
+            MapContourRequest(source="hydro", bbox=(18.0, 59.0, 18.8, 59.8), range_km=12.0)
+        )
+
+    assert result.status == "ok"
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("Calling Lantmateriet hydro API" in message for message in messages)
+    assert any("collection=LandWaterBoundary" in message for message in messages)
+    assert any("collection=StandingWater" in message for message in messages)
 
 
 def test_sweref99tm_projection_roundtrips_coordinates() -> None:
@@ -277,6 +586,48 @@ def test_markhojd_direct_provider_generates_contour_features_from_sampled_points
     assert len(result.features) > 0
     assert result.features[0]["geometry"]["type"] == "LineString"
     assert "elevation_m" in result.features[0]["properties"]
+
+
+def test_markhojd_direct_provider_logs_when_calling_lantmateriet(caplog) -> None:
+    def fake_post_json(url: str, headers: dict[str, str], body: dict) -> dict:
+        assert url.endswith("/hojd")
+        assert headers["Authorization"].startswith("Basic ")
+        response_coords = []
+        for index, (easting, northing) in enumerate(body["coordinates"]):
+            response_coords.append([easting, northing, 10.0 + float(index)])
+        return {
+            "type": "Feature",
+            "geometry": {
+                "type": "MultiPoint",
+                "coordinates": response_coords,
+            },
+            "properties": {"nodatavalue": -9999},
+        }
+
+    provider = MarkhojdDirectContourProvider(
+        base_url="https://markhojd.example.test",
+        username="user",
+        password="pass",
+        srid=3006,
+        sample_step_m=500,
+        contour_interval_m=5,
+        max_points_per_request=1000,
+        post_json=fake_post_json,
+    )
+
+    with caplog.at_level(logging.INFO, logger="app.map_contours"):
+        result = provider.fetch(
+            MapContourRequest(
+                source="elevation",
+                bbox=(18.05, 59.30, 18.07, 59.32),
+                range_km=5.0,
+            )
+        )
+
+    assert result.status == "ok"
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("Calling Lantmateriet Markhojd Direkt" in message for message in messages)
+    assert any("sample_points=" in message for message in messages)
 
 
 def test_decode_height_grid_respects_nodata_value() -> None:

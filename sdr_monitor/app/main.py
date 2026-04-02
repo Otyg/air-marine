@@ -180,7 +180,7 @@ def create_service_components(
         state=state,
         store=store,
         scanner=scanner,
-        map_contour_service=build_map_contour_service(resolved),
+        map_contour_service=build_map_contour_service(resolved, store=store),
         service_name=resolved.service_name,
         radar_center_lat=resolved.radar_center_lat,
         radar_center_lon=resolved.radar_center_lon,

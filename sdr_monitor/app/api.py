@@ -659,10 +659,10 @@ def _build_radar_html(
       </div>
       <div class="hud-right">
         <div class="zoom-controls">
-          <button id="zoomOut" type="button" aria-label="Minska range">-</button>
+          <button id="zoomOut" type="button" aria-label="Zooma ut">-</button>
           <input id="rangeInput" type="text" inputmode="decimal" value="10" aria-label="Range km" />
           <span class="range-unit">km</span>
-          <button id="zoomIn" type="button" aria-label="Öka range">+</button>
+          <button id="zoomIn" type="button" aria-label="Zooma in">+</button>
           <button id="zoomReset" type="button" aria-label="Reset range">Hem</button>
         </div>
         <label class="scan-mode-control" for="scanModeSelect">
@@ -676,6 +676,10 @@ def _build_radar_html(
         <label class="toggle-control" for="showFixedNames">
           <input id="showFixedNames" type="checkbox" checked />
           Visa namn fasta punkter
+        </label>
+        <label class="toggle-control" for="showTargetLabels">
+          <input id="showTargetLabels" type="checkbox" />
+          Visa labels objekt
         </label>
         <label class="toggle-control" for="showMapContours">
           <input id="showMapContours" type="checkbox" checked />
@@ -744,6 +748,7 @@ def _build_radar_html(
     const scanModeSelect = document.getElementById("scanModeSelect");
     const rangeInput = document.getElementById("rangeInput");
     const showFixedNamesCheckbox = document.getElementById("showFixedNames");
+    const showTargetLabelsCheckbox = document.getElementById("showTargetLabels");
     const showMapContoursCheckbox = document.getElementById("showMapContours");
     const showLowSpeedCheckbox = document.getElementById("showLowSpeed");
     const targetTypeFilterSelect = document.getElementById("targetTypeFilter");
@@ -764,6 +769,7 @@ def _build_radar_html(
     let showLowSpeed = false;
     let targetTypeFilter = "all";
     let showFixedNames = true;
+    let showTargetLabels = false;
     let showMapContours = true;
     let selectedTargetId = null;
     const selectedHistoryByTargetId = new Map();
@@ -785,7 +791,9 @@ def _build_radar_html(
     let mapContourError = null;
     let mapContourRequestKey = null;
     let mapContourLoadedKey = null;
+    let mapContourPendingKey = null;
     let mapContourRequestInFlight = false;
+    let mapContourRetryTimer = null;
 
     function clampPollMs(value) {{
       if (!Number.isFinite(value)) return defaultPollMs;
@@ -1645,7 +1653,7 @@ def _build_radar_html(
 
       ctx.save();
       ctx.lineWidth = 1.5;
-      ctx.setLineDash([]);
+      ctx.setLineDash([4, 3]);
       ctx.strokeStyle = selectedTargetColor;
       ctx.fillStyle = selectedTargetColor;
       ctx.globalAlpha = 0.95;
@@ -1754,7 +1762,7 @@ def _build_radar_html(
       ctx.beginPath();
       ctx.arc(cx, cy, radius, 0, Math.PI * 2);
       ctx.clip();
-      ctx.strokeStyle = "#1d5f82";
+      ctx.strokeStyle = "#143314";
       ctx.lineWidth = 1;
       ctx.globalAlpha = 0.9;
       for (const feature of mapContours) {{
@@ -1802,6 +1810,25 @@ def _build_radar_html(
 
     function targetTypeIcon(kind) {{
       return kind === "vessel" ? "⛵" : "✈";
+    }}
+
+    function targetDisplayLabel(target) {{
+      if (!target || typeof target !== "object") return "";
+      const label = typeof target.label === "string" ? target.label.trim() : "";
+      if (label) return label;
+      const targetId = typeof target.target_id === "string" ? target.target_id.trim() : "";
+      return targetId;
+    }}
+
+    function drawMapTargetLabel(label, x, y, color) {{
+      if (typeof label !== "string" || !label.trim()) return;
+      ctx.save();
+      ctx.font = "12px Courier New, monospace";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = color || "#9be89b";
+      ctx.fillText(label, x + 8, y - 10);
+      ctx.restore();
     }}
 
     function matchesTargetTypeFilter(target, filterValue) {{
@@ -1878,10 +1905,30 @@ def _build_radar_html(
       );
     }}
 
+    function clearMapContourRetryTimer() {{
+      if (mapContourRetryTimer !== null) {{
+        window.clearTimeout(mapContourRetryTimer);
+        mapContourRetryTimer = null;
+      }}
+    }}
+
+    function scheduleMapContourRetry() {{
+      clearMapContourRetryTimer();
+      mapContourRetryTimer = window.setTimeout(() => {{
+        mapContourRetryTimer = null;
+        mapContourPendingKey = null;
+        void loadMapContoursForView(getViewMetrics().rangeKm);
+      }}, 750);
+    }}
+
     async function loadMapContoursForView(rangeKm) {{
       if (!showMapContours || mapContourRequestInFlight) return;
       const request = mapContourRequestKeyForView(rangeKm);
-      if (request.key === mapContourLoadedKey || request.key === mapContourRequestKey) return;
+      if (
+        request.key === mapContourLoadedKey
+        || request.key === mapContourRequestKey
+        || request.key === mapContourPendingKey
+      ) return;
 
       mapContourRequestInFlight = true;
       mapContourRequestKey = request.key;
@@ -1902,11 +1949,25 @@ def _build_radar_html(
         mapContourError = typeof payload.error === "string" && payload.error
           ? payload.error
           : null;
-        mapContourLoadedKey = request.key;
+        clearMapContourRetryTimer();
+        if (mapContourStatus === "pending") {{
+          mapContourPendingKey = request.key;
+          mapContourLoadedKey = null;
+          scheduleMapContourRetry();
+        }} else if (mapContourStatus === "ok") {{
+          mapContourPendingKey = null;
+          mapContourLoadedKey = request.key;
+        }} else {{
+          mapContourPendingKey = null;
+          mapContourLoadedKey = null;
+        }}
       }} catch (err) {{
         mapContours = [];
         mapContourStatus = "error";
         mapContourError = err instanceof Error ? err.message : String(err);
+        mapContourPendingKey = null;
+        mapContourLoadedKey = null;
+        clearMapContourRetryTimer();
       }} finally {{
         mapContourRequestInFlight = false;
         mapContourRequestKey = null;
@@ -2000,6 +2061,9 @@ def _build_radar_html(
         ctx.fillStyle = markerColor;
         const symbol = target.kind === "vessel" ? "#" : "+";
         ctx.fillText(symbol, x, y);
+        if (showTargetLabels) {{
+          drawMapTargetLabel(targetDisplayLabel(target), x, y, markerColor);
+        }}
         visibleTargets.push(target);
         visible += 1;
       }}
@@ -2016,7 +2080,7 @@ def _build_radar_html(
         ? `Kartlager: ${{mapContourSource}}/${{mapContourStatus}}`
         : "Kartlager: av";
       const contourErrorText = showMapContours && mapContourError ? ` | Konturer: ${{mapContourError}}` : "";
-      meta.textContent = `Home: ${{homeCenter.lat.toFixed(6)}}, ${{homeCenter.lon.toFixed(6)}} | View: ${{viewCenter.lat.toFixed(6)}}, ${{viewCenter.lon.toFixed(6)}} | Range: ${{rangeKm.toFixed(2)}} km | Ringavstand: ${{ringSpacingKm.toFixed(2)}} km | Läge: ${{scanModeLabel(scanMode)}} | UI-poll: ${{(nextPollMs / 1000).toFixed(2)}} s | ${{contourStatus}} | ${{status}}${{contourErrorText}}`;
+      meta.textContent = `Home: ${{homeCenter.lat.toFixed(6)}}, ${{homeCenter.lon.toFixed(6)}} | View: ${{viewCenter.lat.toFixed(6)}}, ${{viewCenter.lon.toFixed(6)}} | Ringavstand: ${{ringSpacingKm.toFixed(2)}} km | UI-poll: ${{(nextPollMs / 1000).toFixed(2)}} s | ${{contourStatus}} | ${{status}}${{contourErrorText}}`;
     }}
 
     async function loadTargets() {{
@@ -2077,8 +2141,8 @@ def _build_radar_html(
     }}
 
     window.addEventListener("resize", draw);
-    zoomInButton.addEventListener("click", increaseRange);
-    zoomOutButton.addEventListener("click", decreaseRange);
+    zoomInButton.addEventListener("click", decreaseRange);
+    zoomOutButton.addEventListener("click", increaseRange);
     zoomResetButton.addEventListener("click", resetZoom);
     if (scanModeSelect instanceof HTMLSelectElement) {{
       scanModeSelect.addEventListener("change", () => {{
@@ -2126,10 +2190,16 @@ def _build_radar_html(
       showFixedNames = showFixedNamesCheckbox.checked;
       draw();
     }});
+    showTargetLabelsCheckbox.addEventListener("change", () => {{
+      showTargetLabels = showTargetLabelsCheckbox.checked;
+      draw();
+    }});
     showMapContoursCheckbox.addEventListener("change", () => {{
       showMapContours = showMapContoursCheckbox.checked;
       if (!showMapContours) {{
         mapContourError = null;
+        mapContourPendingKey = null;
+        clearMapContourRetryTimer();
       }}
       draw();
     }});
@@ -2416,15 +2486,19 @@ def _build_history_radar_html(
       </div>
       <div class="hud-right">
         <div class="zoom-controls">
-          <button id="zoomOut" type="button" aria-label="Minska range">-</button>
+          <button id="zoomOut" type="button" aria-label="Zooma ut">-</button>
           <input id="rangeInput" type="text" inputmode="decimal" value="10" aria-label="Range km" />
           <span class="range-unit">km</span>
-          <button id="zoomIn" type="button" aria-label="Öka range">+</button>
+          <button id="zoomIn" type="button" aria-label="Zooma in">+</button>
           <button id="zoomReset" type="button" aria-label="Reset range">Hem</button>
         </div>
         <label class="toggle-control" for="showFixedNames">
           <input id="showFixedNames" type="checkbox" checked />
           Visa namn fasta punkter
+        </label>
+        <label class="toggle-control" for="showTargetLabels">
+          <input id="showTargetLabels" type="checkbox" />
+          Visa labels objekt
         </label>
         <label class="toggle-control" for="showMapContours">
           <input id="showMapContours" type="checkbox" checked />
@@ -2449,6 +2523,18 @@ def _build_history_radar_html(
               <option value="aircraft">Flygplan</option>
               <option value="vessel">Båtar</option>
             </select>
+          </label>
+          <label class="panel-filter-control" for="historyMinSpeedFilter">
+            Min topphastighet
+            <input
+              id="historyMinSpeedFilter"
+              type="number"
+              min="0"
+              step="1"
+              value="0"
+              inputmode="decimal"
+              aria-label="Filtrera historiska objekt på högsta rapporterade hastighet"
+            />
           </label>
         </div>
         <div id="historyObjectsSummary" class="side-panel-summary">0 objekt med historik</div>
@@ -2475,8 +2561,10 @@ def _build_history_radar_html(
     const zoomResetButton = document.getElementById("zoomReset");
     const rangeInput = document.getElementById("rangeInput");
     const showFixedNamesCheckbox = document.getElementById("showFixedNames");
+    const showTargetLabelsCheckbox = document.getElementById("showTargetLabels");
     const showMapContoursCheckbox = document.getElementById("showMapContours");
     const historyTargetTypeFilterSelect = document.getElementById("historyTargetTypeFilter");
+    const historyMinSpeedFilterInput = document.getElementById("historyMinSpeedFilter");
     const historyObjectsSummary = document.getElementById("historyObjectsSummary");
     const historyObjectsList = document.getElementById("historyObjectsList");
     const ctx = canvas.getContext("2d");
@@ -2486,6 +2574,7 @@ def _build_history_radar_html(
     let selectedTargetId = null;
     let selectedTargetKind = null;
     let historyTargetTypeFilter = "all";
+    let historyMinSpeedFilter = 0;
     let selectedTargetLabel = null;
     let selectedPositionCount = 0;
     let selectedLastSeen = null;
@@ -2496,6 +2585,7 @@ def _build_history_radar_html(
     let dragStart = null;
     let dragCurrent = null;
     let showFixedNames = true;
+    let showTargetLabels = false;
     let showMapContours = true;
     let mapContours = [];
     let mapContourSource = defaultMapSource;
@@ -2503,11 +2593,12 @@ def _build_history_radar_html(
     let mapContourError = null;
     let mapContourRequestKey = null;
     let mapContourLoadedKey = null;
+    let mapContourPendingKey = null;
     let mapContourRequestInFlight = false;
+    let mapContourRetryTimer = null;
     let historyTargetsInViewRequestKey = null;
     let historyTargetsInViewLoadedKey = null;
     let historyTargetsInViewRequestInFlight = false;
-
     function clampRangeKm(value) {{
       return Math.max(minRangeKm, Math.min(maxRangeKm, value));
     }}
@@ -2556,10 +2647,28 @@ def _build_history_radar_html(
       return kind === "vessel" ? "⛵" : "✈";
     }}
 
+    function drawMapTargetLabel(label, x, y, color) {{
+      if (typeof label !== "string" || !label.trim()) return;
+      ctx.save();
+      ctx.font = "12px Courier New, monospace";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = color || "#9be89b";
+      ctx.fillText(label, x + 8, y - 10);
+      ctx.restore();
+    }}
+
     function matchesTargetTypeFilter(target, filterValue) {{
       if (filterValue === "all") return true;
       if (!target || typeof target !== "object") return false;
       return target.kind === filterValue;
+    }}
+
+    function matchesHistorySpeedFilter(target, minSpeed) {{
+      if (!Number.isFinite(minSpeed) || minSpeed <= 0) return true;
+      if (!target || typeof target !== "object") return false;
+      const maxObservedSpeed = toOptionalNumber(target.max_observed_speed);
+      return Number.isFinite(maxObservedSpeed) && maxObservedSpeed >= minSpeed;
     }}
 
     function formatRangeValue(value) {{
@@ -2793,7 +2902,7 @@ def _build_history_radar_html(
       ctx.beginPath();
       ctx.arc(cx, cy, radius, 0, Math.PI * 2);
       ctx.clip();
-      ctx.strokeStyle = "#1d5f82";
+      ctx.strokeStyle = "#143314";
       ctx.lineWidth = 1;
       ctx.globalAlpha = 0.9;
       for (const feature of mapContours) {{
@@ -2817,10 +2926,30 @@ def _build_history_radar_html(
       ctx.restore();
     }}
 
+    function clearMapContourRetryTimer() {{
+      if (mapContourRetryTimer !== null) {{
+        window.clearTimeout(mapContourRetryTimer);
+        mapContourRetryTimer = null;
+      }}
+    }}
+
+    function scheduleMapContourRetry() {{
+      clearMapContourRetryTimer();
+      mapContourRetryTimer = window.setTimeout(() => {{
+        mapContourRetryTimer = null;
+        mapContourPendingKey = null;
+        void loadMapContoursForView(getViewMetrics().rangeKm);
+      }}, 750);
+    }}
+
     async function loadMapContoursForView(rangeKm) {{
       if (!showMapContours || mapContourRequestInFlight) return;
       const request = mapContourRequestKeyForView(rangeKm);
-      if (request.key === mapContourLoadedKey || request.key === mapContourRequestKey) return;
+      if (
+        request.key === mapContourLoadedKey
+        || request.key === mapContourRequestKey
+        || request.key === mapContourPendingKey
+      ) return;
 
       mapContourRequestInFlight = true;
       mapContourRequestKey = request.key;
@@ -2841,11 +2970,25 @@ def _build_history_radar_html(
         mapContourError = typeof payload.error === "string" && payload.error
           ? payload.error
           : null;
-        mapContourLoadedKey = request.key;
+        clearMapContourRetryTimer();
+        if (mapContourStatus === "pending") {{
+          mapContourPendingKey = request.key;
+          mapContourLoadedKey = null;
+          scheduleMapContourRetry();
+        }} else if (mapContourStatus === "ok") {{
+          mapContourPendingKey = null;
+          mapContourLoadedKey = request.key;
+        }} else {{
+          mapContourPendingKey = null;
+          mapContourLoadedKey = null;
+        }}
       }} catch (err) {{
         mapContours = [];
         mapContourStatus = "error";
         mapContourError = err instanceof Error ? err.message : String(err);
+        mapContourPendingKey = null;
+        mapContourLoadedKey = null;
+        clearMapContourRetryTimer();
       }} finally {{
         mapContourRequestInFlight = false;
         mapContourRequestKey = null;
@@ -3063,7 +3206,7 @@ def _build_history_radar_html(
 
       ctx.save();
       ctx.lineWidth = 1.5;
-      ctx.setLineDash([]);
+      ctx.setLineDash([4, 3]);
       ctx.strokeStyle = selectedTargetColor;
       ctx.fillStyle = selectedTargetColor;
       ctx.globalAlpha = 0.95;
@@ -3109,6 +3252,9 @@ def _build_history_radar_html(
       ctx.fillStyle = selectedTargetColor;
       const symbol = selectedTargetKind === "vessel" ? "#" : "+";
       ctx.fillText(symbol, x, y);
+      if (showTargetLabels) {{
+        drawMapTargetLabel(selectedTargetLabel || selectedTargetId || "", x, y, selectedTargetColor);
+      }}
       ctx.restore();
     }}
 
@@ -3126,6 +3272,10 @@ def _build_history_radar_html(
           const positionCount = Number.isFinite(Number(target.position_count))
             ? Number(target.position_count)
             : 0;
+          const maxObservedSpeed = toOptionalNumber(target.max_observed_speed);
+          const maxObservedSpeedText = Number.isFinite(maxObservedSpeed)
+            ? String(maxObservedSpeed)
+            : "-";
           const inView = targetId ? historyTargetsInView.has(targetId) : false;
           const selectedClass = targetId && selectedTargetId === targetId ? " selected" : "";
           const inViewClass = inView ? " in-view" : "";
@@ -3141,6 +3291,7 @@ def _build_history_radar_html(
                 ${{inView ? '<span class="object-view-badge" aria-label="I vy" title="I vy">◉</span>' : ""}}
               </div>
               <div>positioner: ${{escapeHtml(String(positionCount))}}</div>
+              <div>max_speed: ${{escapeHtml(maxObservedSpeedText)}}</div>
               <div>last_seen: ${{escapeHtml(lastSeen)}}</div>
             </div>
           `;
@@ -3151,6 +3302,7 @@ def _build_history_radar_html(
     function renderHistoryPanel() {{
       const filteredTargets = historyTargets
         .filter((target) => matchesTargetTypeFilter(target, historyTargetTypeFilter))
+        .filter((target) => matchesHistorySpeedFilter(target, historyMinSpeedFilter))
         .sort((left, right) => {{
           const leftInView = left && typeof left.target_id === "string" && historyTargetsInView.has(left.target_id);
           const rightInView = right && typeof right.target_id === "string" && historyTargetsInView.has(right.target_id);
@@ -3328,12 +3480,12 @@ def _build_history_radar_html(
         ? `Vald: ${{selectedTargetLabel || selectedTargetId}} | Positioner: ${{selectedPositionCount}} | Last seen: ${{selectedLastSeen || "-"}}`
         : "Vald: inget objekt";
       const errorText = error ? ` | Error: ${{error}}` : "";
-      meta.textContent = `Home: ${{homeCenter.lat.toFixed(6)}}, ${{homeCenter.lon.toFixed(6)}} | View: ${{viewCenter.lat.toFixed(6)}}, ${{viewCenter.lon.toFixed(6)}} | Range: ${{rangeKm.toFixed(2)}} km | Ringavstand: ${{ringSpacingKm.toFixed(2)}} km | ${{contourStatus}} | ${{selectedText}}${{contourErrorText}}${{errorText}}`;
+      meta.textContent = `Home: ${{homeCenter.lat.toFixed(6)}}, ${{homeCenter.lon.toFixed(6)}} | View: ${{viewCenter.lat.toFixed(6)}}, ${{viewCenter.lon.toFixed(6)}} | Ringavstand: ${{ringSpacingKm.toFixed(2)}} km | ${{contourStatus}} | ${{selectedText}}${{contourErrorText}}${{errorText}}`;
     }}
 
     window.addEventListener("resize", draw);
-    zoomInButton.addEventListener("click", increaseRange);
-    zoomOutButton.addEventListener("click", decreaseRange);
+    zoomInButton.addEventListener("click", decreaseRange);
+    zoomOutButton.addEventListener("click", increaseRange);
     zoomResetButton.addEventListener("click", resetZoom);
     rangeInput.addEventListener("change", applyRangeInput);
     rangeInput.addEventListener("blur", applyRangeInput);
@@ -3349,10 +3501,16 @@ def _build_history_radar_html(
       showFixedNames = showFixedNamesCheckbox.checked;
       draw();
     }});
+    showTargetLabelsCheckbox.addEventListener("change", () => {{
+      showTargetLabels = showTargetLabelsCheckbox.checked;
+      draw();
+    }});
     showMapContoursCheckbox.addEventListener("change", () => {{
       showMapContours = showMapContoursCheckbox.checked;
       if (!showMapContours) {{
         mapContourError = null;
+        mapContourPendingKey = null;
+        clearMapContourRetryTimer();
       }}
       draw();
     }});
@@ -3362,6 +3520,25 @@ def _build_history_radar_html(
         if (selectedTargetId) {{
           const selectedTarget = findHistoryTargetById(selectedTargetId);
           if (!matchesTargetTypeFilter(selectedTarget, historyTargetTypeFilter)) {{
+            selectedTargetId = null;
+            selectedTargetKind = null;
+            selectedTargetLabel = null;
+            selectedPositionCount = 0;
+            selectedLastSeen = null;
+            selectedHistoryPoints = [];
+          }}
+        }}
+        renderHistoryPanel();
+        draw();
+      }});
+    }}
+    if (historyMinSpeedFilterInput instanceof HTMLInputElement) {{
+      historyMinSpeedFilterInput.addEventListener("input", () => {{
+        const parsed = toOptionalNumber(historyMinSpeedFilterInput.value);
+        historyMinSpeedFilter = Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+        if (selectedTargetId) {{
+          const selectedTarget = findHistoryTargetById(selectedTargetId);
+          if (!matchesHistorySpeedFilter(selectedTarget, historyMinSpeedFilter)) {{
             selectedTargetId = null;
             selectedTargetKind = null;
             selectedTargetLabel = null;

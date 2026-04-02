@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from tempfile import mkdtemp
 from typing import Mapping
 
 ENV_PREFIX = "SDR_MONITOR_"
 VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 VALID_MAP_SOURCES = {"hydro", "elevation"}
+
+
+def _default_map_cache_dir() -> Path:
+    root = Path(mkdtemp(prefix="sdr-monitor-", dir="/tmp"))
+    cache_dir = root / "data" / "map" / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
 
 
 def _read_str(env: Mapping[str, str], key: str, default: str) -> str:
@@ -75,7 +83,7 @@ class Config:
     fixed_objects_path: Path = Path("./data/fixed_objects.json")
     map_source: str = "hydro"
     map_cache_ttl_seconds: int = 600
-    map_cache_dir: Path = Path("./data/map/cache")
+    map_cache_dir: Path = field(default_factory=_default_map_cache_dir)
     hydro_base_url: str = "https://api.lantmateriet.se/ogc-features/v1/hydrografi"
     hydro_username: str = ""
     hydro_password: str = ""
