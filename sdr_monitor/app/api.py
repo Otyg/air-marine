@@ -130,6 +130,37 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
             "targets": serialized,
         }
 
+    @app.get("/ui/history-targets-in-view")
+    async def get_history_targets_in_view(
+        center_lat: float = Query(..., ge=-90, le=90),
+        center_lon: float = Query(..., ge=-180, le=180),
+        range_km: float = Query(..., gt=0),
+    ) -> dict[str, Any]:
+        if runtime.store is None:
+            return {
+                "count": 0,
+                "target_ids": [],
+            }
+
+        try:
+            target_ids = runtime.store.list_historical_target_ids_in_view(
+                center_lat=center_lat,
+                center_lon=center_lon,
+                range_km=range_km,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to load historical targets in view: {exc}",
+            ) from exc
+
+        return {
+            "count": len(target_ids),
+            "target_ids": target_ids,
+        }
+
     @app.get("/ui/map-contours")
     async def get_map_contours(
         bbox: str = Query(..., description="min_lon,min_lat,max_lon,max_lat"),
@@ -496,6 +527,28 @@ def _build_radar_html(
       font-size: 12px;
       user-select: none;
     }}
+    .panel-filter-control {{
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--panel-dim);
+      font-size: 12px;
+      white-space: nowrap;
+    }}
+    .panel-filter-control select {{
+      border: 1px solid #226322;
+      background: #041104;
+      color: var(--panel-fg);
+      font: inherit;
+      padding: 2px 6px;
+      height: 28px;
+      min-width: 96px;
+    }}
+    .panel-filter-control select:focus {{
+      outline: none;
+      border-color: #2f8b2f;
+      background: #0a1f0a;
+    }}
     .side-panel-summary {{
       padding: 8px 10px;
       color: var(--panel-dim);
@@ -539,6 +592,33 @@ def _build_radar_html(
       color: var(--radar-fg);
       font-size: 13px;
       margin-bottom: 4px;
+    }}
+    .object-label-row {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 4px;
+    }}
+    .object-type-icon {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 18px;
+      color: var(--panel-dim);
+      font-size: 14px;
+      line-height: 1;
+    }}
+    .object-view-badge {{
+      margin-left: auto;
+      border: 1px solid #1b5e8b;
+      color: #8fd3ff;
+      background: rgba(16, 50, 72, 0.45);
+      padding: 1px 6px;
+      font-size: 12px;
+      line-height: 1.2;
+    }}
+    .object-item.in-view {{
+      box-shadow: inset 0 0 0 1px rgba(55, 170, 235, 0.38);
     }}
     .object-item.selected .object-label {{
       color: #ff9c9c;
@@ -616,6 +696,16 @@ def _build_radar_html(
             Visa `last_speed<1`
           </label>
         </div>
+        <div class="side-panel-summary">
+          <label class="panel-filter-control" for="targetTypeFilter">
+            Typ
+            <select id="targetTypeFilter" aria-label="Filtrera objekttyp">
+              <option value="all">Alla</option>
+              <option value="aircraft">Flygplan</option>
+              <option value="vessel">Båtar</option>
+            </select>
+          </label>
+        </div>
         <div id="objectsSummary" class="side-panel-summary">0 synliga objekt</div>
         <div id="objectsList" class="objects-list">
           <div class="objects-empty">Inga objekt i aktuell vy.</div>
@@ -656,6 +746,7 @@ def _build_radar_html(
     const showFixedNamesCheckbox = document.getElementById("showFixedNames");
     const showMapContoursCheckbox = document.getElementById("showMapContours");
     const showLowSpeedCheckbox = document.getElementById("showLowSpeed");
+    const targetTypeFilterSelect = document.getElementById("targetTypeFilter");
     const objectsSummary = document.getElementById("objectsSummary");
     const objectsList = document.getElementById("objectsList");
     const outsideObjectsSummary = document.getElementById("outsideObjectsSummary");
@@ -671,6 +762,7 @@ def _build_radar_html(
     let dragStart = null;
     let dragCurrent = null;
     let showLowSpeed = false;
+    let targetTypeFilter = "all";
     let showFixedNames = true;
     let showMapContours = true;
     let selectedTargetId = null;
@@ -1708,6 +1800,16 @@ def _build_radar_html(
         .replaceAll('"', "&quot;");
     }}
 
+    function targetTypeIcon(kind) {{
+      return kind === "vessel" ? "⛵" : "✈";
+    }}
+
+    function matchesTargetTypeFilter(target, filterValue) {{
+      if (filterValue === "all") return true;
+      if (!target || typeof target !== "object") return false;
+      return target.kind === filterValue;
+    }}
+
     function renderObjectCards(items, emptyText) {{
       if (items.length === 0) {{
         return `<div class="objects-empty">${{escapeHtml(emptyText)}}</div>`;
@@ -1717,6 +1819,7 @@ def _build_radar_html(
         .map((target) => {{
           const targetId = typeof target.target_id === "string" ? target.target_id : "";
           const label = target.label || target.target_id || "okänt";
+          const kind = typeof target.kind === "string" ? target.kind : "";
           const lat = toOptionalNumber(target.lat);
           const lon = toOptionalNumber(target.lon);
           const speed = toOptionalNumber(target.speed);
@@ -1748,7 +1851,10 @@ def _build_radar_html(
 
           return `
             <div class="object-item${{selectedClass}}"${{targetAttr}}>
-              <div class="object-label">${{escapeHtml(label)}}</div>
+              <div class="object-label-row">
+                <span class="object-type-icon" aria-hidden="true">${{escapeHtml(targetTypeIcon(kind))}}</span>
+                <div class="object-label">${{escapeHtml(label)}}</div>
+              </div>
               ${{detailLines.join("")}}
             </div>
           `;
@@ -1757,11 +1863,17 @@ def _build_radar_html(
     }}
 
     function renderObjectsPanel(visibleTargets, outsideTargets) {{
-      objectsSummary.textContent = `${{visibleTargets.length}} synliga objekt`;
-      outsideObjectsSummary.textContent = `${{outsideTargets.length}} objekt utanför aktivt område`;
-      objectsList.innerHTML = renderObjectCards(visibleTargets, "Inga objekt i aktuell vy.");
+      const filteredVisibleTargets = visibleTargets.filter((target) =>
+        matchesTargetTypeFilter(target, targetTypeFilter)
+      );
+      const filteredOutsideTargets = outsideTargets.filter((target) =>
+        matchesTargetTypeFilter(target, targetTypeFilter)
+      );
+      objectsSummary.textContent = `${{filteredVisibleTargets.length}} synliga objekt`;
+      outsideObjectsSummary.textContent = `${{filteredOutsideTargets.length}} objekt utanför aktivt område`;
+      objectsList.innerHTML = renderObjectCards(filteredVisibleTargets, "Inga objekt i aktuell vy.");
       outsideObjectsList.innerHTML = renderObjectCards(
-        outsideTargets,
+        filteredOutsideTargets,
         "Inga objekt utanför aktivt område.",
       );
     }}
@@ -1997,6 +2109,19 @@ def _build_radar_html(
       showLowSpeed = showLowSpeedCheckbox.checked;
       draw();
     }});
+    if (targetTypeFilterSelect instanceof HTMLSelectElement) {{
+      targetTypeFilterSelect.addEventListener("change", () => {{
+        targetTypeFilter = targetTypeFilterSelect.value;
+        if (selectedTargetId) {{
+          const selectedTarget = findTargetById(selectedTargetId);
+          if (!matchesTargetTypeFilter(selectedTarget, targetTypeFilter)) {{
+            selectedTargetId = null;
+            pendingFitTargetId = null;
+          }}
+        }}
+        draw();
+      }});
+    }}
     showFixedNamesCheckbox.addEventListener("change", () => {{
       showFixedNames = showFixedNamesCheckbox.checked;
       draw();
@@ -2237,6 +2362,21 @@ def _build_history_radar_html(
       font-size: 13px;
       margin-bottom: 4px;
     }}
+    .object-label-row {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 4px;
+    }}
+    .object-type-icon {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 18px;
+      color: var(--panel-dim);
+      font-size: 14px;
+      line-height: 1;
+    }}
     .object-item.selected .object-label {{
       color: #ff9c9c;
     }}
@@ -2301,6 +2441,16 @@ def _build_history_radar_html(
         <div class="side-panel-head">
           <div>Historiska objekt</div>
         </div>
+        <div class="side-panel-summary">
+          <label class="panel-filter-control" for="historyTargetTypeFilter">
+            Typ
+            <select id="historyTargetTypeFilter" aria-label="Filtrera historisk objekttyp">
+              <option value="all">Alla</option>
+              <option value="aircraft">Flygplan</option>
+              <option value="vessel">Båtar</option>
+            </select>
+          </label>
+        </div>
         <div id="historyObjectsSummary" class="side-panel-summary">0 objekt med historik</div>
         <div id="historyObjectsList" class="objects-list">
           <div class="objects-empty">Inga historiska objekt.</div>
@@ -2326,13 +2476,16 @@ def _build_history_radar_html(
     const rangeInput = document.getElementById("rangeInput");
     const showFixedNamesCheckbox = document.getElementById("showFixedNames");
     const showMapContoursCheckbox = document.getElementById("showMapContours");
+    const historyTargetTypeFilterSelect = document.getElementById("historyTargetTypeFilter");
     const historyObjectsSummary = document.getElementById("historyObjectsSummary");
     const historyObjectsList = document.getElementById("historyObjectsList");
     const ctx = canvas.getContext("2d");
 
     let historyTargets = [];
+    let historyTargetsInView = new Set();
     let selectedTargetId = null;
     let selectedTargetKind = null;
+    let historyTargetTypeFilter = "all";
     let selectedTargetLabel = null;
     let selectedPositionCount = 0;
     let selectedLastSeen = null;
@@ -2351,6 +2504,9 @@ def _build_history_radar_html(
     let mapContourRequestKey = null;
     let mapContourLoadedKey = null;
     let mapContourRequestInFlight = false;
+    let historyTargetsInViewRequestKey = null;
+    let historyTargetsInViewLoadedKey = null;
+    let historyTargetsInViewRequestInFlight = false;
 
     function clampRangeKm(value) {{
       return Math.max(minRangeKm, Math.min(maxRangeKm, value));
@@ -2394,6 +2550,16 @@ def _build_history_radar_html(
         .replaceAll("<", "&lt;")
         .replaceAll(">", "&gt;")
         .replaceAll('"', "&quot;");
+    }}
+
+    function targetTypeIcon(kind) {{
+      return kind === "vessel" ? "⛵" : "✈";
+    }}
+
+    function matchesTargetTypeFilter(target, filterValue) {{
+      if (filterValue === "all") return true;
+      if (!target || typeof target !== "object") return false;
+      return target.kind === filterValue;
     }}
 
     function formatRangeValue(value) {{
@@ -2580,6 +2746,14 @@ def _build_history_radar_html(
       }};
     }}
 
+    function historyTargetsInViewRequestKeyForView(rangeKm) {{
+      return [
+        viewCenter.lat.toFixed(4),
+        viewCenter.lon.toFixed(4),
+        rangeKm.toFixed(3),
+      ].join("|");
+    }}
+
     function normalizeMapContourFeatures(features) {{
       if (!Array.isArray(features)) return [];
       return features.filter((feature) => feature && typeof feature === "object");
@@ -2682,6 +2856,49 @@ def _build_history_radar_html(
     function ensureMapContoursForView(rangeKm) {{
       if (!showMapContours) return;
       void loadMapContoursForView(rangeKm);
+    }}
+
+    async function loadHistoryTargetsInView(rangeKm) {{
+      if (dragStart) return;
+      if (historyTargetsInViewRequestInFlight) return;
+      const requestKey = historyTargetsInViewRequestKeyForView(rangeKm);
+      if (
+        requestKey === historyTargetsInViewLoadedKey
+        || requestKey === historyTargetsInViewRequestKey
+      ) {{
+        return;
+      }}
+
+      historyTargetsInViewRequestInFlight = true;
+      historyTargetsInViewRequestKey = requestKey;
+      try {{
+        const params = new URLSearchParams({{
+          center_lat: viewCenter.lat.toFixed(6),
+          center_lon: viewCenter.lon.toFixed(6),
+          range_km: rangeKm.toFixed(3),
+        }});
+        const response = await fetch(`/ui/history-targets-in-view?${{params.toString()}}`, {{
+          cache: "no-store",
+        }});
+        if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
+        const payload = await response.json();
+        const nextIds = Array.isArray(payload.target_ids) ? payload.target_ids : [];
+        historyTargetsInView = new Set(
+          nextIds.filter((targetId) => typeof targetId === "string" && targetId),
+        );
+        historyTargetsInViewLoadedKey = requestKey;
+      }} catch (err) {{
+        historyTargetsInView = new Set();
+      }} finally {{
+        historyTargetsInViewRequestInFlight = false;
+        historyTargetsInViewRequestKey = null;
+        renderHistoryPanel();
+        draw();
+      }}
+    }}
+
+    function ensureHistoryTargetsInView(rangeKm) {{
+      void loadHistoryTargetsInView(rangeKm);
     }}
 
     function fixedObjectMarkerFontPx(rangeKm) {{
@@ -2904,18 +3121,25 @@ def _build_history_radar_html(
         .map((target) => {{
           const targetId = typeof target.target_id === "string" ? target.target_id : "";
           const label = target.label || target.target_id || "okänt";
+          const kind = typeof target.kind === "string" ? target.kind : "";
           const lastSeen = target.last_seen ? String(target.last_seen) : "-";
           const positionCount = Number.isFinite(Number(target.position_count))
             ? Number(target.position_count)
             : 0;
+          const inView = targetId ? historyTargetsInView.has(targetId) : false;
           const selectedClass = targetId && selectedTargetId === targetId ? " selected" : "";
+          const inViewClass = inView ? " in-view" : "";
           const targetAttr = targetId
             ? ` data-target-id="${{escapeHtml(targetId)}}" role="button" tabindex="0"`
             : "";
 
           return `
-            <div class="object-item${{selectedClass}}"${{targetAttr}}>
-              <div class="object-label">${{escapeHtml(label)}}</div>
+            <div class="object-item${{selectedClass}}${{inViewClass}}"${{targetAttr}}>
+              <div class="object-label-row">
+                <span class="object-type-icon" aria-hidden="true">${{escapeHtml(targetTypeIcon(kind))}}</span>
+                <div class="object-label">${{escapeHtml(label)}}</div>
+                ${{inView ? '<span class="object-view-badge" aria-label="I vy" title="I vy">◉</span>' : ""}}
+              </div>
               <div>positioner: ${{escapeHtml(String(positionCount))}}</div>
               <div>last_seen: ${{escapeHtml(lastSeen)}}</div>
             </div>
@@ -2925,8 +3149,25 @@ def _build_history_radar_html(
     }}
 
     function renderHistoryPanel() {{
-      historyObjectsSummary.textContent = `${{historyTargets.length}} objekt med historik`;
-      historyObjectsList.innerHTML = renderHistoryCards(historyTargets);
+      const filteredTargets = historyTargets
+        .filter((target) => matchesTargetTypeFilter(target, historyTargetTypeFilter))
+        .sort((left, right) => {{
+          const leftInView = left && typeof left.target_id === "string" && historyTargetsInView.has(left.target_id);
+          const rightInView = right && typeof right.target_id === "string" && historyTargetsInView.has(right.target_id);
+          if (leftInView !== rightInView) {{
+            return leftInView ? -1 : 1;
+          }}
+
+          const leftLastSeenMs = parseTimestampMs(left && left.last_seen);
+          const rightLastSeenMs = parseTimestampMs(right && right.last_seen);
+          if (Number.isFinite(leftLastSeenMs) || Number.isFinite(rightLastSeenMs)) {{
+            return (Number.isFinite(rightLastSeenMs) ? rightLastSeenMs : Number.NEGATIVE_INFINITY)
+              - (Number.isFinite(leftLastSeenMs) ? leftLastSeenMs : Number.NEGATIVE_INFINITY);
+          }}
+          return 0;
+        }});
+      historyObjectsSummary.textContent = `${{filteredTargets.length}} objekt med historik`;
+      historyObjectsList.innerHTML = renderHistoryCards(filteredTargets);
     }}
 
     function findHistoryTargetById(targetId) {{
@@ -3001,7 +3242,6 @@ def _build_history_radar_html(
         const historyPoints = await loadSelectedHistory(targetId, selectedPositionCount);
         if (selectedTargetId !== activeSelection) return;
         selectedHistoryPoints = historyPoints;
-        fitHistoryToView(historyPoints);
         error = null;
       }} catch (err) {{
         if (selectedTargetId !== activeSelection) return;
@@ -3078,6 +3318,7 @@ def _build_history_radar_html(
       drawSelectionBox();
       syncRangeInput(rangeKm);
       ensureMapContoursForView(rangeKm);
+      ensureHistoryTargetsInView(rangeKm);
 
       const contourStatus = showMapContours
         ? `Kartlager: ${{mapContourSource}}/${{mapContourStatus}}`
@@ -3115,6 +3356,24 @@ def _build_history_radar_html(
       }}
       draw();
     }});
+    if (historyTargetTypeFilterSelect instanceof HTMLSelectElement) {{
+      historyTargetTypeFilterSelect.addEventListener("change", () => {{
+        historyTargetTypeFilter = historyTargetTypeFilterSelect.value;
+        if (selectedTargetId) {{
+          const selectedTarget = findHistoryTargetById(selectedTargetId);
+          if (!matchesTargetTypeFilter(selectedTarget, historyTargetTypeFilter)) {{
+            selectedTargetId = null;
+            selectedTargetKind = null;
+            selectedTargetLabel = null;
+            selectedPositionCount = 0;
+            selectedLastSeen = null;
+            selectedHistoryPoints = [];
+          }}
+        }}
+        renderHistoryPanel();
+        draw();
+      }});
+    }}
     canvas.addEventListener(
       "wheel",
       (event) => {{

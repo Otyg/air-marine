@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -261,6 +262,50 @@ class SQLiteStore:
             for row in rows
         ]
 
+    def list_historical_target_ids_in_view(
+        self,
+        *,
+        center_lat: float,
+        center_lon: float,
+        range_km: float,
+    ) -> list[str]:
+        """List target ids that have at least one historical position inside the active radar view."""
+
+        if range_km <= 0:
+            raise ValueError("range_km must be > 0")
+
+        lat_padding = range_km / _KM_PER_DEG_LAT
+        lon_padding = range_km / _km_per_deg_lon(center_lat)
+
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT target_id, lat, lon
+                FROM observations
+                WHERE lat IS NOT NULL
+                  AND lon IS NOT NULL
+                  AND lat BETWEEN ? AND ?
+                  AND lon BETWEEN ? AND ?
+                """,
+                (
+                    center_lat - lat_padding,
+                    center_lat + lat_padding,
+                    center_lon - lon_padding,
+                    center_lon + lon_padding,
+                ),
+            ).fetchall()
+
+        matched: set[str] = set()
+        km_lon = _km_per_deg_lon(center_lat)
+        max_distance_sq = range_km * range_km
+        for row in rows:
+            dy = (float(row["lat"]) - center_lat) * _KM_PER_DEG_LAT
+            dx = (float(row["lon"]) - center_lon) * km_lon
+            if (dx * dx) + (dy * dy) <= max_distance_sq:
+                matched.add(str(row["target_id"]))
+
+        return sorted(matched)
+
     def load_latest_targets(self, limit: int | None = None) -> list[Target]:
         """Load latest target states from persistence for optional warm start."""
 
@@ -476,6 +521,14 @@ def _parse_dt(value: str) -> datetime:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+_KM_PER_DEG_LAT = 110.574
+
+
+def _km_per_deg_lon(lat: float) -> float:
+    cosine = math.cos((lat * math.pi) / 180)
+    return max(111.320 * abs(cosine), 0.000001)
 
 
 def _normalize_identifier(value: str | None, source: Source) -> str | None:

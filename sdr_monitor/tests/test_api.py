@@ -240,6 +240,7 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
     assert "id=\"showMapContours\"" in response.text
     assert "id=\"objectsList\"" in response.text
     assert "id=\"outsideObjectsList\"" in response.text
+    assert "id=\"targetTypeFilter\"" in response.text
     assert "href=\"/history-radar\"" in response.text
     assert "id=\"showLowSpeed\"" in response.text
     assert "drawCourseVector" in response.text
@@ -278,6 +279,9 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
     assert "objectsList.addEventListener(\"click\"" in response.text
     assert "outsideObjectsList.addEventListener(\"click\"" in response.text
     assert ".object-item.selected" in response.text
+    assert "object-type-icon" in response.text
+    assert "function targetTypeIcon(kind)" in response.text
+    assert "function matchesTargetTypeFilter(target, filterValue)" in response.text
     assert "#ff4d4d" in response.text
     assert "#39FF14" in response.text
     assert "last_seen:" in response.text
@@ -302,10 +306,19 @@ def test_history_radar_ui_renders_html_with_history_panel() -> None:
     assert response.headers["content-type"].startswith("text/html")
     assert "HISTORY VIEW" in response.text
     assert "id=\"historyObjectsList\"" in response.text
+    assert "id=\"historyTargetTypeFilter\"" in response.text
     assert "Historiska objekt" in response.text
     assert "fetch(\"/ui/history-targets\"" in response.text
+    assert "fetch(`/ui/history-targets-in-view?${params.toString()}`" in response.text
+    assert "object-type-icon" in response.text
+    assert "object-view-badge" in response.text
+    assert "function targetTypeIcon(kind)" in response.text
+    assert "function matchesTargetTypeFilter(target, filterValue)" in response.text
+    assert "function ensureHistoryTargetsInView(rangeKm)" in response.text
+    assert "if (leftInView !== rightInView)" in response.text
     assert "function drawSelectedHistoryPath(cx, cy, pxPerKm, radius)" in response.text
     assert "function fitHistoryToView(points)" in response.text
+    assert "fitHistoryToView(historyPoints);" not in response.text
     assert "href=\"/\"" in response.text
 
 
@@ -332,6 +345,45 @@ def test_history_targets_ui_endpoint_returns_history_summaries(tmp_path) -> None
     assert payload["targets"][0]["label"] == "FLT1"
     assert payload["targets"][0]["position_count"] == 1
     assert payload["targets"][0]["last_seen"] == now.isoformat()
+
+
+def test_history_targets_in_view_endpoint_returns_matching_target_ids(tmp_path) -> None:
+    now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+    state = LiveState(clock=lambda: now)
+    store = SQLiteStore(tmp_path / "history_targets_in_view.sqlite3")
+    store.initialize()
+    store.insert_observation(
+        NormalizedObservation(
+            target_id="adsb:inside",
+            source=Source.ADSB,
+            kind=TargetKind.AIRCRAFT,
+            observed_at=now,
+            lat=59.0,
+            lon=18.0,
+        )
+    )
+    store.insert_observation(
+        NormalizedObservation(
+            target_id="adsb:outside",
+            source=Source.ADSB,
+            kind=TargetKind.AIRCRAFT,
+            observed_at=now,
+            lat=59.3,
+            lon=18.3,
+        )
+    )
+
+    app = create_api_app(APIRuntime(state=state, store=store))
+    response = _request(
+        app,
+        "GET",
+        "/ui/history-targets-in-view",
+        params={"center_lat": 59.0, "center_lon": 18.0, "range_km": 5.0},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 1
+    assert payload["target_ids"] == ["adsb:inside"]
 
 
 def test_targets_latest_ui_endpoint_returns_store_rows(tmp_path) -> None:

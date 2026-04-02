@@ -130,6 +130,41 @@ def test_list_historical_targets_returns_counts_and_resolved_labels(tmp_path) ->
     assert summaries[1].label == "SAS123"
 
 
+def test_list_historical_target_ids_in_view_returns_only_targets_inside_radar_circle(tmp_path) -> None:
+    seen_at = datetime(2026, 3, 30, 12, 0, tzinfo=timezone.utc)
+    store = SQLiteStore(tmp_path / "history_in_view.sqlite3")
+    store.initialize()
+
+    store.insert_observation(
+        NormalizedObservation(
+            target_id="adsb:inside",
+            source=Source.ADSB,
+            kind=TargetKind.AIRCRAFT,
+            observed_at=seen_at,
+            lat=59.0000,
+            lon=18.0000,
+        )
+    )
+    store.insert_observation(
+        NormalizedObservation(
+            target_id="adsb:outside",
+            source=Source.ADSB,
+            kind=TargetKind.AIRCRAFT,
+            observed_at=seen_at,
+            lat=59.2000,
+            lon=18.2000,
+        )
+    )
+
+    target_ids = store.list_historical_target_ids_in_view(
+        center_lat=59.0,
+        center_lon=18.0,
+        range_km=5.0,
+    )
+
+    assert target_ids == ["adsb:inside"]
+
+
 def test_delete_latest_targets_older_than_removes_only_stale_rows(tmp_path) -> None:
     now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
     store = SQLiteStore(tmp_path / "prune.sqlite3")
