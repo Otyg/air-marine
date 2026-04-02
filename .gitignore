@@ -1,0 +1,10 @@
+.codex
+MAP_PLAN.md
+PLAN.md
+sdr_monitor/.env
+sdr_monitor/data/sdr_monitor.sqlite3
+sdr_monitor/data/map
+sdr_monitor/data/readsb
+**/__pycache__/
+**/*.pyc
+sdr_monitor/.pytest_cache
