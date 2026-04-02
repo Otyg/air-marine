@@ -18,12 +18,16 @@ def test_config_uses_defaults_when_env_not_set() -> None:
     assert str(config.fixed_objects_path) == "data/fixed_objects.json"
     assert config.map_source == "hydro"
     assert config.map_cache_ttl_seconds == 600
+    assert str(config.map_cache_dir) == "data/map/cache"
     assert config.hydro_base_url == "https://api.lantmateriet.se/ogc-features/v1/hydrografi"
-    assert config.elevation_stac_base_url == "https://api.lantmateriet.se/stac-hojd/v1/"
-    assert str(config.elevation_cache_dir) == "data/map/elevation_cache"
-    assert config.elevation_contour_interval_m == 10
-    assert config.elevation_max_tiles_per_request == 8
-    assert config.elevation_enable_background_sync is True
+    assert (
+        config.markhojd_direct_base_url
+        == "https://api.lantmateriet.se/distribution/produkter/markhojd/v1"
+    )
+    assert config.markhojd_direct_srid == 3006
+    assert config.markhojd_direct_sample_step_m == 25
+    assert config.markhojd_direct_contour_interval_m == 10
+    assert config.markhojd_direct_max_points_per_request == 1000
 
 
 def test_config_reads_environment_values() -> None:
@@ -44,16 +48,17 @@ def test_config_reads_environment_values() -> None:
             "SDR_MONITOR_FIXED_OBJECTS_PATH": "/tmp/fixed-objects.json",
             "SDR_MONITOR_MAP_SOURCE": "elevation",
             "SDR_MONITOR_MAP_CACHE_TTL_SECONDS": "120",
+            "SDR_MONITOR_MAP_CACHE_DIR": "/tmp/map-cache",
             "SDR_MONITOR_HYDRO_BASE_URL": "https://hydro.example.test",
             "SDR_MONITOR_HYDRO_USERNAME": "hydro-user",
             "SDR_MONITOR_HYDRO_PASSWORD": "hydro-pass",
-            "SDR_MONITOR_ELEVATION_STAC_BASE_URL": "https://elevation.example.test",
-            "SDR_MONITOR_ELEVATION_USERNAME": "elevation-user",
-            "SDR_MONITOR_ELEVATION_PASSWORD": "elevation-pass",
-            "SDR_MONITOR_ELEVATION_CACHE_DIR": "/tmp/elevation-cache",
-            "SDR_MONITOR_ELEVATION_CONTOUR_INTERVAL_M": "25",
-            "SDR_MONITOR_ELEVATION_MAX_TILES_PER_REQUEST": "4",
-            "SDR_MONITOR_ELEVATION_ENABLE_BACKGROUND_SYNC": "false",
+            "SDR_MONITOR_MARKHOJD_DIRECT_BASE_URL": "https://markhojd.example.test",
+            "SDR_MONITOR_MARKHOJD_DIRECT_USERNAME": "markhojd-user",
+            "SDR_MONITOR_MARKHOJD_DIRECT_PASSWORD": "markhojd-pass",
+            "SDR_MONITOR_MARKHOJD_DIRECT_SRID": "3006",
+            "SDR_MONITOR_MARKHOJD_DIRECT_SAMPLE_STEP_M": "40",
+            "SDR_MONITOR_MARKHOJD_DIRECT_CONTOUR_INTERVAL_M": "20",
+            "SDR_MONITOR_MARKHOJD_DIRECT_MAX_POINTS_PER_REQUEST": "900",
         }
     )
     assert config.service_name == "air-marine"
@@ -71,16 +76,17 @@ def test_config_reads_environment_values() -> None:
     assert str(config.fixed_objects_path) == "/tmp/fixed-objects.json"
     assert config.map_source == "elevation"
     assert config.map_cache_ttl_seconds == 120
+    assert str(config.map_cache_dir) == "/tmp/map-cache"
     assert config.hydro_base_url == "https://hydro.example.test"
     assert config.hydro_username == "hydro-user"
     assert config.hydro_password == "hydro-pass"
-    assert config.elevation_stac_base_url == "https://elevation.example.test"
-    assert config.elevation_username == "elevation-user"
-    assert config.elevation_password == "elevation-pass"
-    assert str(config.elevation_cache_dir) == "/tmp/elevation-cache"
-    assert config.elevation_contour_interval_m == 25
-    assert config.elevation_max_tiles_per_request == 4
-    assert config.elevation_enable_background_sync is False
+    assert config.markhojd_direct_base_url == "https://markhojd.example.test"
+    assert config.markhojd_direct_username == "markhojd-user"
+    assert config.markhojd_direct_password == "markhojd-pass"
+    assert config.markhojd_direct_srid == 3006
+    assert config.markhojd_direct_sample_step_m == 40
+    assert config.markhojd_direct_contour_interval_m == 20
+    assert config.markhojd_direct_max_points_per_request == 900
 
 
 def test_config_rejects_invalid_freshness_thresholds() -> None:
@@ -113,11 +119,14 @@ def test_config_rejects_invalid_map_settings() -> None:
     with pytest.raises(ValueError, match="MAP_CACHE_TTL_SECONDS"):
         Config.from_env({"SDR_MONITOR_MAP_CACHE_TTL_SECONDS": "0"})
 
-    with pytest.raises(ValueError, match="ELEVATION_CONTOUR_INTERVAL_M"):
-        Config.from_env({"SDR_MONITOR_ELEVATION_CONTOUR_INTERVAL_M": "0"})
+    with pytest.raises(ValueError, match="MARKHOJD_DIRECT_SAMPLE_STEP_M"):
+        Config.from_env({"SDR_MONITOR_MARKHOJD_DIRECT_SAMPLE_STEP_M": "0"})
 
-    with pytest.raises(ValueError, match="ELEVATION_ENABLE_BACKGROUND_SYNC"):
-        Config.from_env({"SDR_MONITOR_ELEVATION_ENABLE_BACKGROUND_SYNC": "maybe"})
+    with pytest.raises(ValueError, match="MARKHOJD_DIRECT_CONTOUR_INTERVAL_M"):
+        Config.from_env({"SDR_MONITOR_MARKHOJD_DIRECT_CONTOUR_INTERVAL_M": "0"})
+
+    with pytest.raises(ValueError, match="MARKHOJD_DIRECT_MAX_POINTS_PER_REQUEST"):
+        Config.from_env({"SDR_MONITOR_MARKHOJD_DIRECT_MAX_POINTS_PER_REQUEST": "1001"})
 
 
 def test_config_reads_legacy_radar_coordinate_names() -> None:
@@ -129,3 +138,15 @@ def test_config_reads_legacy_radar_coordinate_names() -> None:
     )
     assert config.radar_center_lat == 56.1619519
     assert config.radar_center_lon == 15.5940978
+
+
+def test_config_falls_back_to_legacy_elevation_credentials_for_markhojd_direct() -> None:
+    config = Config.from_env(
+        {
+            "SDR_MONITOR_ELEVATION_USERNAME": "legacy-user",
+            "SDR_MONITOR_ELEVATION_PASSWORD": "legacy-pass",
+        }
+    )
+
+    assert config.markhojd_direct_username == "legacy-user"
+    assert config.markhojd_direct_password == "legacy-pass"

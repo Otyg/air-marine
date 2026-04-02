@@ -67,22 +67,25 @@ Key runtime variables:
 - `SDR_MONITOR_FIXED_OBJECTS_PATH`: JSON file with static radar markers
 - `SDR_MONITOR_MAP_SOURCE`: `hydro|elevation` (default `hydro`)
 - `SDR_MONITOR_MAP_CACHE_TTL_SECONDS`: contour cache TTL in seconds
+- `SDR_MONITOR_MAP_CACHE_DIR`: directory for persisted local contour cache
 - `SDR_MONITOR_HYDRO_BASE_URL`: Hydrografi Direkt OGC Features base URL
 - `SDR_MONITOR_HYDRO_USERNAME`: server-side Hydrografi Direkt username
 - `SDR_MONITOR_HYDRO_PASSWORD`: server-side Hydrografi Direkt password
-- `SDR_MONITOR_ELEVATION_STAC_BASE_URL`: STAC-Höjd base URL
-- `SDR_MONITOR_ELEVATION_USERNAME`: STAC-Höjd username
-- `SDR_MONITOR_ELEVATION_PASSWORD`: STAC-Höjd password
-- `SDR_MONITOR_ELEVATION_CACHE_DIR`: local cache dir for elevation mode
-- `SDR_MONITOR_ELEVATION_CONTOUR_INTERVAL_M`: contour interval for elevation mode
-- `SDR_MONITOR_ELEVATION_MAX_TILES_PER_REQUEST`: DEM tile request cap per bbox
-- `SDR_MONITOR_ELEVATION_ENABLE_BACKGROUND_SYNC`: enable future background sync support
+- `SDR_MONITOR_MARKHOJD_DIRECT_BASE_URL`: Markhöjd Direkt base URL
+- `SDR_MONITOR_MARKHOJD_DIRECT_USERNAME`: Markhöjd Direkt username
+- `SDR_MONITOR_MARKHOJD_DIRECT_PASSWORD`: Markhöjd Direkt password
+- `SDR_MONITOR_MARKHOJD_DIRECT_SRID`: request SRID for Markhöjd Direkt sampling
+- `SDR_MONITOR_MARKHOJD_DIRECT_SAMPLE_STEP_M`: planned sample spacing for contour generation
+- `SDR_MONITOR_MARKHOJD_DIRECT_CONTOUR_INTERVAL_M`: contour interval in meters for local line generation
+- `SDR_MONITOR_MARKHOJD_DIRECT_MAX_POINTS_PER_REQUEST`: cap for request batching, max `1000`
 
 Map background notes:
 
 - `hydro` is the production-ready source for coastline/lake contours
-- `elevation` now searches STAC-Höjd and caches matching DEM tiles locally
-- local contour generation for `elevation` still requires `gdal_contour` on the host
+- `elevation` now samples `Markhöjd Direkt` using `MultiPoint` in EPSG `3006`
+- local contour generation is currently based on a coarse sampled grid and simple contour segmentation
+- larger views automatically use a coarser effective sample step to stay within the request point cap
+- successful contour responses are persisted on disk and reused across restarts; external APIs are only called when a matching local cache file is missing
 
 Example static radar objects file (`./data/fixed_objects.json`):
 

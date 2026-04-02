@@ -75,16 +75,17 @@ class Config:
     fixed_objects_path: Path = Path("./data/fixed_objects.json")
     map_source: str = "hydro"
     map_cache_ttl_seconds: int = 600
+    map_cache_dir: Path = Path("./data/map/cache")
     hydro_base_url: str = "https://api.lantmateriet.se/ogc-features/v1/hydrografi"
     hydro_username: str = ""
     hydro_password: str = ""
-    elevation_stac_base_url: str = "https://api.lantmateriet.se/stac-hojd/v1/"
-    elevation_username: str = ""
-    elevation_password: str = ""
-    elevation_cache_dir: Path = Path("./data/map/elevation_cache")
-    elevation_contour_interval_m: int = 10
-    elevation_max_tiles_per_request: int = 8
-    elevation_enable_background_sync: bool = True
+    markhojd_direct_base_url: str = "https://api.lantmateriet.se/distribution/produkter/markhojd/v1"
+    markhojd_direct_username: str = ""
+    markhojd_direct_password: str = ""
+    markhojd_direct_srid: int = 3006
+    markhojd_direct_sample_step_m: int = 25
+    markhojd_direct_contour_interval_m: int = 10
+    markhojd_direct_max_points_per_request: int = 1000
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Config":
@@ -171,6 +172,13 @@ class Config:
                 f"{ENV_PREFIX}MAP_CACHE_TTL_SECONDS",
                 defaults.map_cache_ttl_seconds,
             ),
+            map_cache_dir=Path(
+                _read_str(
+                    env_map,
+                    f"{ENV_PREFIX}MAP_CACHE_DIR",
+                    str(defaults.map_cache_dir),
+                )
+            ),
             hydro_base_url=_read_str(
                 env_map,
                 f"{ENV_PREFIX}HYDRO_BASE_URL",
@@ -186,42 +194,48 @@ class Config:
                 f"{ENV_PREFIX}HYDRO_PASSWORD",
                 defaults.hydro_password,
             ),
-            elevation_stac_base_url=_read_str(
+            markhojd_direct_base_url=_read_str(
                 env_map,
-                f"{ENV_PREFIX}ELEVATION_STAC_BASE_URL",
-                defaults.elevation_stac_base_url,
+                f"{ENV_PREFIX}MARKHOJD_DIRECT_BASE_URL",
+                defaults.markhojd_direct_base_url,
             ),
-            elevation_username=_read_str(
+            markhojd_direct_username=_read_str(
                 env_map,
-                f"{ENV_PREFIX}ELEVATION_USERNAME",
-                defaults.elevation_username,
-            ),
-            elevation_password=_read_str(
-                env_map,
-                f"{ENV_PREFIX}ELEVATION_PASSWORD",
-                defaults.elevation_password,
-            ),
-            elevation_cache_dir=Path(
+                f"{ENV_PREFIX}MARKHOJD_DIRECT_USERNAME",
                 _read_str(
                     env_map,
-                    f"{ENV_PREFIX}ELEVATION_CACHE_DIR",
-                    str(defaults.elevation_cache_dir),
-                )
+                    f"{ENV_PREFIX}ELEVATION_USERNAME",
+                    defaults.markhojd_direct_username,
+                ),
             ),
-            elevation_contour_interval_m=_read_int(
+            markhojd_direct_password=_read_str(
                 env_map,
-                f"{ENV_PREFIX}ELEVATION_CONTOUR_INTERVAL_M",
-                defaults.elevation_contour_interval_m,
+                f"{ENV_PREFIX}MARKHOJD_DIRECT_PASSWORD",
+                _read_str(
+                    env_map,
+                    f"{ENV_PREFIX}ELEVATION_PASSWORD",
+                    defaults.markhojd_direct_password,
+                ),
             ),
-            elevation_max_tiles_per_request=_read_int(
+            markhojd_direct_srid=_read_int(
                 env_map,
-                f"{ENV_PREFIX}ELEVATION_MAX_TILES_PER_REQUEST",
-                defaults.elevation_max_tiles_per_request,
+                f"{ENV_PREFIX}MARKHOJD_DIRECT_SRID",
+                defaults.markhojd_direct_srid,
             ),
-            elevation_enable_background_sync=_read_bool(
+            markhojd_direct_sample_step_m=_read_int(
                 env_map,
-                f"{ENV_PREFIX}ELEVATION_ENABLE_BACKGROUND_SYNC",
-                defaults.elevation_enable_background_sync,
+                f"{ENV_PREFIX}MARKHOJD_DIRECT_SAMPLE_STEP_M",
+                defaults.markhojd_direct_sample_step_m,
+            ),
+            markhojd_direct_contour_interval_m=_read_int(
+                env_map,
+                f"{ENV_PREFIX}MARKHOJD_DIRECT_CONTOUR_INTERVAL_M",
+                defaults.markhojd_direct_contour_interval_m,
+            ),
+            markhojd_direct_max_points_per_request=_read_int(
+                env_map,
+                f"{ENV_PREFIX}MARKHOJD_DIRECT_MAX_POINTS_PER_REQUEST",
+                defaults.markhojd_direct_max_points_per_request,
             ),
         )
         config._validate()
@@ -264,10 +278,16 @@ class Config:
             )
         if self.map_cache_ttl_seconds <= 0:
             raise ValueError(f"{ENV_PREFIX}MAP_CACHE_TTL_SECONDS must be > 0.")
-        if self.elevation_contour_interval_m <= 0:
-            raise ValueError(f"{ENV_PREFIX}ELEVATION_CONTOUR_INTERVAL_M must be > 0.")
-        if self.elevation_max_tiles_per_request <= 0:
-            raise ValueError(f"{ENV_PREFIX}ELEVATION_MAX_TILES_PER_REQUEST must be > 0.")
+        if self.markhojd_direct_srid <= 0:
+            raise ValueError(f"{ENV_PREFIX}MARKHOJD_DIRECT_SRID must be > 0.")
+        if self.markhojd_direct_sample_step_m <= 0:
+            raise ValueError(f"{ENV_PREFIX}MARKHOJD_DIRECT_SAMPLE_STEP_M must be > 0.")
+        if self.markhojd_direct_contour_interval_m <= 0:
+            raise ValueError(f"{ENV_PREFIX}MARKHOJD_DIRECT_CONTOUR_INTERVAL_M must be > 0.")
+        if self.markhojd_direct_max_points_per_request <= 0:
+            raise ValueError(f"{ENV_PREFIX}MARKHOJD_DIRECT_MAX_POINTS_PER_REQUEST must be > 0.")
+        if self.markhojd_direct_max_points_per_request > 1000:
+            raise ValueError(f"{ENV_PREFIX}MARKHOJD_DIRECT_MAX_POINTS_PER_REQUEST must be <= 1000.")
 
 
 def load_config(env: Mapping[str, str] | None = None) -> Config:
