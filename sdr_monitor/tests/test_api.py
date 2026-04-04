@@ -271,11 +271,16 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
     assert "let selectedTargetId = null;" in response.text
     assert "const selectedHistoryByTargetId = new Map();" in response.text
     assert "let pendingFitTargetId = null;" in response.text
+    assert "const selectedHistoryPositionCount = 15;" in response.text
+    assert "const selectedHistoryRequestLimit = selectedHistoryPositionCount + 1;" in response.text
     assert "function fitSelectionToView(targetId, options = {})" in response.text
+    assert "function limitSelectedHistoryPoints(targetId, historyPoints)" in response.text
     assert "function drawSelectedHistoryPath(targetId, cx, cy, pxPerKm, radius)" in response.text
+    assert "const currentTarget = findTargetById(targetId);" in response.text
+    assert "ctx.lineTo(currentCanvasPoint.x, currentCanvasPoint.y);" in response.text
     assert "function clipSegmentToCircle(start, end, cx, cy, radius)" in response.text
     assert "const clippedSegment = clipSegmentToCircle(" in response.text
-    assert "limit=${selectedHistoryLimit}" in response.text
+    assert "limit=${selectedHistoryRequestLimit}" in response.text
     assert "data-target-id" in response.text
     assert "objectsList.addEventListener(\"click\"" in response.text
     assert "outsideObjectsList.addEventListener(\"click\"" in response.text
@@ -311,13 +316,22 @@ def test_history_radar_ui_renders_html_with_history_panel() -> None:
     assert "id=\"historyObjectsList\"" in response.text
     assert "id=\"historyTargetTypeFilter\"" in response.text
     assert "id=\"historyMinSpeedFilter\"" in response.text
+    assert "id=\"historyTimeFilterButton\"" in response.text
+    assert "id=\"historyTimeFilterModal\"" in response.text
+    assert "id=\"historyObservedAfterInput\"" in response.text
+    assert "id=\"historyObservedBeforeInput\"" in response.text
     assert "id=\"showTargetLabels\"" in response.text
     assert "Historiska objekt" in response.text
-    assert "fetch(\"/ui/history-targets\"" in response.text
+    assert "Alla spår" in response.text
+    assert 'const requestUrl = params.size > 0' in response.text
+    assert '?${params.toString()}' in response.text
     assert "fetch(`/ui/history-targets-in-view?${params.toString()}`" in response.text
     assert "object-type-icon" in response.text
     assert "object-view-badge" in response.text
     assert "function targetTypeIcon(kind)" in response.text
+    assert "function setHistoryTimeFilterModalOpen(isOpen)" in response.text
+    assert "function applyHistoryTimeFilter(nextObservedAfterIso, nextObservedBeforeIso)" in response.text
+    assert "observed_after" in response.text
     assert "function drawMapTargetLabel(label, x, y, color)" in response.text
     assert "function matchesTargetTypeFilter(target, filterValue)" in response.text
     assert "function matchesHistorySpeedFilter(target, minSpeed)" in response.text
@@ -353,6 +367,45 @@ def test_history_targets_ui_endpoint_returns_history_summaries(tmp_path) -> None
     assert payload["targets"][0]["position_count"] == 1
     assert payload["targets"][0]["max_observed_speed"] == 120.0
     assert payload["targets"][0]["last_seen"] == now.isoformat()
+
+
+def test_history_targets_ui_endpoint_honors_observed_interval(tmp_path) -> None:
+    now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+    state = LiveState(clock=lambda: now)
+    store = SQLiteStore(tmp_path / "history_targets_cutoff.sqlite3")
+    store.initialize()
+    early = _obs(
+        target_id="adsb:early",
+        source=Source.ADSB,
+        observed_at=now - timedelta(hours=2),
+        lat=59.0,
+        lon=18.0,
+    )
+    late = _obs(
+        target_id="adsb:late",
+        source=Source.ADSB,
+        observed_at=now,
+        lat=59.1,
+        lon=18.1,
+    )
+    store.persist_observation_and_target(early, _target("adsb:early", now - timedelta(hours=2)))
+    store.persist_observation_and_target(late, _target("adsb:late", now))
+
+    app = create_api_app(APIRuntime(state=state, store=store))
+    response = _request(
+        app,
+        "GET",
+        "/ui/history-targets",
+        params={
+            "observed_after": (now - timedelta(hours=3)).isoformat(),
+            "observed_before": (now - timedelta(hours=1)).isoformat(),
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 1
+    assert payload["targets"][0]["target_id"] == "adsb:early"
 
 
 def test_history_targets_in_view_endpoint_returns_matching_target_ids(tmp_path) -> None:
@@ -392,6 +445,97 @@ def test_history_targets_in_view_endpoint_returns_matching_target_ids(tmp_path) 
     payload = response.json()
     assert payload["count"] == 1
     assert payload["target_ids"] == ["adsb:inside"]
+
+
+def test_history_targets_in_view_endpoint_honors_observed_interval(tmp_path) -> None:
+    now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+    state = LiveState(clock=lambda: now)
+    store = SQLiteStore(tmp_path / "history_targets_in_view_cutoff.sqlite3")
+    store.initialize()
+    store.insert_observation(
+        NormalizedObservation(
+            target_id="adsb:inside-now",
+            source=Source.ADSB,
+            kind=TargetKind.AIRCRAFT,
+            observed_at=now,
+            lat=59.0,
+            lon=18.0,
+        )
+    )
+    store.insert_observation(
+        NormalizedObservation(
+            target_id="adsb:inside-earlier",
+            source=Source.ADSB,
+            kind=TargetKind.AIRCRAFT,
+            observed_at=now - timedelta(hours=2),
+            lat=59.0002,
+            lon=18.0002,
+        )
+    )
+
+    app = create_api_app(APIRuntime(state=state, store=store))
+    response = _request(
+        app,
+        "GET",
+        "/ui/history-targets-in-view",
+        params={
+            "center_lat": 59.0,
+            "center_lon": 18.0,
+            "range_km": 5.0,
+            "observed_after": (now - timedelta(hours=3)).isoformat(),
+            "observed_before": (now - timedelta(hours=1)).isoformat(),
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 1
+    assert payload["target_ids"] == ["adsb:inside-earlier"]
+
+
+def test_history_endpoint_honors_observed_interval(tmp_path) -> None:
+    now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+    state = LiveState(clock=lambda: now)
+    store = SQLiteStore(tmp_path / "history_interval.sqlite3")
+    store.initialize()
+    store.insert_observation(_obs(
+        target_id="adsb:abcdef",
+        source=Source.ADSB,
+        observed_at=now - timedelta(hours=2),
+        lat=59.0,
+        lon=18.0,
+    ))
+    store.insert_observation(_obs(
+        target_id="adsb:abcdef",
+        source=Source.ADSB,
+        observed_at=now - timedelta(hours=1),
+        lat=59.1,
+        lon=18.1,
+    ))
+    store.insert_observation(_obs(
+        target_id="adsb:abcdef",
+        source=Source.ADSB,
+        observed_at=now,
+        lat=59.2,
+        lon=18.2,
+    ))
+
+    app = create_api_app(APIRuntime(state=state, store=store))
+    history = _request(
+        app,
+        "GET",
+        "/history/adsb:abcdef",
+        params={
+            "limit": 10,
+            "observed_after": (now - timedelta(hours=1, minutes=30)).isoformat(),
+            "observed_before": (now - timedelta(minutes=30)).isoformat(),
+        },
+    )
+
+    assert history.status_code == 200
+    payload = history.json()
+    assert payload["count"] == 1
+    assert payload["observations"][0]["lat"] == 59.1
 
 
 def test_targets_latest_ui_endpoint_returns_store_rows(tmp_path) -> None:

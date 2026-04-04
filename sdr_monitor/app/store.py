@@ -225,15 +225,21 @@ class SQLiteStore:
                 upserted += 1
         return {"observations_scanned": scanned, "names_upserted": upserted}
 
-    def fetch_history(self, target_id: str, limit: int = 100) -> list[NormalizedObservation]:
+    def fetch_history(
+        self,
+        target_id: str,
+        limit: int = 100,
+        *,
+        observed_after: datetime | None = None,
+        observed_before: datetime | None = None,
+    ) -> list[NormalizedObservation]:
         """Fetch recent historical observations for one target id."""
 
         if limit <= 0:
             raise ValueError("limit must be > 0")
 
-        with self._lock, self._connect() as conn:
-            rows = conn.execute(
-                """
+        params: list[object] = [target_id]
+        query = """
                 SELECT
                     target_id,
                     source,
@@ -247,11 +253,18 @@ class SQLiteStore:
                     payload_json
                 FROM observations
                 WHERE target_id = ?
-                ORDER BY observed_at DESC
-                LIMIT ?
-                """,
-                (target_id, limit),
-            ).fetchall()
+        """
+        if observed_after is not None:
+            query += "\n                AND observed_at >= ?"
+            params.append(_to_iso(observed_after))
+        if observed_before is not None:
+            query += "\n                AND observed_at <= ?"
+            params.append(_to_iso(observed_before))
+        query += "\n                ORDER BY observed_at DESC\n                LIMIT ?"
+        params.append(limit)
+
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
 
         observations: list[NormalizedObservation] = []
         for row in rows:
@@ -271,7 +284,13 @@ class SQLiteStore:
             )
         return observations
 
-    def list_historical_targets(self, limit: int | None = None) -> list[HistoricalTargetSummary]:
+    def list_historical_targets(
+        self,
+        limit: int | None = None,
+        *,
+        observed_after: datetime | None = None,
+        observed_before: datetime | None = None,
+    ) -> list[HistoricalTargetSummary]:
         """List tracked objects that have persisted historical observations."""
 
         query = """
@@ -302,6 +321,15 @@ class SQLiteStore:
                         ELSE substr(observations.target_id, instr(observations.target_id, ':') + 1)
                     END
                 )
+        """
+        params: list[object] = []
+        if observed_after is not None:
+            query += "\n            WHERE observations.observed_at >= ?"
+            params.append(_to_iso(observed_after))
+        if observed_before is not None:
+            query += "\n            AND observations.observed_at <= ?" if observed_after is not None else "\n            WHERE observations.observed_at <= ?"
+            params.append(_to_iso(observed_before))
+        query += """
             GROUP BY
                 observations.target_id,
                 observations.source,
@@ -310,15 +338,14 @@ class SQLiteStore:
                 targets_latest.label
             ORDER BY MAX(observations.observed_at) DESC
         """
-        params: tuple[object, ...] = ()
         if limit is not None:
             if limit <= 0:
                 raise ValueError("limit must be > 0")
             query += " LIMIT ?"
-            params = (limit,)
+            params.append(limit)
 
         with self._lock, self._connect() as conn:
-            rows = conn.execute(query, params).fetchall()
+            rows = conn.execute(query, tuple(params)).fetchall()
 
         return [
             HistoricalTargetSummary(
@@ -343,6 +370,8 @@ class SQLiteStore:
         center_lat: float,
         center_lon: float,
         range_km: float,
+        observed_after: datetime | None = None,
+        observed_before: datetime | None = None,
     ) -> list[str]:
         """List target ids that have at least one historical position inside the active radar view."""
 
@@ -352,23 +381,29 @@ class SQLiteStore:
         lat_padding = range_km / _KM_PER_DEG_LAT
         lon_padding = range_km / _km_per_deg_lon(center_lat)
 
-        with self._lock, self._connect() as conn:
-            rows = conn.execute(
-                """
+        params: list[object] = [
+            center_lat - lat_padding,
+            center_lat + lat_padding,
+            center_lon - lon_padding,
+            center_lon + lon_padding,
+        ]
+        query = """
                 SELECT target_id, lat, lon
                 FROM observations
                 WHERE lat IS NOT NULL
                   AND lon IS NOT NULL
                   AND lat BETWEEN ? AND ?
                   AND lon BETWEEN ? AND ?
-                """,
-                (
-                    center_lat - lat_padding,
-                    center_lat + lat_padding,
-                    center_lon - lon_padding,
-                    center_lon + lon_padding,
-                ),
-            ).fetchall()
+        """
+        if observed_after is not None:
+            query += "\n                  AND observed_at >= ?"
+            params.append(_to_iso(observed_after))
+        if observed_before is not None:
+            query += "\n                  AND observed_at <= ?"
+            params.append(_to_iso(observed_before))
+
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
 
         matched: set[str] = set()
         km_lon = _km_per_deg_lon(center_lat)

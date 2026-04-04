@@ -114,6 +114,30 @@ def test_fetch_history_returns_descending_with_limit(tmp_path) -> None:
     assert history[1].altitude == 1100.0
 
 
+def test_fetch_history_honors_observed_interval(tmp_path) -> None:
+    seen_at = datetime(2026, 3, 30, 12, 0, tzinfo=timezone.utc)
+    store = SQLiteStore(tmp_path / "history_cutoff.sqlite3")
+    store.initialize()
+
+    store.insert_observation(_observation("adsb:hist", seen_at, altitude=1000.0))
+    store.insert_observation(
+        _observation("adsb:hist", seen_at + timedelta(seconds=1), altitude=1100.0)
+    )
+    store.insert_observation(
+        _observation("adsb:hist", seen_at + timedelta(seconds=2), altitude=1200.0)
+    )
+
+    history = store.fetch_history(
+        "adsb:hist",
+        limit=10,
+        observed_after=seen_at + timedelta(seconds=1),
+        observed_before=seen_at + timedelta(seconds=1),
+    )
+
+    assert len(history) == 1
+    assert [item.altitude for item in history] == [1100.0]
+
+
 def test_list_historical_targets_returns_counts_and_resolved_labels(tmp_path) -> None:
     seen_at = datetime(2026, 3, 30, 12, 0, tzinfo=timezone.utc)
     store = SQLiteStore(tmp_path / "history_targets.sqlite3")
@@ -135,6 +159,28 @@ def test_list_historical_targets_returns_counts_and_resolved_labels(tmp_path) ->
     assert summaries[1].position_count == 2
     assert summaries[1].label == "SAS123"
     assert summaries[1].max_observed_speed == 230.0
+
+
+def test_list_historical_targets_honors_observed_interval(tmp_path) -> None:
+    seen_at = datetime(2026, 3, 30, 12, 0, tzinfo=timezone.utc)
+    store = SQLiteStore(tmp_path / "history_targets_cutoff.sqlite3")
+    store.initialize()
+
+    store.insert_observation(_observation("adsb:hist-a", seen_at, altitude=1000.0))
+    store.insert_observation(
+        _observation("adsb:hist-a", seen_at + timedelta(seconds=1), altitude=1100.0)
+    )
+    store.insert_observation(
+        _observation("adsb:hist-b", seen_at + timedelta(seconds=2), altitude=1200.0)
+    )
+
+    summaries = store.list_historical_targets(
+        observed_after=seen_at + timedelta(seconds=1),
+        observed_before=seen_at + timedelta(seconds=1),
+    )
+
+    assert [item.target_id for item in summaries] == ["adsb:hist-a"]
+    assert summaries[0].position_count == 1
 
 
 def test_list_historical_target_ids_in_view_returns_only_targets_inside_radar_circle(tmp_path) -> None:
@@ -167,6 +213,43 @@ def test_list_historical_target_ids_in_view_returns_only_targets_inside_radar_ci
         center_lat=59.0,
         center_lon=18.0,
         range_km=5.0,
+    )
+
+    assert target_ids == ["adsb:inside"]
+
+
+def test_list_historical_target_ids_in_view_honors_observed_interval(tmp_path) -> None:
+    seen_at = datetime(2026, 3, 30, 12, 0, tzinfo=timezone.utc)
+    store = SQLiteStore(tmp_path / "history_in_view_cutoff.sqlite3")
+    store.initialize()
+
+    store.insert_observation(
+        NormalizedObservation(
+            target_id="adsb:inside",
+            source=Source.ADSB,
+            kind=TargetKind.AIRCRAFT,
+            observed_at=seen_at,
+            lat=59.0000,
+            lon=18.0000,
+        )
+    )
+    store.insert_observation(
+        NormalizedObservation(
+            target_id="adsb:later",
+            source=Source.ADSB,
+            kind=TargetKind.AIRCRAFT,
+            observed_at=seen_at + timedelta(hours=1),
+            lat=59.0001,
+            lon=18.0001,
+        )
+    )
+
+    target_ids = store.list_historical_target_ids_in_view(
+        center_lat=59.0,
+        center_lon=18.0,
+        range_km=5.0,
+        observed_after=seen_at - timedelta(minutes=1),
+        observed_before=seen_at + timedelta(minutes=30),
     )
 
     assert target_ids == ["adsb:inside"]

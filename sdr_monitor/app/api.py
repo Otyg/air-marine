@@ -109,7 +109,10 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
         }
 
     @app.get("/ui/history-targets")
-    async def get_history_targets() -> dict[str, Any]:
+    async def get_history_targets(
+        observed_after: datetime | None = Query(default=None),
+        observed_before: datetime | None = Query(default=None),
+    ) -> dict[str, Any]:
         if runtime.store is None:
             return {
                 "count": 0,
@@ -117,7 +120,10 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
             }
 
         try:
-            targets = runtime.store.list_historical_targets()
+            targets = runtime.store.list_historical_targets(
+                observed_after=observed_after,
+                observed_before=observed_before,
+            )
         except Exception as exc:
             raise HTTPException(
                 status_code=500,
@@ -135,6 +141,8 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
         center_lat: float = Query(..., ge=-90, le=90),
         center_lon: float = Query(..., ge=-180, le=180),
         range_km: float = Query(..., gt=0),
+        observed_after: datetime | None = Query(default=None),
+        observed_before: datetime | None = Query(default=None),
     ) -> dict[str, Any]:
         if runtime.store is None:
             return {
@@ -147,6 +155,8 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
                 center_lat=center_lat,
                 center_lon=center_lon,
                 range_km=range_km,
+                observed_after=observed_after,
+                observed_before=observed_before,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -286,12 +296,19 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
     async def get_history(
         target_id: str,
         limit: int = Query(default=100, gt=0),
+        observed_after: datetime | None = Query(default=None),
+        observed_before: datetime | None = Query(default=None),
     ) -> dict[str, Any]:
         if runtime.store is None:
             raise HTTPException(status_code=503, detail="History store is not configured.")
 
         try:
-            observations = runtime.store.fetch_history(target_id=target_id, limit=limit)
+            observations = runtime.store.fetch_history(
+                target_id=target_id,
+                limit=limit,
+                observed_after=observed_after,
+                observed_before=observed_before,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:
@@ -774,7 +791,8 @@ def _build_radar_html(
     let selectedTargetId = null;
     const selectedHistoryByTargetId = new Map();
     let pendingFitTargetId = null;
-    const selectedHistoryLimit = 1000;
+    const selectedHistoryPositionCount = 15;
+    const selectedHistoryRequestLimit = selectedHistoryPositionCount + 1;
     const selectedTargetColor = "#ff4d4d";
     let pollTimerId = null;
     let nextPollMs = defaultPollMs;
@@ -1365,6 +1383,43 @@ def _build_radar_html(
         .sort((a, b) => a.ts_ms - b.ts_ms);
     }}
 
+    function pointsMatch(left, right) {{
+      if (!left || !right) return false;
+      const leftLat = toOptionalNumber(left.lat);
+      const leftLon = toOptionalNumber(left.lon);
+      const rightLat = toOptionalNumber(right.lat);
+      const rightLon = toOptionalNumber(right.lon);
+      if (
+        !Number.isFinite(leftLat)
+        || !Number.isFinite(leftLon)
+        || !Number.isFinite(rightLat)
+        || !Number.isFinite(rightLon)
+      ) {{
+        return false;
+      }}
+      return Math.abs(leftLat - rightLat) < 0.000001 && Math.abs(leftLon - rightLon) < 0.000001;
+    }}
+
+    function limitSelectedHistoryPoints(targetId, historyPoints) {{
+      if (!Array.isArray(historyPoints) || historyPoints.length === 0) return [];
+
+      let points = historyPoints.slice();
+      const selectedTarget = findTargetById(targetId);
+      if (selectedTarget) {{
+        const currentPoint = {{
+          lat: toOptionalNumber(selectedTarget.lat),
+          lon: toOptionalNumber(selectedTarget.lon),
+        }};
+        const latestHistoryPoint = points[points.length - 1];
+        if (pointsMatch(latestHistoryPoint, currentPoint)) {{
+          points = points.slice(0, -1);
+        }}
+      }}
+
+      if (points.length <= selectedHistoryPositionCount) return points;
+      return points.slice(-selectedHistoryPositionCount);
+    }}
+
     function collectSelectionPoints(targetId, includeHistory = false) {{
       const points = [];
       const selectedTarget = findTargetById(targetId);
@@ -1433,13 +1488,16 @@ def _build_radar_html(
 
       try {{
         const response = await fetch(
-          `/history/${{encodeURIComponent(targetId)}}?limit=${{selectedHistoryLimit}}`,
+          `/history/${{encodeURIComponent(targetId)}}?limit=${{selectedHistoryRequestLimit}}`,
           {{ cache: "no-store" }},
         );
         if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
         const payload = await response.json();
         const observations = Array.isArray(payload.observations) ? payload.observations : [];
-        const historyPoints = normalizeHistoryPoints(observations);
+        const historyPoints = limitSelectedHistoryPoints(
+          targetId,
+          normalizeHistoryPoints(observations),
+        );
         selectedHistoryByTargetId.set(targetId, historyPoints);
         return historyPoints;
       }} catch (err) {{
@@ -1651,17 +1709,42 @@ def _build_radar_html(
       }}
       if (canvasPoints.length === 0) return;
 
+      let currentCanvasPoint = null;
+      const currentTarget = findTargetById(targetId);
+      if (currentTarget) {{
+        const currentLat = toOptionalNumber(currentTarget.lat);
+        const currentLon = toOptionalNumber(currentTarget.lon);
+        if (Number.isFinite(currentLat) && Number.isFinite(currentLon)) {{
+          const {{ dx, dy }} = toOffsetKm(currentLat, currentLon, viewCenter);
+          const currentX = cx + (dx * pxPerKm);
+          const currentY = cy - (dy * pxPerKm);
+          if (isInsideRadarCircle(currentX, currentY, cx, cy, radius)) {{
+            currentCanvasPoint = {{ x: currentX, y: currentY }};
+          }}
+        }}
+      }}
+
       ctx.save();
       ctx.lineWidth = 1.5;
       ctx.setLineDash([4, 3]);
       ctx.strokeStyle = selectedTargetColor;
       ctx.fillStyle = selectedTargetColor;
       ctx.globalAlpha = 0.95;
-      if (canvasPoints.length > 1) {{
+      if (canvasPoints.length > 1 || currentCanvasPoint) {{
         ctx.beginPath();
         ctx.moveTo(canvasPoints[0].x, canvasPoints[0].y);
         for (let i = 1; i < canvasPoints.length; i += 1) {{
           ctx.lineTo(canvasPoints[i].x, canvasPoints[i].y);
+        }}
+        const lastHistoryPoint = canvasPoints[canvasPoints.length - 1];
+        const shouldConnectToCurrent =
+          currentCanvasPoint
+          && (
+            Math.abs(lastHistoryPoint.x - currentCanvasPoint.x) >= 1
+            || Math.abs(lastHistoryPoint.y - currentCanvasPoint.y) >= 1
+          );
+        if (shouldConnectToCurrent) {{
+          ctx.lineTo(currentCanvasPoint.x, currentCanvasPoint.y);
         }}
         ctx.stroke();
       }}
@@ -2514,34 +2597,83 @@ def _build_history_radar_html(
       <aside class="side-panel">
         <div class="side-panel-head">
           <div>Historiska objekt</div>
+          <button id="historyTimeFilterButton" class="panel-action-button" type="button">
+            Tidsfilter
+          </button>
         </div>
         <div class="side-panel-summary">
-          <label class="panel-filter-control" for="historyTargetTypeFilter">
-            Typ
-            <select id="historyTargetTypeFilter" aria-label="Filtrera historisk objekttyp">
-              <option value="all">Alla</option>
-              <option value="aircraft">Flygplan</option>
-              <option value="vessel">Båtar</option>
-            </select>
-          </label>
-          <label class="panel-filter-control" for="historyMinSpeedFilter">
-            Min topphastighet
-            <input
-              id="historyMinSpeedFilter"
-              type="number"
-              min="0"
-              step="1"
-              value="0"
-              inputmode="decimal"
-              aria-label="Filtrera historiska objekt på högsta rapporterade hastighet"
-            />
-          </label>
+          <div class="panel-filter-row">
+            <label class="panel-filter-control" for="historyTargetTypeFilter">
+              Typ
+              <select id="historyTargetTypeFilter" aria-label="Filtrera historisk objekttyp">
+                <option value="all">Alla</option>
+                <option value="aircraft">Flygplan</option>
+                <option value="vessel">Båtar</option>
+              </select>
+            </label>
+            <label class="panel-filter-control" for="historyMinSpeedFilter">
+              Min topphastighet
+              <input
+                id="historyMinSpeedFilter"
+                type="number"
+                min="0"
+                step="1"
+                value="0"
+                inputmode="decimal"
+                aria-label="Filtrera historiska objekt på högsta rapporterade hastighet"
+              />
+            </label>
+          </div>
+        </div>
+        <div id="historyTimeFilterSummary" class="side-panel-summary panel-filter-status">
+          Tidsfilter: Alla spår
         </div>
         <div id="historyObjectsSummary" class="side-panel-summary">0 objekt med historik</div>
         <div id="historyObjectsList" class="objects-list">
           <div class="objects-empty">Inga historiska objekt.</div>
         </div>
       </aside>
+    </div>
+  </div>
+  <div id="historyTimeFilterModal" class="modal-backdrop" hidden aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="historyTimeFilterTitle">
+      <div class="modal-head">
+        <div id="historyTimeFilterTitle" class="modal-title">Globalt tidsfilter</div>
+        <div class="modal-copy">
+          Välj ett globalt tidsintervall som ska gälla för alla historiska spår och för objektlistan.
+        </div>
+      </div>
+      <div class="modal-body">
+        <label class="panel-filter-control" for="historyObservedAfterInput">
+          Visa spår fr.o.m.
+          <input
+            id="historyObservedAfterInput"
+            type="datetime-local"
+            step="60"
+            aria-label="Välj starttid för historiska spår"
+          />
+        </label>
+        <label class="panel-filter-control" for="historyObservedBeforeInput">
+          Visa spår t.o.m.
+          <input
+            id="historyObservedBeforeInput"
+            type="datetime-local"
+            step="60"
+            aria-label="Välj sluttid för historiska spår"
+          />
+        </label>
+        <div class="modal-actions">
+          <button id="historyTimeFilterCancelButton" class="panel-action-button" type="button">
+            Avbryt
+          </button>
+          <button id="historyTimeFilterClearButton" class="panel-action-button" type="button">
+            Alla spår
+          </button>
+          <button id="historyTimeFilterApplyButton" class="panel-action-button" type="button">
+            Använd
+          </button>
+        </div>
+      </div>
     </div>
   </div>
   <script>
@@ -2565,8 +2697,16 @@ def _build_history_radar_html(
     const showMapContoursCheckbox = document.getElementById("showMapContours");
     const historyTargetTypeFilterSelect = document.getElementById("historyTargetTypeFilter");
     const historyMinSpeedFilterInput = document.getElementById("historyMinSpeedFilter");
+    const historyTimeFilterButton = document.getElementById("historyTimeFilterButton");
+    const historyTimeFilterSummary = document.getElementById("historyTimeFilterSummary");
     const historyObjectsSummary = document.getElementById("historyObjectsSummary");
     const historyObjectsList = document.getElementById("historyObjectsList");
+    const historyTimeFilterModal = document.getElementById("historyTimeFilterModal");
+    const historyObservedAfterInput = document.getElementById("historyObservedAfterInput");
+    const historyObservedBeforeInput = document.getElementById("historyObservedBeforeInput");
+    const historyTimeFilterApplyButton = document.getElementById("historyTimeFilterApplyButton");
+    const historyTimeFilterClearButton = document.getElementById("historyTimeFilterClearButton");
+    const historyTimeFilterCancelButton = document.getElementById("historyTimeFilterCancelButton");
     const ctx = canvas.getContext("2d");
 
     let historyTargets = [];
@@ -2579,6 +2719,8 @@ def _build_history_radar_html(
     let selectedPositionCount = 0;
     let selectedLastSeen = null;
     let selectedHistoryPoints = [];
+    let historyObservedAfterIso = null;
+    let historyObservedBeforeIso = null;
     let error = null;
     let viewCenter = {{ ...homeCenter }};
     let manualRangeKm = defaultRangeKm;
@@ -2635,6 +2777,55 @@ def _build_history_radar_html(
       return Number.isFinite(parsed) ? parsed : NaN;
     }}
 
+    function formatHistoryFilterDateLabel(isoValue) {{
+      if (typeof isoValue !== "string" || !isoValue.trim()) return "";
+      const parsed = new Date(isoValue);
+      if (!Number.isFinite(parsed.getTime())) return "";
+      return parsed.toLocaleString("sv-SE", {{
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      }});
+    }}
+
+    function toDatetimeLocalValue(isoValue) {{
+      if (typeof isoValue !== "string" || !isoValue.trim()) return "";
+      const parsed = new Date(isoValue);
+      if (!Number.isFinite(parsed.getTime())) return "";
+      const pad = (value) => String(value).padStart(2, "0");
+      return [
+        parsed.getFullYear(),
+        pad(parsed.getMonth() + 1),
+        pad(parsed.getDate()),
+      ].join("-") + `T${{pad(parsed.getHours())}}:${{pad(parsed.getMinutes())}}`;
+    }}
+
+    function parseObservedBeforeInputValue(value) {{
+      if (typeof value !== "string") return null;
+      const trimmed = value.trim();
+      if (!trimmed) return null;
+      const parsed = new Date(trimmed);
+      if (!Number.isFinite(parsed.getTime())) return null;
+      return parsed.toISOString();
+    }}
+
+    function normalizeHistoryTimeFilterRange(observedAfterIso, observedBeforeIso) {{
+      const afterMs = parseTimestampMs(observedAfterIso);
+      const beforeMs = parseTimestampMs(observedBeforeIso);
+      if (Number.isFinite(afterMs) && Number.isFinite(beforeMs) && afterMs > beforeMs) {{
+        return {{
+          observedAfterIso: observedBeforeIso,
+          observedBeforeIso: observedAfterIso,
+        }};
+      }}
+      return {{
+        observedAfterIso: observedAfterIso || null,
+        observedBeforeIso: observedBeforeIso || null,
+      }};
+    }}
+
     function escapeHtml(value) {{
       return String(value)
         .replaceAll("&", "&amp;")
@@ -2669,6 +2860,47 @@ def _build_history_radar_html(
       if (!target || typeof target !== "object") return false;
       const maxObservedSpeed = toOptionalNumber(target.max_observed_speed);
       return Number.isFinite(maxObservedSpeed) && maxObservedSpeed >= minSpeed;
+    }}
+
+    function clearSelectedTargetState() {{
+      selectedTargetId = null;
+      selectedTargetKind = null;
+      selectedTargetLabel = null;
+      selectedPositionCount = 0;
+      selectedLastSeen = null;
+      selectedHistoryPoints = [];
+    }}
+
+    function updateHistoryTimeFilterSummary() {{
+      const observedAfterLabel = formatHistoryFilterDateLabel(historyObservedAfterIso);
+      const observedBeforeLabel = formatHistoryFilterDateLabel(historyObservedBeforeIso);
+      let summary = "Alla spår";
+      if (observedAfterLabel && observedBeforeLabel) {{
+        summary = `${{observedAfterLabel}} -> ${{observedBeforeLabel}}`;
+      }} else if (observedAfterLabel) {{
+        summary = `Från ${{observedAfterLabel}}`;
+      }} else if (observedBeforeLabel) {{
+        summary = `Till ${{observedBeforeLabel}}`;
+      }}
+      historyTimeFilterSummary.textContent = `Tidsfilter: ${{summary}}`;
+    }}
+
+    function setHistoryTimeFilterModalOpen(isOpen) {{
+      historyTimeFilterModal.hidden = !isOpen;
+      historyTimeFilterModal.setAttribute("aria-hidden", isOpen ? "false" : "true");
+      if (isOpen) {{
+        historyObservedAfterInput.value = toDatetimeLocalValue(historyObservedAfterIso);
+        historyObservedBeforeInput.value = toDatetimeLocalValue(historyObservedBeforeIso);
+        historyObservedAfterInput.focus();
+      }}
+    }}
+
+    function appendHistoryTimeFilterParams(params) {{
+      if (historyObservedAfterIso) {{
+        params.set("observed_after", historyObservedAfterIso);
+      }}
+      if (!historyObservedBeforeIso) return;
+      params.set("observed_before", historyObservedBeforeIso);
     }}
 
     function formatRangeValue(value) {{
@@ -2860,6 +3092,8 @@ def _build_history_radar_html(
         viewCenter.lat.toFixed(4),
         viewCenter.lon.toFixed(4),
         rangeKm.toFixed(3),
+        historyObservedAfterIso || "all",
+        historyObservedBeforeIso || "all",
       ].join("|");
     }}
 
@@ -3020,6 +3254,7 @@ def _build_history_radar_html(
           center_lon: viewCenter.lon.toFixed(6),
           range_km: rangeKm.toFixed(3),
         }});
+        appendHistoryTimeFilterParams(params);
         const response = await fetch(`/ui/history-targets-in-view?${{params.toString()}}`, {{
           cache: "no-store",
         }});
@@ -3260,7 +3495,11 @@ def _build_history_radar_html(
 
     function renderHistoryCards(items) {{
       if (items.length === 0) {{
-        return `<div class="objects-empty">${{escapeHtml("Inga historiska objekt.")}}</div>`;
+        const emptyText = historyObservedBeforeIso
+          || historyObservedAfterIso
+          ? "Inga historiska objekt för valt tidsfilter."
+          : "Inga historiska objekt.";
+        return `<div class="objects-empty">${{escapeHtml(emptyText)}}</div>`;
       }}
 
       return items
@@ -3329,17 +3568,17 @@ def _build_history_radar_html(
 
     async function loadHistoryTargets() {{
       try {{
-        const response = await fetch("/ui/history-targets", {{ cache: "no-store" }});
+        const params = new URLSearchParams();
+        appendHistoryTimeFilterParams(params);
+        const requestUrl = params.size > 0
+          ? `/ui/history-targets?${{params.toString()}}`
+          : "/ui/history-targets";
+        const response = await fetch(requestUrl, {{ cache: "no-store" }});
         if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
         const payload = await response.json();
         historyTargets = Array.isArray(payload.targets) ? payload.targets : [];
         if (selectedTargetId && !findHistoryTargetById(selectedTargetId)) {{
-          selectedTargetId = null;
-          selectedTargetKind = null;
-          selectedTargetLabel = null;
-          selectedPositionCount = 0;
-          selectedLastSeen = null;
-          selectedHistoryPoints = [];
+          clearSelectedTargetState();
         }}
         error = null;
       }} catch (err) {{
@@ -3354,8 +3593,12 @@ def _build_history_radar_html(
     async function loadSelectedHistory(targetId, positionCount) {{
       if (!targetId) return [];
       const safeLimit = Math.max(1, Number(positionCount) || 1);
+      const params = new URLSearchParams({{
+        limit: String(safeLimit),
+      }});
+      appendHistoryTimeFilterParams(params);
       const response = await fetch(
-        `/history/${{encodeURIComponent(targetId)}}?limit=${{safeLimit}}`,
+        `/history/${{encodeURIComponent(targetId)}}?${{params.toString()}}`,
         {{ cache: "no-store" }},
       );
       if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
@@ -3364,23 +3607,16 @@ def _build_history_radar_html(
       return normalizeHistoryPoints(observations);
     }}
 
-    async function selectTarget(targetId) {{
-      if (!targetId) return;
-      if (selectedTargetId === targetId) {{
-        selectedTargetId = null;
-        selectedTargetKind = null;
-        selectedTargetLabel = null;
-        selectedPositionCount = 0;
-        selectedLastSeen = null;
-        selectedHistoryPoints = [];
-        draw();
+    async function refreshSelectedTargetHistory() {{
+      if (!selectedTargetId) return;
+      const selectedTarget = findHistoryTargetById(selectedTargetId);
+      if (!selectedTarget) {{
+        clearSelectedTargetState();
         renderHistoryPanel();
+        draw();
         return;
       }}
 
-      const selectedTarget = findHistoryTargetById(targetId);
-      if (!selectedTarget) return;
-      selectedTargetId = targetId;
       selectedTargetKind = typeof selectedTarget.kind === "string" ? selectedTarget.kind : null;
       selectedTargetLabel = selectedTarget.label || selectedTarget.target_id || null;
       selectedPositionCount = Number(selectedTarget.position_count) || 0;
@@ -3389,9 +3625,9 @@ def _build_history_radar_html(
       renderHistoryPanel();
       draw();
 
-      const activeSelection = targetId;
+      const activeSelection = selectedTargetId;
       try {{
-        const historyPoints = await loadSelectedHistory(targetId, selectedPositionCount);
+        const historyPoints = await loadSelectedHistory(activeSelection, selectedPositionCount);
         if (selectedTargetId !== activeSelection) return;
         selectedHistoryPoints = historyPoints;
         error = null;
@@ -3401,6 +3637,40 @@ def _build_history_radar_html(
         error = err instanceof Error ? err.message : String(err);
       }}
       draw();
+    }}
+
+    async function selectTarget(targetId) {{
+      if (!targetId) return;
+      if (selectedTargetId === targetId) {{
+        clearSelectedTargetState();
+        draw();
+        renderHistoryPanel();
+        return;
+      }}
+
+      const selectedTarget = findHistoryTargetById(targetId);
+      if (!selectedTarget) return;
+      selectedTargetId = targetId;
+      await refreshSelectedTargetHistory();
+    }}
+
+    async function applyHistoryTimeFilter(nextObservedAfterIso, nextObservedBeforeIso) {{
+      const normalized = normalizeHistoryTimeFilterRange(
+        nextObservedAfterIso,
+        nextObservedBeforeIso,
+      );
+      historyObservedAfterIso = normalized.observedAfterIso;
+      historyObservedBeforeIso = normalized.observedBeforeIso;
+      updateHistoryTimeFilterSummary();
+      historyTargetsInView = new Set();
+      historyTargetsInViewLoadedKey = null;
+      historyTargetsInViewRequestKey = null;
+      await loadHistoryTargets();
+      if (selectedTargetId) {{
+        await refreshSelectedTargetHistory();
+      }} else {{
+        draw();
+      }}
     }}
 
     function getTargetIdFromPanelEvent(event) {{
@@ -3476,11 +3746,12 @@ def _build_history_radar_html(
         ? `Kartlager: ${{mapContourSource}}/${{mapContourStatus}}`
         : "Kartlager: av";
       const contourErrorText = showMapContours && mapContourError ? ` | Konturer: ${{mapContourError}}` : "";
+      const historyTimeFilterText = ` | ${{historyTimeFilterSummary.textContent}}`;
       const selectedText = selectedTargetId
         ? `Vald: ${{selectedTargetLabel || selectedTargetId}} | Positioner: ${{selectedPositionCount}} | Last seen: ${{selectedLastSeen || "-"}}`
         : "Vald: inget objekt";
       const errorText = error ? ` | Error: ${{error}}` : "";
-      meta.textContent = `Home: ${{homeCenter.lat.toFixed(6)}}, ${{homeCenter.lon.toFixed(6)}} | View: ${{viewCenter.lat.toFixed(6)}}, ${{viewCenter.lon.toFixed(6)}} | Ringavstand: ${{ringSpacingKm.toFixed(2)}} km | ${{contourStatus}} | ${{selectedText}}${{contourErrorText}}${{errorText}}`;
+      meta.textContent = `Home: ${{homeCenter.lat.toFixed(6)}}, ${{homeCenter.lon.toFixed(6)}} | View: ${{viewCenter.lat.toFixed(6)}}, ${{viewCenter.lon.toFixed(6)}} | Ringavstand: ${{ringSpacingKm.toFixed(2)}} km | ${{contourStatus}}${{historyTimeFilterText}} | ${{selectedText}}${{contourErrorText}}${{errorText}}`;
     }}
 
     window.addEventListener("resize", draw);
@@ -3497,6 +3768,45 @@ def _build_history_radar_html(
     }});
     historyObjectsList.addEventListener("click", onHistoryPanelClick);
     historyObjectsList.addEventListener("keydown", onHistoryPanelKeyDown);
+    historyTimeFilterButton.addEventListener("click", () => {{
+      setHistoryTimeFilterModalOpen(true);
+    }});
+    historyTimeFilterCancelButton.addEventListener("click", () => {{
+      setHistoryTimeFilterModalOpen(false);
+    }});
+    historyTimeFilterClearButton.addEventListener("click", () => {{
+      setHistoryTimeFilterModalOpen(false);
+      void applyHistoryTimeFilter(null, null);
+    }});
+    historyTimeFilterApplyButton.addEventListener("click", () => {{
+      const nextObservedAfterIso = parseObservedBeforeInputValue(historyObservedAfterInput.value);
+      const nextObservedBeforeIso = parseObservedBeforeInputValue(historyObservedBeforeInput.value);
+      setHistoryTimeFilterModalOpen(false);
+      void applyHistoryTimeFilter(nextObservedAfterIso, nextObservedBeforeIso);
+    }});
+    historyTimeFilterModal.addEventListener("click", (event) => {{
+      if (event.target === historyTimeFilterModal) {{
+        setHistoryTimeFilterModalOpen(false);
+      }}
+    }});
+    function submitHistoryTimeFilterFromModal() {{
+      const nextObservedAfterIso = parseObservedBeforeInputValue(historyObservedAfterInput.value);
+      const nextObservedBeforeIso = parseObservedBeforeInputValue(historyObservedBeforeInput.value);
+      setHistoryTimeFilterModalOpen(false);
+      void applyHistoryTimeFilter(nextObservedAfterIso, nextObservedBeforeIso);
+    }}
+    historyObservedAfterInput.addEventListener("keydown", (event) => {{
+      if (event.key === "Enter") {{
+        event.preventDefault();
+        submitHistoryTimeFilterFromModal();
+      }}
+    }});
+    historyObservedBeforeInput.addEventListener("keydown", (event) => {{
+      if (event.key === "Enter") {{
+        event.preventDefault();
+        submitHistoryTimeFilterFromModal();
+      }}
+    }});
     showFixedNamesCheckbox.addEventListener("change", () => {{
       showFixedNames = showFixedNamesCheckbox.checked;
       draw();
@@ -3520,12 +3830,7 @@ def _build_history_radar_html(
         if (selectedTargetId) {{
           const selectedTarget = findHistoryTargetById(selectedTargetId);
           if (!matchesTargetTypeFilter(selectedTarget, historyTargetTypeFilter)) {{
-            selectedTargetId = null;
-            selectedTargetKind = null;
-            selectedTargetLabel = null;
-            selectedPositionCount = 0;
-            selectedLastSeen = null;
-            selectedHistoryPoints = [];
+            clearSelectedTargetState();
           }}
         }}
         renderHistoryPanel();
@@ -3539,12 +3844,7 @@ def _build_history_radar_html(
         if (selectedTargetId) {{
           const selectedTarget = findHistoryTargetById(selectedTargetId);
           if (!matchesHistorySpeedFilter(selectedTarget, historyMinSpeedFilter)) {{
-            selectedTargetId = null;
-            selectedTargetKind = null;
-            selectedTargetLabel = null;
-            selectedPositionCount = 0;
-            selectedLastSeen = null;
-            selectedHistoryPoints = [];
+            clearSelectedTargetState();
           }}
         }}
         renderHistoryPanel();
@@ -3567,6 +3867,12 @@ def _build_history_radar_html(
     canvas.addEventListener("mousemove", updateSelection);
     canvas.addEventListener("mouseleave", cancelSelection);
     window.addEventListener("mouseup", endSelection);
+    document.addEventListener("keydown", (event) => {{
+      if (event.key === "Escape" && !historyTimeFilterModal.hidden) {{
+        setHistoryTimeFilterModalOpen(false);
+      }}
+    }});
+    updateHistoryTimeFilterSummary();
     draw();
     void loadHistoryTargets();
   </script>
