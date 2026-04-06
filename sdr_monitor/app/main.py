@@ -18,6 +18,7 @@ from app.env_utils import load_local_dotenv
 from app.fixed_objects import load_fixed_radar_objects
 from app.ingest_adsb import ADSBAircraftJsonIngestor
 from app.ingest_ais import AISTCPIngestor
+from app.ingest_ogn import OGNTCPIngestor
 from app.logging_setup import configure_logging, get_logger
 from app.map_contours import build_map_contour_service
 from app.models import NormalizedObservation, Target
@@ -157,12 +158,14 @@ def create_service_components(
 
     scanner = HybridBandScanner(
         adsb_reader=ADSBAircraftJsonIngestor(aircraft_json_path=adsb_snapshot_path),
+        ogn_reader=OGNTCPIngestor.from_config(resolved),
         ais_reader=AISTCPIngestor.from_config(resolved),
         state=state,
         store=store,
         supervisor=DecoderSupervisor(config=decoder_process_config),
         config=ScannerConfig(
             adsb_window_seconds=resolved.adsb_window_seconds,
+            ogn_window_seconds=resolved.ogn_window_seconds,
             ais_window_seconds=resolved.ais_window_seconds,
             inter_scan_pause_seconds=resolved.inter_scan_pause_seconds,
         ),

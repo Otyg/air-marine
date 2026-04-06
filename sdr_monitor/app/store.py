@@ -313,6 +313,8 @@ class SQLiteStore:
                                 targets_latest.mmsi,
                                 substr(observations.target_id, instr(observations.target_id, ':') + 1)
                             )
+                        WHEN observations.source = 'ogn'
+                            THEN lower(substr(observations.target_id, instr(observations.target_id, ':') + 1))
                         WHEN observations.source = 'adsb'
                             THEN lower(COALESCE(
                                 targets_latest.icao24,
@@ -441,6 +443,8 @@ class SQLiteStore:
                 ON target_names.id = (
                     CASE
                         WHEN targets_latest.source = 'ais' THEN targets_latest.mmsi
+                        WHEN targets_latest.source = 'ogn'
+                            THEN lower(substr(targets_latest.target_id, instr(targets_latest.target_id, ':') + 1))
                         WHEN targets_latest.source = 'adsb' THEN lower(targets_latest.icao24)
                         ELSE COALESCE(targets_latest.mmsi, lower(targets_latest.icao24))
                     END
@@ -1029,6 +1033,12 @@ class SQLiteStore:
         if observation.source == Source.ADSB:
             identifier = _normalize_identifier(observation.icao24 or target.icao24, Source.ADSB)
             name = _normalize_name(observation.callsign or target.callsign)
+        elif observation.source == Source.OGN:
+            identifier = _normalize_identifier(
+                _identifier_from_target_id(observation.target_id, Source.OGN),
+                Source.OGN,
+            )
+            name = _normalize_name(observation.callsign or target.callsign or observation.label)
         elif observation.source == Source.AIS:
             identifier = _normalize_identifier(observation.mmsi or target.mmsi, Source.AIS)
             name = _normalize_name(observation.shipname or target.shipname)
@@ -1044,6 +1054,12 @@ class SQLiteStore:
         if target.source == Source.ADSB:
             identifier = _normalize_identifier(target.icao24, Source.ADSB)
             name = _normalize_name(target.callsign)
+        elif target.source == Source.OGN:
+            identifier = _normalize_identifier(
+                _identifier_from_target_id(target.target_id, Source.OGN),
+                Source.OGN,
+            )
+            name = _normalize_name(target.callsign or target.label)
         elif target.source == Source.AIS:
             identifier = _normalize_identifier(target.mmsi, Source.AIS)
             name = _normalize_name(target.shipname)
@@ -1088,7 +1104,11 @@ class SQLiteStore:
         conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
 
     def _infer_band(self, source: str) -> ScanBand:
-        return ScanBand.ADSB if source == Source.ADSB.value else ScanBand.AIS
+        if source == Source.ADSB.value:
+            return ScanBand.ADSB
+        if source == Source.OGN.value:
+            return ScanBand.OGN
+        return ScanBand.AIS
 
 
 def _to_iso(value: datetime) -> str:
@@ -1119,6 +1139,8 @@ def _normalize_identifier(value: str | None, source: Source) -> str | None:
     if not normalized:
         return None
     if source == Source.ADSB:
+        return normalized.lower()
+    if source == Source.OGN:
         return normalized.lower()
     return normalized
 
@@ -1163,6 +1185,19 @@ def _extract_identifier_name_from_observation(
         name = _normalize_name(
             _clean_payload_text(decoded_map.get("shipname"))
             or _clean_payload_text(payload.get("shipname"))
+        )
+        return identifier, name
+
+    if source == Source.OGN.value:
+        identifier = _normalize_identifier(
+            _clean_payload_text(payload.get("device_id"))
+            or _identifier_from_target_id(target_id, Source.OGN),
+            Source.OGN,
+        )
+        name = _normalize_name(
+            _clean_payload_text(payload.get("sender"))
+            or _clean_payload_text(payload.get("label"))
+            or _clean_payload_text(payload.get("callsign"))
         )
         return identifier, name
 

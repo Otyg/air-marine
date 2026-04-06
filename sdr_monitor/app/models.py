@@ -14,6 +14,7 @@ DEFAULT_POSITION_HISTORY_MAXLEN = 5
 class Source(str, Enum):
     ADSB = "adsb"
     AIS = "ais"
+    OGN = "ogn"
 
 
 class TargetKind(str, Enum):
@@ -30,6 +31,7 @@ class Freshness(str, Enum):
 class ScanBand(str, Enum):
     ADSB = "adsb"
     AIS = "ais"
+    OGN = "ogn"
 
 
 def _serialize_dt(value: datetime | None) -> str | None:

@@ -69,6 +69,7 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
             "cycle_count": scanner_status.get("cycle_count"),
             "scan_mode": scanner_status.get("scan_mode"),
             "adsb_window_seconds": scanner_status.get("adsb_window_seconds"),
+            "ogn_window_seconds": scanner_status.get("ogn_window_seconds"),
             "ais_window_seconds": scanner_status.get("ais_window_seconds"),
             "inter_scan_pause_seconds": scanner_status.get("inter_scan_pause_seconds"),
         }
@@ -685,9 +686,10 @@ def _build_radar_html(
         <label class="scan-mode-control" for="scanModeSelect">
           Mottagning
           <select id="scanModeSelect" aria-label="Mottagningsläge">
-            <option value="hybrid">Scan AIS + ADS-B</option>
+            <option value="hybrid">Scan AIS + ADS-B + OGN/FLARM/ADS-L</option>
             <option value="continuous_ais">Kontinuerlig AIS</option>
             <option value="continuous_adsb">Kontinuerlig ADS-B</option>
+            <option value="continuous_ogn">Kontinuerlig OGN/FLARM/ADS-L</option>
           </select>
         </label>
         <label class="toggle-control" for="showFixedNames">
@@ -871,12 +873,14 @@ def _build_radar_html(
         : null;
       const lastScanSwitchMs = parseTimestampMs(rawScanner.last_scan_switch);
       const adsbWindowMs = toPositiveMs(rawScanner.adsb_window_seconds);
+      const ognWindowMs = toPositiveMs(rawScanner.ogn_window_seconds);
       const aisWindowMs = toPositiveMs(rawScanner.ais_window_seconds);
       const pauseMs = toPositiveMs(rawScanner.inter_scan_pause_seconds);
       return {{
         active_scan_band: activeScanBand,
         last_scan_switch_ms: lastScanSwitchMs,
         adsb_window_ms: adsbWindowMs,
+        ogn_window_ms: ognWindowMs,
         ais_window_ms: aisWindowMs,
         inter_scan_pause_ms: Number.isFinite(pauseMs) ? pauseMs : 0,
       }};
@@ -885,18 +889,23 @@ def _build_radar_html(
     function computeBandAwarePollMs(scannerState) {{
       if (!scannerState || typeof scannerState !== "object") return Number.NaN;
       const activeBand = scannerState.active_scan_band;
-      if (activeBand !== "adsb" && activeBand !== "ais") return Number.NaN;
+      if (activeBand !== "adsb" && activeBand !== "ais" && activeBand !== "ogn") return Number.NaN;
 
       const lastSwitchMs = scannerState.last_scan_switch_ms;
       if (!Number.isFinite(lastSwitchMs)) return Number.NaN;
 
       const adsbWindowMs = scannerState.adsb_window_ms;
+      const ognWindowMs = scannerState.ogn_window_ms;
       const aisWindowMs = scannerState.ais_window_ms;
       const pauseMs = Number.isFinite(scannerState.inter_scan_pause_ms)
         ? scannerState.inter_scan_pause_ms
         : 0;
 
-      const currentWindowMs = activeBand === "adsb" ? adsbWindowMs : aisWindowMs;
+      const currentWindowMs = activeBand === "adsb"
+        ? adsbWindowMs
+        : activeBand === "ogn"
+          ? ognWindowMs
+          : aisWindowMs;
       if (!Number.isFinite(currentWindowMs) || currentWindowMs <= 0) return Number.NaN;
 
       const elapsedMs = Math.max(0, Date.now() - lastSwitchMs);
@@ -917,7 +926,8 @@ def _build_radar_html(
     function scanModeLabel(mode) {{
       if (mode === "continuous_ais") return "Kontinuerlig AIS";
       if (mode === "continuous_adsb") return "Kontinuerlig ADS-B";
-      return "Scan AIS + ADS-B";
+      if (mode === "continuous_ogn") return "Kontinuerlig OGN/FLARM/ADS-L";
+      return "Scan AIS + ADS-B + OGN/FLARM/ADS-L";
     }}
 
     function syncScanModeSelect() {{
@@ -2067,7 +2077,7 @@ def _build_radar_html(
       if (!target || typeof target !== "object") return false;
       const source = typeof target.source === "string" ? target.source : "";
       const kind = typeof target.kind === "string" ? target.kind : "";
-      const validSource = source === "adsb" || source === "ais";
+      const validSource = source === "adsb" || source === "ais" || source === "ogn";
       const validKind = kind === "aircraft" || kind === "vessel";
       return validSource && validKind;
     }}

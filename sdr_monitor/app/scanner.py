@@ -27,6 +27,7 @@ def _utcnow() -> datetime:
 @dataclass(frozen=True, slots=True)
 class ScannerConfig:
     adsb_window_seconds: float = 8.0
+    ogn_window_seconds: float = 0.0
     ais_window_seconds: float = 12.0
     inter_scan_pause_seconds: float = 2.0
 
@@ -35,6 +36,7 @@ class ScanMode(str, Enum):
     HYBRID = "hybrid"
     CONTINUOUS_AIS = "continuous_ais"
     CONTINUOUS_ADSB = "continuous_adsb"
+    CONTINUOUS_OGN = "continuous_ogn"
 
 
 SCAN_MODE_VALUES = tuple(mode.value for mode in ScanMode)
@@ -47,6 +49,7 @@ class HybridBandScanner:
         self,
         *,
         adsb_reader: ObservationReader,
+        ogn_reader: ObservationReader | None,
         ais_reader: ObservationReader,
         state: LiveState,
         store: SQLiteStore | None,
@@ -56,6 +59,7 @@ class HybridBandScanner:
         now_fn: Callable[[], datetime] | None = None,
     ) -> None:
         self._adsb_reader = adsb_reader
+        self._ogn_reader = ogn_reader
         self._ais_reader = ais_reader
         self._state = state
         self._store = store
@@ -75,6 +79,8 @@ class HybridBandScanner:
 
         if self._config.adsb_window_seconds <= 0:
             raise ValueError("adsb_window_seconds must be > 0")
+        if self._config.ogn_window_seconds < 0:
+            raise ValueError("ogn_window_seconds must be >= 0")
         if self._config.ais_window_seconds <= 0:
             raise ValueError("ais_window_seconds must be > 0")
         if self._config.inter_scan_pause_seconds < 0:
@@ -134,6 +140,19 @@ class HybridBandScanner:
             if self._stop_event.is_set():
                 return
             self._pause_between_scans()
+            if self._stop_event.is_set():
+                return
+            if self._config.ogn_window_seconds > 0:
+                self._run_band_window(
+                    band=ScanBand.OGN,
+                    window_seconds=self._config.ogn_window_seconds,
+                    reader=self._ogn_reader,
+                    timeout_seconds=self._config.ogn_window_seconds,
+                    keep_decoder_running=False,
+                )
+                if self._stop_event.is_set():
+                    return
+                self._pause_between_scans()
         elif scan_mode == ScanMode.CONTINUOUS_AIS:
             self._run_band_window(
                 band=ScanBand.AIS,
@@ -148,6 +167,14 @@ class HybridBandScanner:
                 window_seconds=self._config.adsb_window_seconds,
                 reader=self._adsb_reader,
                 timeout_seconds=self._config.adsb_window_seconds,
+                keep_decoder_running=True,
+            )
+        elif scan_mode == ScanMode.CONTINUOUS_OGN:
+            self._run_band_window(
+                band=ScanBand.OGN,
+                window_seconds=self._config.ogn_window_seconds,
+                reader=self._ogn_reader,
+                timeout_seconds=self._config.ogn_window_seconds,
                 keep_decoder_running=True,
             )
         else:  # pragma: no cover - defensive branch
@@ -178,6 +205,7 @@ class HybridBandScanner:
             "cycle_count": self._cycle_count,
             "scan_mode": self.get_scan_mode().value,
             "adsb_window_seconds": self._config.adsb_window_seconds,
+            "ogn_window_seconds": self._config.ogn_window_seconds,
             "ais_window_seconds": self._config.ais_window_seconds,
             "inter_scan_pause_seconds": self._config.inter_scan_pause_seconds,
             "supervisor": self._supervisor.status(),
@@ -201,6 +229,17 @@ class HybridBandScanner:
         except Exception as exc:
             self._record_error(f"{band.value}: failed to start decoder: {exc}")
             self._sleep_fn(window_seconds)
+            self._active_scan_band = None
+            return
+
+        if reader is None:
+            self._record_error(f"{band.value}: no reader configured")
+            self._sleep_fn(window_seconds)
+            if not keep_decoder_running:
+                try:
+                    self._supervisor.stop_active()
+                except Exception as exc:
+                    self._record_error(f"{band.value}: failed to stop decoder: {exc}")
             self._active_scan_band = None
             return
 

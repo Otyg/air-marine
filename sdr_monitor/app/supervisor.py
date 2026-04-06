@@ -19,6 +19,7 @@ def _utcnow() -> datetime:
 @dataclass(frozen=True, slots=True)
 class DecoderProcessConfig:
     adsb_command: tuple[str, ...] = ("readsb",)
+    ogn_command: tuple[str, ...] | None = None
     ais_command: tuple[str, ...] = ("rtl_ais",)
     cwd: str | None = None
     env: Mapping[str, str] | None = None
@@ -139,6 +140,8 @@ class DecoderSupervisor:
         active = self._process_supervisor.active_name
         if active == ScanBand.ADSB.value:
             return ScanBand.ADSB
+        if active == ScanBand.OGN.value:
+            return ScanBand.OGN
         if active == ScanBand.AIS.value:
             return ScanBand.AIS
         return None
@@ -152,6 +155,13 @@ class DecoderSupervisor:
             command = self._config.adsb_command
             stdout = subprocess.DEVNULL
             stderr = subprocess.DEVNULL
+        elif band == ScanBand.OGN:
+            self._process_supervisor.stop()
+            if self._config.ogn_command is None:
+                return
+            command = self._config.ogn_command
+            stdout = subprocess.DEVNULL
+            stderr = None
         elif band == ScanBand.AIS:
             command = self._config.ais_command
             stdout = subprocess.DEVNULL

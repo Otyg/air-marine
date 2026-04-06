@@ -10,6 +10,7 @@ def test_config_uses_defaults_when_env_not_set() -> None:
     assert config.service_name == "sdr-monitor"
     assert config.log_level == "INFO"
     assert config.adsb_window_seconds == 8.0
+    assert config.ogn_window_seconds == 0.0
     assert config.ais_window_seconds == 12.0
     assert config.inter_scan_pause_seconds == 2.0
     assert config.max_positions_per_target == 5
@@ -31,6 +32,8 @@ def test_config_uses_defaults_when_env_not_set() -> None:
     assert config.markhojd_direct_sample_step_m == 25
     assert config.markhojd_direct_contour_interval_m == 10
     assert config.markhojd_direct_max_points_per_request == 1000
+    assert config.ogn_tcp_host == "127.0.0.1"
+    assert config.ogn_tcp_port == 50001
 
 
 def test_config_reads_environment_values() -> None:
@@ -39,11 +42,14 @@ def test_config_reads_environment_values() -> None:
             "SDR_MONITOR_SERVICE_NAME": "air-marine",
             "SDR_MONITOR_LOG_LEVEL": "debug",
             "SDR_MONITOR_ADSB_WINDOW_SECONDS": "5.5",
+            "SDR_MONITOR_OGN_WINDOW_SECONDS": "4",
             "SDR_MONITOR_AIS_WINDOW_SECONDS": "9",
             "SDR_MONITOR_INTER_SCAN_PAUSE_SECONDS": "2.5",
             "SDR_MONITOR_FRESH_SECONDS": "15",
             "SDR_MONITOR_AGING_SECONDS": "60",
             "SDR_MONITOR_MAX_POSITIONS_PER_TARGET": "7",
+            "SDR_MONITOR_OGN_TCP_HOST": "127.0.0.2",
+            "SDR_MONITOR_OGN_TCP_PORT": "50002",
             "SDR_MONITOR_AIS_TCP_PORT": "10111",
             "SDR_MONITOR_API_PORT": "18000",
             "SDR_MONITOR_RADAR_CENTER_LAT": "59.3345",
@@ -67,11 +73,14 @@ def test_config_reads_environment_values() -> None:
     assert config.service_name == "air-marine"
     assert config.log_level == "DEBUG"
     assert config.adsb_window_seconds == 5.5
+    assert config.ogn_window_seconds == 4.0
     assert config.ais_window_seconds == 9.0
     assert config.inter_scan_pause_seconds == 2.5
     assert config.fresh_seconds == 15
     assert config.aging_seconds == 60
     assert config.max_positions_per_target == 7
+    assert config.ogn_tcp_host == "127.0.0.2"
+    assert config.ogn_tcp_port == 50002
     assert config.ais_tcp_port == 10111
     assert config.api_port == 18000
     assert config.radar_center_lat == 59.3345
@@ -124,6 +133,11 @@ def test_config_rejects_invalid_radar_center_coordinates() -> None:
 def test_config_rejects_negative_inter_scan_pause() -> None:
     with pytest.raises(ValueError, match="INTER_SCAN_PAUSE_SECONDS"):
         Config.from_env({"SDR_MONITOR_INTER_SCAN_PAUSE_SECONDS": "-0.1"})
+
+
+def test_config_rejects_negative_ogn_window() -> None:
+    with pytest.raises(ValueError, match="OGN_WINDOW_SECONDS"):
+        Config.from_env({"SDR_MONITOR_OGN_WINDOW_SECONDS": "-0.1"})
 
 
 def test_config_rejects_invalid_map_settings() -> None:

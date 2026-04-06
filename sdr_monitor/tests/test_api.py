@@ -22,7 +22,7 @@ class FakeScanner:
         return dict(self.payload)
 
     def set_scan_mode(self, mode: str) -> None:
-        allowed = {"hybrid", "continuous_ais", "continuous_adsb"}
+        allowed = {"hybrid", "continuous_ais", "continuous_adsb", "continuous_ogn"}
         if mode not in allowed:
             raise ValueError("unsupported scan mode")
         self.payload["scan_mode"] = mode
@@ -63,20 +63,26 @@ def _obs(
     lat: float | None,
     lon: float | None,
 ) -> NormalizedObservation:
+    is_aircraft = source in {Source.ADSB, Source.OGN}
     return NormalizedObservation(
         target_id=target_id,
         source=source,
-        kind=TargetKind.AIRCRAFT if source == Source.ADSB else TargetKind.VESSEL,
+        kind=TargetKind.AIRCRAFT if is_aircraft else TargetKind.VESSEL,
         observed_at=observed_at,
         lat=lat,
         lon=lon,
         course=90.0,
         speed=120.0,
-        altitude=1000.0 if source == Source.ADSB else None,
-        last_scan_band=ScanBand.ADSB if source == Source.ADSB else ScanBand.AIS,
+        altitude=1000.0 if is_aircraft else None,
+        last_scan_band=(
+            ScanBand.ADSB
+            if source == Source.ADSB
+            else ScanBand.OGN if source == Source.OGN else ScanBand.AIS
+        ),
         icao24="abcdef" if source == Source.ADSB else None,
         mmsi="265123456" if source == Source.AIS else None,
-        label="FLT1" if source == Source.ADSB else "VESSEL1",
+        callsign="FLRABC12" if source == Source.OGN else None,
+        label="FLT1" if source == Source.ADSB else "GLIDER1" if source == Source.OGN else "VESSEL1",
     )
 
 
@@ -642,6 +648,7 @@ def test_targets_latest_ui_endpoint_includes_scanner_timing_fields(tmp_path) -> 
             "cycle_count": 17,
             "scan_mode": "continuous_ais",
             "adsb_window_seconds": 7.0,
+            "ogn_window_seconds": 4.0,
             "ais_window_seconds": 9.0,
             "inter_scan_pause_seconds": 0.25,
         }
@@ -656,6 +663,7 @@ def test_targets_latest_ui_endpoint_includes_scanner_timing_fields(tmp_path) -> 
     assert payload["scanner"]["cycle_count"] == 17
     assert payload["scanner"]["scan_mode"] == "continuous_ais"
     assert payload["scanner"]["adsb_window_seconds"] == 7.0
+    assert payload["scanner"]["ogn_window_seconds"] == 4.0
     assert payload["scanner"]["ais_window_seconds"] == 9.0
     assert payload["scanner"]["inter_scan_pause_seconds"] == 0.25
 
@@ -670,6 +678,7 @@ def test_scanner_mode_endpoints_get_and_set() -> None:
     assert mode_before.status_code == 200
     assert mode_before.json()["scan_mode"] == "hybrid"
     assert "continuous_adsb" in mode_before.json()["supported_scan_modes"]
+    assert "continuous_ogn" in mode_before.json()["supported_scan_modes"]
 
     updated = _request(
         app,

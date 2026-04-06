@@ -5,6 +5,7 @@ Backend service for hybrid, single-RTL-SDR AIS/ADS-B monitoring.
 ## What it does
 
 - Alternates one RTL-SDR between `readsb` (ADS-B) and `rtl_ais` (AIS)
+- Can ingest OGN/FLARM/ADS-L traffic from a local APRS/TCP decoder feed
 - Normalizes decoder output into a shared observation model
 - Maintains live in-memory targets with last five valid positions
 - Persists observations and latest target state to SQLite
@@ -27,6 +28,7 @@ Implemented through phase 10:
 - Python 3.11+ (tested on Python 3.13)
 - `readsb` available on `PATH` (or adjusted command wiring)
 - `rtl_ais` available on `PATH` (or adjusted command wiring)
+- Optional: local OGN/FLARM/ADS-L decoder feed, for example `rtlsdr-ogn` exposing APRS traffic on TCP port `50001`
 - Optional: TCP AIS feed compatible with NMEA AIVDM/AIVDO sentences
 
 ## Installation
@@ -51,12 +53,15 @@ Key runtime variables:
 - `SDR_MONITOR_SERVICE_NAME`: service name shown in health payload
 - `SDR_MONITOR_LOG_LEVEL`: `DEBUG|INFO|WARNING|ERROR|CRITICAL`
 - `SDR_MONITOR_ADSB_WINDOW_SECONDS`: ADS-B scan window length
+- `SDR_MONITOR_OGN_WINDOW_SECONDS`: optional OGN/FLARM/ADS-L scan window length; `0` disables glider polling in the scanner loop
 - `SDR_MONITOR_AIS_WINDOW_SECONDS`: AIS scan window length
 - `SDR_MONITOR_INTER_SCAN_PAUSE_SECONDS`: pause between AIS/ADS-B updates (default `2.0`)
 - `SDR_MONITOR_FRESH_SECONDS`: freshness threshold lower bound
 - `SDR_MONITOR_AGING_SECONDS`: freshness threshold upper bound
 - `SDR_MONITOR_MAX_POSITIONS_PER_TARGET`: in-memory position history size
 - `SDR_MONITOR_READSB_AIRCRAFT_JSON`: path to `readsb` `aircraft.json`
+- `SDR_MONITOR_OGN_TCP_HOST`: host for decoded OGN/FLARM/ADS-L APRS traffic
+- `SDR_MONITOR_OGN_TCP_PORT`: TCP port for decoded OGN/FLARM/ADS-L APRS traffic (commonly `50001`)
 - `SDR_MONITOR_AIS_TCP_HOST`: AIS TCP host
 - `SDR_MONITOR_AIS_TCP_PORT`: AIS TCP port
 - `SDR_MONITOR_SQLITE_PATH`: SQLite database path
@@ -113,6 +118,9 @@ Notes:
 - `symbol` is optional; default symbol is `O`
 - `max_visible_range_km` is optional; object is hidden when current range is larger
 - the label (`name`) is drawn next to the symbol on the radar screen
+- OGN/FLARM/ADS-L support in this service expects an already running local decoder which emits APRS-like aircraft lines over TCP; the common reference setup is `ogn-rf` + `ogn-decode` from `rtlsdr-ogn`
+- ADS-L rides through the same APRS/OGN ingest path here; known `OGNSKY`/`SafeSky` packet formats are tagged with `payload_json.protocol = "ads-l"` and expose `icao24` when the sender declares an `ICAxxxxxx` identity
+- parsed glider targets are stored with source `ogn` and target ids like `ogn:flarm-<address>` or `ogn:icao-<address>`
 
 ## Running
 

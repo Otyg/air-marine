@@ -76,3 +76,22 @@ def test_decoder_supervisor_switches_between_bands() -> None:
 
     decoder_supervisor.stop_active()
     assert decoder_supervisor.active_band is None
+
+
+def test_decoder_supervisor_allows_ogn_band_without_process_command() -> None:
+    popen = FakePopenFactory()
+    process_supervisor = ProcessSupervisor(popen_factory=popen)
+    decoder_supervisor = DecoderSupervisor(
+        config=DecoderProcessConfig(
+            adsb_command=("readsb",),
+            ogn_command=None,
+            ais_command=("rtl_ais",),
+        ),
+        process_supervisor=process_supervisor,
+    )
+
+    decoder_supervisor.switch_to(ScanBand.ADSB)
+    decoder_supervisor.switch_to(ScanBand.OGN)
+
+    assert popen.calls == [["readsb"]]
+    assert decoder_supervisor.active_band is None

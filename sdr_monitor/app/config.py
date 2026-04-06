@@ -67,12 +67,15 @@ class Config:
     service_name: str = "sdr-monitor"
     log_level: str = "INFO"
     adsb_window_seconds: float = 8.0
+    ogn_window_seconds: float = 0.0
     ais_window_seconds: float = 12.0
     inter_scan_pause_seconds: float = 2.0
     fresh_seconds: int = 30
     aging_seconds: int = 120
     max_positions_per_target: int = 5
     readsb_aircraft_json: Path = Path("/run/readsb/aircraft.json")
+    ogn_tcp_host: str = "127.0.0.1"
+    ogn_tcp_port: int = 50001
     ais_tcp_host: str = "127.0.0.1"
     ais_tcp_port: int = 10110
     sqlite_path: Path = Path("./data/sdr_monitor.sqlite3")
@@ -108,6 +111,9 @@ class Config:
             adsb_window_seconds=_read_float(
                 env_map, f"{ENV_PREFIX}ADSB_WINDOW_SECONDS", defaults.adsb_window_seconds
             ),
+            ogn_window_seconds=_read_float(
+                env_map, f"{ENV_PREFIX}OGN_WINDOW_SECONDS", defaults.ogn_window_seconds
+            ),
             ais_window_seconds=_read_float(
                 env_map, f"{ENV_PREFIX}AIS_WINDOW_SECONDS", defaults.ais_window_seconds
             ),
@@ -133,6 +139,12 @@ class Config:
                     f"{ENV_PREFIX}READSB_AIRCRAFT_JSON",
                     str(defaults.readsb_aircraft_json),
                 )
+            ),
+            ogn_tcp_host=_read_str(env_map, f"{ENV_PREFIX}OGN_TCP_HOST", defaults.ogn_tcp_host),
+            ogn_tcp_port=_read_int(
+                env_map,
+                f"{ENV_PREFIX}OGN_TCP_PORT",
+                defaults.ogn_tcp_port,
             ),
             ais_tcp_host=_read_str(env_map, f"{ENV_PREFIX}AIS_TCP_HOST", defaults.ais_tcp_host),
             ais_tcp_port=_read_int(
@@ -258,6 +270,10 @@ class Config:
             )
         if self.adsb_window_seconds <= 0:
             raise ValueError(f"{ENV_PREFIX}ADSB_WINDOW_SECONDS must be > 0.")
+        if self.ogn_window_seconds < 0:
+            raise ValueError(f"{ENV_PREFIX}OGN_WINDOW_SECONDS must be >= 0.")
+        if not (1 <= self.ogn_tcp_port <= 65535):
+            raise ValueError(f"{ENV_PREFIX}OGN_TCP_PORT must be in the range 1..65535.")
         if self.ais_window_seconds <= 0:
             raise ValueError(f"{ENV_PREFIX}AIS_WINDOW_SECONDS must be > 0.")
         if self.inter_scan_pause_seconds < 0:

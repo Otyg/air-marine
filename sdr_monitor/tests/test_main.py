@@ -127,6 +127,7 @@ def test_create_service_components_without_background_scanner(tmp_path) -> None:
     assert response.status_code == 200
     assert "Harbor" in response.text
     assert components.app is not None
+    assert components.scanner.status()["ogn_window_seconds"] == 0.0
 
 
 def test_build_decoder_process_config_matches_ingestors() -> None:
@@ -135,6 +136,7 @@ def test_build_decoder_process_config_matches_ingestors() -> None:
         ais_tcp_port=10110,
     )
     assert decoder_config.adsb_command[0] == "readsb"
+    assert decoder_config.ogn_command is None
     assert "--device-type" in decoder_config.adsb_command
     device_type_index = decoder_config.adsb_command.index("--device-type")
     assert decoder_config.adsb_command[device_type_index + 1] == "rtlsdr"
