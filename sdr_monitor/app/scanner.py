@@ -232,17 +232,6 @@ class HybridBandScanner:
             self._active_scan_band = None
             return
 
-        if reader is None:
-            self._record_error(f"{band.value}: no reader configured")
-            self._sleep_fn(window_seconds)
-            if not keep_decoder_running:
-                try:
-                    self._supervisor.stop_active()
-                except Exception as exc:
-                    self._record_error(f"{band.value}: failed to stop decoder: {exc}")
-            self._active_scan_band = None
-            return
-
         try:
             kwargs: dict[str, Any] = {}
             if timeout_seconds is not None:
@@ -256,12 +245,13 @@ class HybridBandScanner:
             remaining = max(0.0, window_seconds - elapsed)
             if remaining > 0:
                 self._sleep_fn(remaining)
-            if not keep_decoder_running:
-                try:
-                    self._supervisor.stop_active()
-                except Exception as exc:
-                    self._record_error(f"{band.value}: failed to stop decoder: {exc}")
-            self._active_scan_band = None
+
+        if not keep_decoder_running:
+            try:
+                self._supervisor.stop_active()
+            except Exception as exc:
+                self._record_error(f"{band.value}: failed to stop decoder: {exc}")
+        self._active_scan_band = None
 
     def _ingest_observations(self, observations: list[NormalizedObservation]) -> None:
         for observation in observations:

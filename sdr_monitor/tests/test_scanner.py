@@ -74,6 +74,7 @@ def _obs(target_id: str, source: Source) -> NormalizedObservation:
             if source == Source.ADSB
             else ScanBand.OGN if source == Source.OGN else ScanBand.AIS
         ),
+        mmsi="265123456" if source == Source.AIS else None,
     )
 
 

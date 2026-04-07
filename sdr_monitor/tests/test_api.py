@@ -283,7 +283,9 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
     assert "function limitSelectedHistoryPoints(targetId, historyPoints)" in response.text
     assert "function drawSelectedHistoryPath(targetId, cx, cy, pxPerKm, radius)" in response.text
     assert "const currentTarget = findTargetById(targetId);" in response.text
-    assert "ctx.lineTo(currentCanvasPoint.x, currentCanvasPoint.y);" in response.text
+    assert "function trailColorForAge(ageRank, targetColor)" in response.text
+    assert "lastHistoryPoint," in response.text
+    assert "currentCanvasPoint," in response.text
     assert "function clipSegmentToCircle(start, end, cx, cy, radius)" in response.text
     assert "const clippedSegment = clipSegmentToCircle(" in response.text
     assert "limit=${selectedHistoryRequestLimit}" in response.text

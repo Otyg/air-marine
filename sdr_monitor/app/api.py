@@ -756,7 +756,8 @@ def _build_radar_html(
     const trailPointWindowSeconds = 120;
     const trailStaleStartSeconds = 30;
     const trailStaleFadeSeconds = 270;
-    const trailColors = ["#39FF14", "#1fd400", "#57e140", "#8ce77c", "#b2eda8", "#d1f6cb"];
+    const radarRingColor = "#2c7a2c";
+    const liveTargetColor = "#39FF14";
     const defaultMapSource = {json.dumps(default_map_source)};
     const fixedObjects = {fixed_objects_json};
     const canvas = document.getElementById("radar");
@@ -814,6 +815,43 @@ def _build_radar_html(
     let mapContourPendingKey = null;
     let mapContourRequestInFlight = false;
     let mapContourRetryTimer = null;
+
+    function clampUnitInterval(value) {{
+      if (!Number.isFinite(value)) return 0;
+      return Math.max(0, Math.min(1, value));
+    }}
+
+    function parseHexColor(hexColor) {{
+      if (typeof hexColor !== "string") return null;
+      const normalized = hexColor.trim();
+      const match = /^#([0-9a-f]{6})$/i.exec(normalized);
+      if (!match) return null;
+      return {{
+        red: Number.parseInt(match[1].slice(0, 2), 16),
+        green: Number.parseInt(match[1].slice(2, 4), 16),
+        blue: Number.parseInt(match[1].slice(4, 6), 16),
+      }};
+    }}
+
+    function toHexChannel(value) {{
+      return Math.round(clampUnitInterval(value / 255) * 255)
+        .toString(16)
+        .padStart(2, "0");
+    }}
+
+    function blendHexColors(fromColor, toColor, amount) {{
+      const from = parseHexColor(fromColor);
+      const to = parseHexColor(toColor);
+      if (!from || !to) return toColor || fromColor || radarRingColor;
+      const mix = clampUnitInterval(amount);
+      return `#${{toHexChannel(from.red + ((to.red - from.red) * mix))}}${{toHexChannel(from.green + ((to.green - from.green) * mix))}}${{toHexChannel(from.blue + ((to.blue - from.blue) * mix))}}`;
+    }}
+
+    function trailColorForAge(ageRank, targetColor) {{
+      const clampedAge = clampUnitInterval(ageRank);
+      const emphasis = Math.pow(1 - clampedAge, 0.85);
+      return blendHexColors(radarRingColor, targetColor || liveTargetColor, emphasis);
+    }}
 
     function clampPollMs(value) {{
       if (!Number.isFinite(value)) return defaultPollMs;
@@ -1647,6 +1685,9 @@ def _build_radar_html(
 
       points.reverse();
       const fadeProgress = getTrailFadeProgress(target.last_seen);
+      const targetColor = target && target.target_id === selectedTargetId
+        ? selectedTargetColor
+        : liveTargetColor;
 
       ctx.save();
       ctx.lineWidth = 1;
@@ -1663,7 +1704,7 @@ def _build_radar_html(
           );
           if (clippedSegment) {{
             ctx.globalAlpha = newestOpacity;
-            ctx.strokeStyle = trailColors[1];
+            ctx.strokeStyle = trailColorForAge(0, targetColor);
             ctx.beginPath();
             ctx.moveTo(clippedSegment.start.x, clippedSegment.start.y);
             ctx.lineTo(clippedSegment.end.x, clippedSegment.end.y);
@@ -1676,7 +1717,7 @@ def _build_radar_html(
         const segmentOpacity = trailOpacityForAgeRank(segmentAgeRank, fadeProgress);
         if (segmentOpacity <= 0.02) continue;
         ctx.globalAlpha = segmentOpacity;
-        const color = trailColors[Math.min(i + 1, trailColors.length - 1)];
+        const color = trailColorForAge(segmentAgeRank, targetColor);
         const from = points[i];
         const to = points[i + 1];
         ctx.beginPath();
@@ -1691,7 +1732,7 @@ def _build_radar_html(
         const pointOpacity = trailOpacityForAgeRank(pointAgeRank, fadeProgress);
         if (pointOpacity <= 0.02) return;
         ctx.globalAlpha = pointOpacity;
-        const color = trailColors[Math.min(index + 1, trailColors.length - 1)];
+        const color = trailColorForAge(pointAgeRank, targetColor);
         ctx.fillStyle = color;
         ctx.beginPath();
         ctx.arc(point.x, point.y, 1.6, 0, Math.PI * 2);
@@ -1737,32 +1778,58 @@ def _build_radar_html(
       ctx.save();
       ctx.lineWidth = 1.5;
       ctx.setLineDash([4, 3]);
-      ctx.strokeStyle = selectedTargetColor;
-      ctx.fillStyle = selectedTargetColor;
-      ctx.globalAlpha = 0.95;
-      if (canvasPoints.length > 1 || currentCanvasPoint) {{
-        ctx.beginPath();
-        ctx.moveTo(canvasPoints[0].x, canvasPoints[0].y);
+      if (canvasPoints.length > 1) {{
         for (let i = 1; i < canvasPoints.length; i += 1) {{
-          ctx.lineTo(canvasPoints[i].x, canvasPoints[i].y);
-        }}
-        const lastHistoryPoint = canvasPoints[canvasPoints.length - 1];
-        const shouldConnectToCurrent =
-          currentCanvasPoint
-          && (
-            Math.abs(lastHistoryPoint.x - currentCanvasPoint.x) >= 1
-            || Math.abs(lastHistoryPoint.y - currentCanvasPoint.y) >= 1
+          const ageRank = canvasPoints.length <= 1 ? 1 : 1 - (i / (canvasPoints.length - 1));
+          const clippedSegment = clipSegmentToCircle(
+            canvasPoints[i - 1],
+            canvasPoints[i],
+            cx,
+            cy,
+            radius,
           );
-        if (shouldConnectToCurrent) {{
-          ctx.lineTo(currentCanvasPoint.x, currentCanvasPoint.y);
+          if (!clippedSegment) continue;
+          ctx.globalAlpha = 0.95;
+          ctx.strokeStyle = trailColorForAge(ageRank, selectedTargetColor);
+          ctx.beginPath();
+          ctx.moveTo(clippedSegment.start.x, clippedSegment.start.y);
+          ctx.lineTo(clippedSegment.end.x, clippedSegment.end.y);
+          ctx.stroke();
         }}
-        ctx.stroke();
       }}
-      for (const point of canvasPoints) {{
+      const lastHistoryPoint = canvasPoints[canvasPoints.length - 1];
+      const shouldConnectToCurrent =
+        currentCanvasPoint
+        && lastHistoryPoint
+        && (
+          Math.abs(lastHistoryPoint.x - currentCanvasPoint.x) >= 1
+          || Math.abs(lastHistoryPoint.y - currentCanvasPoint.y) >= 1
+        );
+      if (shouldConnectToCurrent) {{
+        const clippedSegment = clipSegmentToCircle(
+          lastHistoryPoint,
+          currentCanvasPoint,
+          cx,
+          cy,
+          radius,
+        );
+        if (clippedSegment) {{
+          ctx.globalAlpha = 0.95;
+          ctx.strokeStyle = trailColorForAge(0, selectedTargetColor);
+          ctx.beginPath();
+          ctx.moveTo(clippedSegment.start.x, clippedSegment.start.y);
+          ctx.lineTo(clippedSegment.end.x, clippedSegment.end.y);
+          ctx.stroke();
+        }}
+      }}
+      canvasPoints.forEach((point, index) => {{
+        const ageRank = canvasPoints.length <= 1 ? 0 : 1 - (index / (canvasPoints.length - 1));
+        ctx.globalAlpha = 0.95;
+        ctx.fillStyle = trailColorForAge(ageRank, selectedTargetColor);
         ctx.beginPath();
         ctx.arc(point.x, point.y, 1.9, 0, Math.PI * 2);
         ctx.fill();
-      }}
+      }});
       ctx.globalAlpha = 1;
       ctx.restore();
     }}
@@ -1798,7 +1865,7 @@ def _build_radar_html(
         const name = typeof item.name === "string" ? item.name.trim() : "";
         const nameLines = name ? name.split(/\\s+/).filter(Boolean) : [];
 
-        ctx.fillStyle = "#2c7a2c";
+        ctx.fillStyle = radarRingColor;
         ctx.font = `${{markerFontPx}}px Courier New, monospace`;
         ctx.textAlign = "center";
         ctx.fillText(symbol, x, y);
@@ -2098,7 +2165,7 @@ def _build_radar_html(
       ctx.fillStyle = "#000000";
       ctx.fillRect(0, 0, width, height);
 
-      ctx.strokeStyle = "#2c7a2c";
+      ctx.strokeStyle = radarRingColor;
       ctx.lineWidth = 1;
       const ringSpacingKm = rangeKm / radarRingCount;
       for (let i = 1; i <= radarRingCount; i += 1) {{
@@ -2107,7 +2174,7 @@ def _build_radar_html(
         ctx.stroke();
       }}
 
-      ctx.strokeStyle = "#2c7a2c";
+      ctx.strokeStyle = radarRingColor;
       ctx.beginPath();
       ctx.moveTo(cx - radius, cy);
       ctx.lineTo(cx + radius, cy);
@@ -2149,7 +2216,7 @@ def _build_radar_html(
         }}
         const course = toOptionalNumber(target.course);
         drawRecentPositions(trackedTarget, cx, cy, pxPerKm, radius, x, y);
-        const markerColor = isSelected ? selectedTargetColor : trailColors[0];
+        const markerColor = isSelected ? selectedTargetColor : liveTargetColor;
         drawCourseVector(x, y, course, speed, markerColor);
         ctx.fillStyle = markerColor;
         const symbol = target.kind === "vessel" ? "#" : "+";
@@ -2693,6 +2760,7 @@ def _build_history_radar_html(
     const radarRingCount = 5;
     const minRangeKm = 0.2;
     const maxRangeKm = 500.0;
+    const radarRingColor = "#2c7a2c";
     const selectedTargetColor = "#ff4d4d";
     const defaultMapSource = {json.dumps(default_map_source)};
     const fixedObjects = {fixed_objects_json};
@@ -2751,6 +2819,43 @@ def _build_history_radar_html(
     let historyTargetsInViewRequestKey = null;
     let historyTargetsInViewLoadedKey = null;
     let historyTargetsInViewRequestInFlight = false;
+
+    function clampUnitInterval(value) {{
+      if (!Number.isFinite(value)) return 0;
+      return Math.max(0, Math.min(1, value));
+    }}
+
+    function parseHexColor(hexColor) {{
+      if (typeof hexColor !== "string") return null;
+      const normalized = hexColor.trim();
+      const match = /^#([0-9a-f]{6})$/i.exec(normalized);
+      if (!match) return null;
+      return {{
+        red: Number.parseInt(match[1].slice(0, 2), 16),
+        green: Number.parseInt(match[1].slice(2, 4), 16),
+        blue: Number.parseInt(match[1].slice(4, 6), 16),
+      }};
+    }}
+
+    function toHexChannel(value) {{
+      return Math.round(clampUnitInterval(value / 255) * 255)
+        .toString(16)
+        .padStart(2, "0");
+    }}
+
+    function blendHexColors(fromColor, toColor, amount) {{
+      const from = parseHexColor(fromColor);
+      const to = parseHexColor(toColor);
+      if (!from || !to) return toColor || fromColor || radarRingColor;
+      const mix = clampUnitInterval(amount);
+      return `#${{toHexChannel(from.red + ((to.red - from.red) * mix))}}${{toHexChannel(from.green + ((to.green - from.green) * mix))}}${{toHexChannel(from.blue + ((to.blue - from.blue) * mix))}}`;
+    }}
+
+    function trailColorForAge(ageRank, targetColor = selectedTargetColor) {{
+      const clampedAge = clampUnitInterval(ageRank);
+      const emphasis = Math.pow(1 - clampedAge, 0.85);
+      return blendHexColors(radarRingColor, targetColor, emphasis);
+    }}
     function clampRangeKm(value) {{
       return Math.max(minRangeKm, Math.min(maxRangeKm, value));
     }}
@@ -3320,7 +3425,7 @@ def _build_history_radar_html(
         const name = typeof item.name === "string" ? item.name.trim() : "";
         const nameLines = name ? name.split(/\\s+/).filter(Boolean) : [];
 
-        ctx.fillStyle = "#2c7a2c";
+        ctx.fillStyle = radarRingColor;
         ctx.font = `${{markerFontPx}}px Courier New, monospace`;
         ctx.textAlign = "center";
         ctx.fillText(symbol, x, y);
@@ -3452,11 +3557,9 @@ def _build_history_radar_html(
       ctx.save();
       ctx.lineWidth = 1.5;
       ctx.setLineDash([4, 3]);
-      ctx.strokeStyle = selectedTargetColor;
-      ctx.fillStyle = selectedTargetColor;
-      ctx.globalAlpha = 0.95;
       if (canvasPoints.length > 1) {{
         for (let i = 1; i < canvasPoints.length; i += 1) {{
+          const ageRank = canvasPoints.length <= 1 ? 1 : 1 - (i / (canvasPoints.length - 1));
           const clippedSegment = clipSegmentToCircle(
             canvasPoints[i - 1],
             canvasPoints[i],
@@ -3465,18 +3568,23 @@ def _build_history_radar_html(
             radius,
           );
           if (!clippedSegment) continue;
+          ctx.globalAlpha = 0.95;
+          ctx.strokeStyle = trailColorForAge(ageRank);
           ctx.beginPath();
           ctx.moveTo(clippedSegment.start.x, clippedSegment.start.y);
           ctx.lineTo(clippedSegment.end.x, clippedSegment.end.y);
           ctx.stroke();
         }}
       }}
-      for (const point of canvasPoints) {{
-        if (!isInsideRadarCircle(point.x, point.y, cx, cy, radius)) continue;
+      canvasPoints.forEach((point, index) => {{
+        if (!isInsideRadarCircle(point.x, point.y, cx, cy, radius)) return;
+        const ageRank = canvasPoints.length <= 1 ? 0 : 1 - (index / (canvasPoints.length - 1));
+        ctx.globalAlpha = 0.95;
+        ctx.fillStyle = trailColorForAge(ageRank);
         ctx.beginPath();
         ctx.arc(point.x, point.y, 1.9, 0, Math.PI * 2);
         ctx.fill();
-      }}
+      }});
       ctx.globalAlpha = 1;
       ctx.restore();
     }}
@@ -3721,7 +3829,7 @@ def _build_history_radar_html(
       ctx.fillStyle = "#000000";
       ctx.fillRect(0, 0, width, height);
 
-      ctx.strokeStyle = "#2c7a2c";
+      ctx.strokeStyle = radarRingColor;
       ctx.lineWidth = 1;
       const ringSpacingKm = rangeKm / radarRingCount;
       for (let i = 1; i <= radarRingCount; i += 1) {{
@@ -3730,7 +3838,7 @@ def _build_history_radar_html(
         ctx.stroke();
       }}
 
-      ctx.strokeStyle = "#2c7a2c";
+      ctx.strokeStyle = radarRingColor;
       ctx.beginPath();
       ctx.moveTo(cx - radius, cy);
       ctx.lineTo(cx + radius, cy);
