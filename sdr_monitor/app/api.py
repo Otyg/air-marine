@@ -747,7 +747,7 @@ def _build_radar_html(
     const minAutoRefreshMs = 2000;
     const defaultPollMs = minAutoRefreshMs;
     const minPollMs = minAutoRefreshMs;
-    const maxPollMs = 12000;
+    const maxPollMs = 5000;
     const pollBackoffFactor = 1.25;
     const observedIntervalLimit = 12;
     const defaultRangeKm = 10.0;
