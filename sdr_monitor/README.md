@@ -148,6 +148,29 @@ The service starts:
 - `GET /stats`
 - `GET /history/{target_id}?limit=100`
 
+## Nginx reverse proxy on `/radar/`
+
+The frontend uses relative UI/API paths, so it works both:
+
+- directly on `http://localhost:<port>/`
+- behind an nginx path prefix like `/radar/`
+
+Recommended nginx location block:
+
+```nginx
+location = /radar {
+    return 301 /radar/;
+}
+
+location /radar/ {
+    proxy_pass http://127.0.0.1:8000/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
 ## Tests
 
 ```bash

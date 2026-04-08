@@ -248,7 +248,7 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
     assert "id=\"objectsList\"" in response.text
     assert "id=\"outsideObjectsList\"" in response.text
     assert "id=\"targetTypeFilter\"" in response.text
-    assert "href=\"/history-radar\"" in response.text
+    assert "href=\"history-radar\"" in response.text
     assert "id=\"showLowSpeed\"" in response.text
     assert "drawCourseVector" in response.text
     assert "const minAutoRefreshMs = 2000;" in response.text
@@ -335,7 +335,7 @@ def test_history_radar_ui_renders_html_with_history_panel() -> None:
     assert "Alla spår" in response.text
     assert 'const requestUrl = params.size > 0' in response.text
     assert '?${params.toString()}' in response.text
-    assert "fetch(`/ui/history-targets-in-view?${params.toString()}`" in response.text
+    assert "fetch(`ui/history-targets-in-view?${params.toString()}`" in response.text
     assert "object-type-icon" in response.text
     assert "object-view-badge" in response.text
     assert "function targetTypeIcon(kind)" in response.text
@@ -350,7 +350,7 @@ def test_history_radar_ui_renders_html_with_history_panel() -> None:
     assert "function drawSelectedHistoryPath(cx, cy, pxPerKm, radius)" in response.text
     assert "function fitHistoryToView(points)" in response.text
     assert "fitHistoryToView(historyPoints);" not in response.text
-    assert "href=\"/\"" in response.text
+    assert "href=\"./\"" in response.text
     assert "const minAutoRefreshMs = 2000;" in response.text
     assert "}, minAutoRefreshMs);" in response.text
 

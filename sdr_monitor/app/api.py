@@ -671,8 +671,8 @@ def _build_radar_html(
       <div class="hud-title">
         <div>{service_name} / RADAR VIEW</div>
         <div class="view-links">
-          <a href="/" aria-current="page">Live radar</a>
-          <a href="/history-radar">Historiska spår</a>
+          <a href="./" aria-current="page">Live radar</a>
+          <a href="history-radar">Historiska spår</a>
         </div>
       </div>
       <div class="hud-right">
@@ -981,7 +981,7 @@ def _build_radar_html(
       scanModeUpdateInFlight = true;
       scanModeSelect.disabled = true;
       try {{
-        const response = await fetch("/scanner/mode", {{
+        const response = await fetch("scanner/mode", {{
           method: "POST",
           headers: {{ "Content-Type": "application/json" }},
           body: JSON.stringify({{ scan_mode: nextMode }}),
@@ -1537,7 +1537,7 @@ def _build_radar_html(
 
       try {{
         const response = await fetch(
-          `/history/${{encodeURIComponent(targetId)}}?limit=${{selectedHistoryRequestLimit}}`,
+          `history/${{encodeURIComponent(targetId)}}?limit=${{selectedHistoryRequestLimit}}`,
           {{ cache: "no-store" }},
         );
         if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
@@ -2099,7 +2099,7 @@ def _build_radar_html(
           bbox: request.bbox.map((value) => value.toFixed(6)).join(","),
           range_km: rangeKm.toFixed(3),
         }});
-        const response = await fetch(`/ui/map-contours?${{params.toString()}}`, {{
+        const response = await fetch(`ui/map-contours?${{params.toString()}}`, {{
           cache: "no-store",
         }});
         if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
@@ -2248,7 +2248,7 @@ def _build_radar_html(
       if (requestInFlight) return;
       requestInFlight = true;
       try {{
-        const response = await fetch("/ui/targets-latest", {{ cache: "no-store" }});
+        const response = await fetch("ui/targets-latest", {{ cache: "no-store" }});
         if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
         const payload = await response.json();
         lastScannerState = normalizeScannerState(payload.scanner);
@@ -2641,8 +2641,8 @@ def _build_history_radar_html(
       <div class="hud-title">
         <div>{service_name} / HISTORY VIEW</div>
         <div class="view-links">
-          <a href="/">Live radar</a>
-          <a href="/history-radar" aria-current="page">Historiska spår</a>
+          <a href="./">Live radar</a>
+          <a href="history-radar" aria-current="page">Historiska spår</a>
         </div>
       </div>
       <div class="hud-right">
@@ -3310,7 +3310,7 @@ def _build_history_radar_html(
           bbox: request.bbox.map((value) => value.toFixed(6)).join(","),
           range_km: rangeKm.toFixed(3),
         }});
-        const response = await fetch(`/ui/map-contours?${{params.toString()}}`, {{
+        const response = await fetch(`ui/map-contours?${{params.toString()}}`, {{
           cache: "no-store",
         }});
         if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
@@ -3372,7 +3372,7 @@ def _build_history_radar_html(
           range_km: rangeKm.toFixed(3),
         }});
         appendHistoryTimeFilterParams(params);
-        const response = await fetch(`/ui/history-targets-in-view?${{params.toString()}}`, {{
+        const response = await fetch(`ui/history-targets-in-view?${{params.toString()}}`, {{
           cache: "no-store",
         }});
         if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
@@ -3691,8 +3691,8 @@ def _build_history_radar_html(
         const params = new URLSearchParams();
         appendHistoryTimeFilterParams(params);
         const requestUrl = params.size > 0
-          ? `/ui/history-targets?${{params.toString()}}`
-          : "/ui/history-targets";
+          ? `ui/history-targets?${{params.toString()}}`
+          : "ui/history-targets";
         const response = await fetch(requestUrl, {{ cache: "no-store" }});
         if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
         const payload = await response.json();
@@ -3718,7 +3718,7 @@ def _build_history_radar_html(
       }});
       appendHistoryTimeFilterParams(params);
       const response = await fetch(
-        `/history/${{encodeURIComponent(targetId)}}?${{params.toString()}}`,
+        `history/${{encodeURIComponent(targetId)}}?${{params.toString()}}`,
         {{ cache: "no-store" }},
       );
       if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
