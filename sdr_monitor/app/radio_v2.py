@@ -28,6 +28,21 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _validate_frequency_hz(hz: int) -> int:
+    frequency = int(hz)
+    # Broad SDR-safe envelope for current sources.
+    if frequency < 100_000 or frequency > 2_000_000_000:
+        raise ValueError(f"Invalid frequency {frequency}. Expected range 100000..2000000000 Hz.")
+    return frequency
+
+
+def _validate_gain_db(db: int) -> int:
+    gain = int(db)
+    if gain < 0 or gain > 100:
+        raise ValueError(f"Invalid gain {gain}. Expected range 0..100 dB.")
+    return gain
+
+
 @dataclass(frozen=True, slots=True)
 class RadioStatus:
     backend_name: str
@@ -196,10 +211,20 @@ class LegacyBackend:
         self._running = False
 
     def retune(self, hz: int) -> None:
-        self._active_frequency_hz = int(hz)
+        try:
+            self._active_frequency_hz = _validate_frequency_hz(hz)
+            self._last_error = None
+        except ValueError as exc:
+            self._last_error = str(exc)
+            raise
 
     def set_gain(self, db: int) -> None:
-        self._gain_db = int(db)
+        try:
+            self._gain_db = _validate_gain_db(db)
+            self._last_error = None
+        except ValueError as exc:
+            self._last_error = str(exc)
+            raise
 
     def read(self, timeout_s: float, *, band: ScanBand | None = None) -> list[RadioEvent]:
         if not self._running or band is None:
@@ -369,13 +394,23 @@ class MockBackend:
         self._running = False
 
     def retune(self, hz: int) -> None:
-        self._active_frequency_hz = int(hz)
+        try:
+            self._active_frequency_hz = _validate_frequency_hz(hz)
+            self._last_error = None
+        except ValueError as exc:
+            self._last_error = str(exc)
+            raise
         mapped = self._retune_map.get(self._active_frequency_hz)
         if mapped is not None:
             self._active_band = mapped
 
     def set_gain(self, db: int) -> None:
-        self._gain_db = int(db)
+        try:
+            self._gain_db = _validate_gain_db(db)
+            self._last_error = None
+        except ValueError as exc:
+            self._last_error = str(exc)
+            raise
 
     def _apply_fault(self, fault: str) -> list[RadioEvent]:
         fault_key = fault.strip().lower()

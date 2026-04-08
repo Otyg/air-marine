@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 
 import httpx
+import pytest
 
 from app.config import Config
 from app.env_utils import load_local_dotenv
@@ -143,6 +144,29 @@ def test_create_service_components_with_mock_backend_uses_v2_scanner(tmp_path) -
         dsc_window_seconds=0.01,
         radio_backend="mock",
         mock_radio_fixture_path=fixture_path,
+    )
+
+    components = create_service_components(
+        config=config,
+        start_scanner=False,
+        recover_latest_targets=False,
+    )
+
+    assert isinstance(components.scanner, ScannerOrchestratorV2)
+
+
+@pytest.mark.parametrize("backend_name", ["inproc", "external"])
+def test_create_service_components_with_v2_backends_use_v2_scanner(
+    tmp_path,
+    backend_name: str,
+) -> None:
+    config = Config(
+        sqlite_path=tmp_path / f"service-{backend_name}.sqlite3",
+        adsb_window_seconds=0.01,
+        ogn_window_seconds=0.0,
+        ais_window_seconds=0.01,
+        dsc_window_seconds=0.0,
+        radio_backend=backend_name,
     )
 
     components = create_service_components(

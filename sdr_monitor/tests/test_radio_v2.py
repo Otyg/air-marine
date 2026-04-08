@@ -1,15 +1,37 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 
+import pytest
+
+from app.models import NormalizedObservation
 from app.models import ScanBand
-from app.radio_v2 import ADSBPipeline, AISPipeline, DSCPipeline, MockBackend, OGNPipeline, ScannerOrchestratorV2
+from app.radio_v2 import (
+    ADSBPipeline,
+    AISPipeline,
+    DSCPipeline,
+    InprocBackend,
+    LegacyBackend,
+    MockBackend,
+    OGNPipeline,
+    ObservationEvent,
+    ScannerOrchestratorV2,
+)
 from app.scanner import ScannerConfig
 from app.state import LiveState
 
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "mock_radio"
+
+
+class _StaticReader:
+    def __init__(self, observations: list[NormalizedObservation]) -> None:
+        self._observations = list(observations)
+
+    def read_observations(self, **kwargs):  # noqa: ANN003
+        return list(self._observations)
 
 
 def test_mock_backend_deterministic_replay_returns_expected_sequence() -> None:
@@ -122,3 +144,71 @@ def test_scanner_orchestrator_v2_survives_store_errors() -> None:
 
     assert scanner.status()["last_error"] is not None
     assert "store" in scanner.status()["last_error"]
+
+
+def test_parity_legacy_inproc_and_mock_for_observation_events() -> None:
+    fixture = json.loads((FIXTURE_DIR / "mixed_cycle.json").read_text(encoding="utf-8"))
+    by_band: dict[ScanBand, list[NormalizedObservation]] = {}
+    for row in fixture["timeline"]:
+        if row.get("event_type") != "observation":
+            continue
+        payload = row.get("payload", {}).get("observation")
+        if not isinstance(payload, dict):
+            continue
+        band = ScanBand(row["band"])
+        by_band.setdefault(band, []).append(NormalizedObservation.from_dict(payload))
+
+    readers = {band: _StaticReader(obs) for band, obs in by_band.items()}
+    legacy = LegacyBackend(readers)
+    inproc = InprocBackend(readers)
+    mock = MockBackend(fixture_path=FIXTURE_DIR / "mixed_cycle.json", enable_timing_mode=False)
+    legacy.start()
+    inproc.start()
+    mock.start()
+
+    for band in (ScanBand.AIS, ScanBand.ADSB, ScanBand.OGN, ScanBand.DSC):
+        legacy_events = legacy.read(0.1, band=band)
+        inproc_events = inproc.read(0.1, band=band)
+        mock_events = mock.read(0.1, band=band)
+
+        assert len(legacy_events) == 1
+        assert len(inproc_events) == 1
+        assert len(mock_events) == 1
+
+        assert isinstance(legacy_events[0], ObservationEvent)
+        assert isinstance(inproc_events[0], ObservationEvent)
+        assert isinstance(mock_events[0], ObservationEvent)
+
+        assert legacy_events[0].observation.to_dict() == inproc_events[0].observation.to_dict()
+        assert legacy_events[0].observation.to_dict() == mock_events[0].observation.to_dict()
+
+
+def test_invalid_retune_is_rejected_and_surfaces_in_scanner_status() -> None:
+    backend = MockBackend(fixture_path=FIXTURE_DIR / "nominal_adsb.json", enable_timing_mode=False)
+    scanner = ScannerOrchestratorV2(
+        backend=backend,
+        pipelines={ScanBand.ADSB: ADSBPipeline()},
+        state=LiveState(clock=lambda: datetime(2026, 4, 8, tzinfo=timezone.utc)),
+        store=None,
+        config=ScannerConfig(adsb_window_seconds=0.01, ais_window_seconds=0.01),
+        sleep_fn=lambda _: None,
+        now_fn=lambda: datetime(2026, 4, 8, tzinfo=timezone.utc),
+    )
+
+    with pytest.raises(ValueError, match="Invalid frequency"):
+        backend.retune(-1)
+
+    status = scanner.status()
+    assert status["supervisor"]["last_error"] is not None
+    assert "Invalid frequency" in status["supervisor"]["last_error"]
+
+
+def test_invalid_gain_is_rejected_in_backend_status() -> None:
+    backend = MockBackend(fixture_path=FIXTURE_DIR / "nominal_ais.json", enable_timing_mode=False)
+    backend.start()
+
+    with pytest.raises(ValueError, match="Invalid gain"):
+        backend.set_gain(200)
+
+    assert backend.status().last_error is not None
+    assert "Invalid gain" in backend.status().last_error
