@@ -17,6 +17,7 @@ from app.config import Config, load_config
 from app.env_utils import load_local_dotenv
 from app.fixed_objects import load_fixed_radar_objects
 from app.ingest_adsb import ADSBAircraftJsonIngestor
+from app.ingest_adsb_inproc import ADSBInprocReader
 from app.ingest_ais import AISTCPIngestor
 from app.ingest_dsc import DSCDirectReader, DSCIngestError
 from app.ingest_ogn import OGNTCPIngestor
@@ -258,7 +259,15 @@ def _create_scanner(
         inter_scan_pause_seconds=config.inter_scan_pause_seconds,
     )
 
-    adsb_reader = ADSBAircraftJsonIngestor(aircraft_json_path=adsb_snapshot_path)
+    adsb_reader: ObservationReader = ADSBAircraftJsonIngestor(aircraft_json_path=adsb_snapshot_path)
+    if config.radio_backend == "inproc" and config.adsb_inproc_source == "rtl_tcp":
+        adsb_reader = ADSBInprocReader(
+            rtl_host=config.adsb_inproc_rtl_host,
+            rtl_port=config.adsb_inproc_rtl_port,
+            sample_rate=config.adsb_inproc_sample_rate,
+            gain=config.adsb_inproc_gain,
+            frequency_hz=config.adsb_inproc_frequency_hz,
+        )
     ogn_reader = OGNTCPIngestor.from_config(config)
     ais_reader = AISTCPIngestor.from_config(config)
     dsc_reader = _create_dsc_reader_if_enabled(config=config, logger=logger)

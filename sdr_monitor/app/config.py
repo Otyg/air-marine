@@ -85,6 +85,12 @@ class Config:
     dsc_rtl_port: int = 1234
     dsc_rtl_sample_rate: int = 48000
     dsc_rtl_gain: int = 30
+    adsb_inproc_source: str = "readsb"
+    adsb_inproc_rtl_host: str = "127.0.0.1"
+    adsb_inproc_rtl_port: int = 1234
+    adsb_inproc_sample_rate: int = 2_000_000
+    adsb_inproc_gain: int = 30
+    adsb_inproc_frequency_hz: int = 1_090_000_000
     radio_backend: str = "legacy"
     radio_external_use_worker: bool = False
     radio_external_control_host: str = "127.0.0.1"
@@ -191,6 +197,36 @@ class Config:
                 env_map,
                 f"{ENV_PREFIX}DSC_RTL_GAIN",
                 defaults.dsc_rtl_gain,
+            ),
+            adsb_inproc_source=_read_str(
+                env_map,
+                f"{ENV_PREFIX}ADSB_INPROC_SOURCE",
+                defaults.adsb_inproc_source,
+            ).strip().lower(),
+            adsb_inproc_rtl_host=_read_str(
+                env_map,
+                f"{ENV_PREFIX}ADSB_INPROC_RTL_HOST",
+                defaults.adsb_inproc_rtl_host,
+            ),
+            adsb_inproc_rtl_port=_read_int(
+                env_map,
+                f"{ENV_PREFIX}ADSB_INPROC_RTL_PORT",
+                defaults.adsb_inproc_rtl_port,
+            ),
+            adsb_inproc_sample_rate=_read_int(
+                env_map,
+                f"{ENV_PREFIX}ADSB_INPROC_SAMPLE_RATE",
+                defaults.adsb_inproc_sample_rate,
+            ),
+            adsb_inproc_gain=_read_int(
+                env_map,
+                f"{ENV_PREFIX}ADSB_INPROC_GAIN",
+                defaults.adsb_inproc_gain,
+            ),
+            adsb_inproc_frequency_hz=_read_int(
+                env_map,
+                f"{ENV_PREFIX}ADSB_INPROC_FREQUENCY_HZ",
+                defaults.adsb_inproc_frequency_hz,
             ),
             radio_backend=_read_str(
                 env_map,
@@ -368,6 +404,16 @@ class Config:
             raise ValueError(f"{ENV_PREFIX}DSC_RTL_SAMPLE_RATE must be > 0.")
         if not (0 <= self.dsc_rtl_gain <= 50):
             raise ValueError(f"{ENV_PREFIX}DSC_RTL_GAIN must be in the range 0..50.")
+        if self.adsb_inproc_source not in {"readsb", "rtl_tcp"}:
+            raise ValueError(f"{ENV_PREFIX}ADSB_INPROC_SOURCE must be one of: readsb, rtl_tcp.")
+        if not (1 <= self.adsb_inproc_rtl_port <= 65535):
+            raise ValueError(f"{ENV_PREFIX}ADSB_INPROC_RTL_PORT must be in the range 1..65535.")
+        if self.adsb_inproc_sample_rate <= 0:
+            raise ValueError(f"{ENV_PREFIX}ADSB_INPROC_SAMPLE_RATE must be > 0.")
+        if not (0 <= self.adsb_inproc_gain <= 50):
+            raise ValueError(f"{ENV_PREFIX}ADSB_INPROC_GAIN must be in the range 0..50.")
+        if self.adsb_inproc_frequency_hz <= 0:
+            raise ValueError(f"{ENV_PREFIX}ADSB_INPROC_FREQUENCY_HZ must be > 0.")
         if self.radio_backend not in {"legacy", "inproc", "external", "mock"}:
             raise ValueError(
                 f"{ENV_PREFIX}RADIO_BACKEND must be one of: legacy, inproc, external, mock."

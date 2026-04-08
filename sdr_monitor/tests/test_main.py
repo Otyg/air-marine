@@ -12,6 +12,7 @@ import pytest
 
 from app.config import Config
 from app.env_utils import load_local_dotenv
+from app.ingest_adsb_inproc import ADSBInprocReader
 from app.main import (
     build_decoder_process_config,
     create_service_components,
@@ -20,6 +21,7 @@ from app.main import (
     resolve_adsb_snapshot_path,
 )
 from app.models import Freshness, ScanBand, Source, Target, TargetKind
+from app.radio_v2 import InprocBackend
 from app.radio_v2 import ScannerOrchestratorV2
 from app.state import LiveState
 from app.store import SQLiteStore
@@ -242,6 +244,29 @@ def test_external_backend_worker_configuration_is_reflected_in_status(tmp_path) 
 
     status = components.scanner.status()
     assert status["supervisor"]["backend_name"] == "external"
+
+
+def test_inproc_backend_can_use_direct_adsb_reader(tmp_path) -> None:
+    config = Config(
+        sqlite_path=tmp_path / "service-inproc-rtl.sqlite3",
+        adsb_window_seconds=0.01,
+        ogn_window_seconds=0.0,
+        ais_window_seconds=0.01,
+        dsc_window_seconds=0.0,
+        radio_backend="inproc",
+        adsb_inproc_source="rtl_tcp",
+    )
+
+    components = create_service_components(
+        config=config,
+        start_scanner=False,
+        recover_latest_targets=False,
+    )
+
+    assert isinstance(components.scanner, ScannerOrchestratorV2)
+    assert isinstance(components.scanner._backend, InprocBackend)
+    adsb_reader = components.scanner._backend._readers[ScanBand.ADSB]
+    assert isinstance(adsb_reader, ADSBInprocReader)
 
 
 def test_build_decoder_process_config_matches_ingestors() -> None:
