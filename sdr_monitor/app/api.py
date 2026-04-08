@@ -1853,17 +1853,11 @@ def _build_radar_html(
       ctx.restore();
     }}
 
-    function fixedObjectMarkerFontPx(rangeKm) {{
-      const effectiveRange = Number.isFinite(rangeKm) ? Math.max(0, rangeKm) : 10;
-      const zoomOutSteps = Math.max(0, Math.floor((effectiveRange - 10) / 10));
-      return Math.max(7, 13 - zoomOutSteps);
-    }}
-
     function drawFixedObjects(cx, cy, pxPerKm, radius, rangeKm) {{
       if (!Array.isArray(fixedObjects) || fixedObjects.length === 0) return;
       ctx.save();
       ctx.textBaseline = "middle";
-      const markerFontPx = fixedObjectMarkerFontPx(rangeKm);
+      const markerFontPx = 10;
       const markerTextOffsetPx = Math.max(6, Math.round(markerFontPx * 0.65));
       for (const item of fixedObjects) {{
         const lat = toOptionalNumber(item.lat);
@@ -1885,7 +1879,7 @@ def _build_radar_html(
         const nameLines = name ? name.split(/\\s+/).filter(Boolean) : [];
 
         ctx.fillStyle = radarRingColor;
-        ctx.font = `${{markerFontPx}}px Courier New, monospace`;
+        ctx.font = `bold ${{markerFontPx}}px Courier New, monospace`;
         ctx.textAlign = "center";
         ctx.fillText(symbol, x, y);
         if (showFixedNames && nameLines.length > 0) {{
@@ -2210,7 +2204,7 @@ def _build_radar_html(
       drawFixedObjects(cx, cy, pxPerKm, radius, rangeKm);
       drawSelectedHistoryPath(selectedTargetId, cx, cy, pxPerKm, radius);
 
-      ctx.font = "bold 16px Courier New, monospace";
+      ctx.font = "bold 10px Courier New, monospace";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
 
@@ -3411,17 +3405,11 @@ def _build_history_radar_html(
       void loadHistoryTargetsInView(rangeKm);
     }}
 
-    function fixedObjectMarkerFontPx(rangeKm) {{
-      const effectiveRange = Number.isFinite(rangeKm) ? Math.max(0, rangeKm) : 10;
-      const zoomOutSteps = Math.max(0, Math.floor((effectiveRange - 10) / 10));
-      return Math.max(7, 13 - zoomOutSteps);
-    }}
-
     function drawFixedObjects(cx, cy, pxPerKm, radius, rangeKm) {{
       if (!Array.isArray(fixedObjects) || fixedObjects.length === 0) return;
       ctx.save();
       ctx.textBaseline = "middle";
-      const markerFontPx = fixedObjectMarkerFontPx(rangeKm);
+      const markerFontPx = 10;
       const markerTextOffsetPx = Math.max(6, Math.round(markerFontPx * 0.65));
       for (const item of fixedObjects) {{
         const lat = toOptionalNumber(item.lat);
@@ -3443,7 +3431,7 @@ def _build_history_radar_html(
         const nameLines = name ? name.split(/\\s+/).filter(Boolean) : [];
 
         ctx.fillStyle = radarRingColor;
-        ctx.font = `${{markerFontPx}}px Courier New, monospace`;
+        ctx.font = `bold ${{markerFontPx}}px Courier New, monospace`;
         ctx.textAlign = "center";
         ctx.fillText(symbol, x, y);
         if (showFixedNames && nameLines.length > 0) {{
@@ -3616,7 +3604,7 @@ def _build_history_radar_html(
       if (!isInsideRadarCircle(x, y, cx, cy, radius)) return;
 
       ctx.save();
-      ctx.font = "bold 16px Courier New, monospace";
+      ctx.font = "bold 10px Courier New, monospace";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillStyle = selectedTargetColor;
