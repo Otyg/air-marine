@@ -251,8 +251,10 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
     assert "href=\"/history-radar\"" in response.text
     assert "id=\"showLowSpeed\"" in response.text
     assert "drawCourseVector" in response.text
-    assert "const defaultPollMs = 2000;" in response.text
-    assert "const minPollMs = 700;" in response.text
+    assert "const minAutoRefreshMs = 2000;" in response.text
+    assert "const defaultPollMs = minAutoRefreshMs;" in response.text
+    assert "const minPollMs = minAutoRefreshMs;" in response.text
+    assert "}, minAutoRefreshMs);" in response.text
     assert "function computeAdaptivePollMs()" in response.text
     assert "function computeBandAwarePollMs(scannerState)" in response.text
     assert "function setScanMode(nextMode)" in response.text
@@ -349,6 +351,8 @@ def test_history_radar_ui_renders_html_with_history_panel() -> None:
     assert "function fitHistoryToView(points)" in response.text
     assert "fitHistoryToView(historyPoints);" not in response.text
     assert "href=\"/\"" in response.text
+    assert "const minAutoRefreshMs = 2000;" in response.text
+    assert "}, minAutoRefreshMs);" in response.text
 
 
 def test_history_targets_ui_endpoint_returns_history_summaries(tmp_path) -> None:

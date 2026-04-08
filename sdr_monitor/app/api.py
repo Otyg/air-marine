@@ -744,8 +744,9 @@ def _build_radar_html(
   <script>
     const homeCenter = {{ lat: {center_lat:.8f}, lon: {center_lon:.8f} }};
     const kmPerDegLat = 110.574;
-    const defaultPollMs = 2000;
-    const minPollMs = 700;
+    const minAutoRefreshMs = 2000;
+    const defaultPollMs = minAutoRefreshMs;
+    const minPollMs = minAutoRefreshMs;
     const maxPollMs = 12000;
     const pollBackoffFactor = 1.25;
     const observedIntervalLimit = 12;
@@ -2078,7 +2079,7 @@ def _build_radar_html(
         mapContourRetryTimer = null;
         mapContourPendingKey = null;
         void loadMapContoursForView(getViewMetrics().rangeKm);
-      }}, 750);
+      }}, minAutoRefreshMs);
     }}
 
     async function loadMapContoursForView(rangeKm) {{
@@ -2756,6 +2757,7 @@ def _build_history_radar_html(
   <script>
     const homeCenter = {{ lat: {center_lat:.8f}, lon: {center_lon:.8f} }};
     const kmPerDegLat = 110.574;
+    const minAutoRefreshMs = 2000;
     const defaultRangeKm = 10.0;
     const radarRingCount = 5;
     const minRangeKm = 0.2;
@@ -3288,7 +3290,7 @@ def _build_history_radar_html(
         mapContourRetryTimer = null;
         mapContourPendingKey = null;
         void loadMapContoursForView(getViewMetrics().rangeKm);
-      }}, 750);
+      }}, minAutoRefreshMs);
     }}
 
     async function loadMapContoursForView(rangeKm) {{
