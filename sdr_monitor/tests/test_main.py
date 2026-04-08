@@ -298,6 +298,41 @@ def test_scanner_does_not_start_on_startup_when_no_radio(tmp_path, monkeypatch) 
     asyncio.run(components.app.router.shutdown())
 
 
+def test_external_worker_mode_skips_local_radio_probe_on_startup(tmp_path, monkeypatch) -> None:
+    config = Config(
+        sqlite_path=tmp_path / "service.sqlite3",
+        adsb_window_seconds=0.01,
+        ais_window_seconds=0.01,
+        radio_backend="external",
+        radio_external_use_worker=True,
+    )
+    components = create_service_components(
+        config=config,
+        start_scanner=True,
+        recover_latest_targets=False,
+    )
+
+    probe_calls = {"count": 0}
+
+    def _probe(**kwargs):  # noqa: ANN003, ARG001
+        probe_calls["count"] += 1
+        return False
+
+    monkeypatch.setattr("app.main.is_radio_connected", _probe)
+
+    start_calls = {"count": 0}
+
+    def _start() -> None:
+        start_calls["count"] += 1
+
+    monkeypatch.setattr(components.scanner_worker, "start", _start)
+
+    asyncio.run(components.app.router.startup())
+    assert probe_calls["count"] == 0
+    assert start_calls["count"] == 1
+    asyncio.run(components.app.router.shutdown())
+
+
 def test_startup_prunes_targets_latest_older_than_ten_minutes_when_radio_connected(
     tmp_path,
     monkeypatch,

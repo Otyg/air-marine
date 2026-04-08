@@ -205,6 +205,8 @@ def create_service_components(
         async def _startup() -> None:
             if resolved.radio_backend == "mock":
                 connected = True
+            elif resolved.radio_backend == "external" and resolved.radio_external_use_worker:
+                connected = True
             else:
                 connected = is_radio_connected(logger=logger)
             api_runtime.radio_connected = connected
