@@ -471,6 +471,7 @@ class MockBackend:
             fixture = loaded
 
         self._fixture = dict(fixture)
+        self._payload_catalog = self._parse_payload_catalog(self._fixture.get("payloads"))
         self._seed = int(self._fixture.get("seed", 0))
         self._rng = random.Random(self._seed)
         self._sample_rate = int(self._fixture.get("sample_rate", 48000))
@@ -500,6 +501,22 @@ class MockBackend:
         self._active_frequency_hz: int | None = None
         self._last_error: str | None = None
 
+    @staticmethod
+    def _parse_payload_catalog(payloads_raw: Any) -> dict[str, dict[str, Any]]:
+        if payloads_raw is None:
+            return {}
+        if not isinstance(payloads_raw, Mapping):
+            raise ValueError("mock fixture payloads must be an object")
+        catalog: dict[str, dict[str, Any]] = {}
+        for key, value in payloads_raw.items():
+            ref = str(key).strip()
+            if not ref:
+                continue
+            if not isinstance(value, Mapping):
+                raise ValueError(f"mock fixture payload {ref!r} must be an object")
+            catalog[ref] = dict(value)
+        return catalog
+
     def _parse_timeline(self, timeline_raw: Any) -> list[MockTimelineEntry]:
         if not isinstance(timeline_raw, list):
             return []
@@ -514,12 +531,29 @@ class MockBackend:
             except Exception:
                 continue
             payload = row.get("payload")
+            payload_ref = row.get("payload_ref")
+            if payload_ref is not None and payload is not None:
+                raise ValueError("mock timeline entry cannot define both payload and payload_ref")
+            resolved_payload: dict[str, Any]
+            if payload_ref is not None:
+                ref = str(payload_ref).strip()
+                if not ref:
+                    raise ValueError("mock timeline payload_ref must be a non-empty string")
+                if ref not in self._payload_catalog:
+                    raise ValueError(f"mock timeline payload_ref {ref!r} not found in payloads catalog")
+                resolved_payload = dict(self._payload_catalog[ref])
+            elif isinstance(payload, Mapping):
+                resolved_payload = dict(payload)
+            elif payload is None:
+                resolved_payload = {}
+            else:
+                raise ValueError("mock timeline payload must be an object when provided")
             parsed.append(
                 MockTimelineEntry(
                     t_ms=t_ms,
                     band=band,
                     event_type=event_type,
-                    payload=dict(payload) if isinstance(payload, Mapping) else {},
+                    payload=resolved_payload,
                     fault=str(row.get("fault")) if row.get("fault") is not None else None,
                 )
             )

@@ -215,6 +215,83 @@ def test_invalid_gain_is_rejected_in_backend_status() -> None:
     assert "Invalid gain" in backend.status().last_error
 
 
+def test_mock_backend_supports_payload_ref_catalog() -> None:
+    fixture = {
+        "seed": 1,
+        "sample_rate": 48000,
+        "default_band": "ais",
+        "payloads": {
+            "ais_obs": {
+                "observation": {
+                    "target_id": "ais:265555555",
+                    "source": "ais",
+                    "kind": "vessel",
+                    "observed_at": "2026-04-08T10:00:00+00:00",
+                    "lat": 58.0,
+                    "lon": 18.0,
+                    "payload_json": {},
+                }
+            }
+        },
+        "timeline": [
+            {
+                "t_ms": 0,
+                "band": "ais",
+                "event_type": "observation",
+                "payload_ref": "ais_obs",
+            }
+        ],
+    }
+    backend = MockBackend(fixture=fixture, enable_timing_mode=False)
+    backend.start()
+    events = backend.read(0.1, band=ScanBand.AIS)
+
+    assert len(events) == 1
+    assert isinstance(events[0], ObservationEvent)
+    assert events[0].observation.target_id == "ais:265555555"
+
+
+def test_mock_backend_rejects_unknown_payload_ref() -> None:
+    fixture = {
+        "seed": 1,
+        "sample_rate": 48000,
+        "default_band": "ais",
+        "payloads": {},
+        "timeline": [
+            {
+                "t_ms": 0,
+                "band": "ais",
+                "event_type": "observation",
+                "payload_ref": "missing_ref",
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="payload_ref"):
+        MockBackend(fixture=fixture, enable_timing_mode=False)
+
+
+def test_mock_backend_rejects_payload_and_payload_ref_together() -> None:
+    fixture = {
+        "seed": 1,
+        "sample_rate": 48000,
+        "default_band": "ais",
+        "payloads": {"a": {"x": 1}},
+        "timeline": [
+            {
+                "t_ms": 0,
+                "band": "ais",
+                "event_type": "observation",
+                "payload_ref": "a",
+                "payload": {"observation": {}},
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="both payload and payload_ref"):
+        MockBackend(fixture=fixture, enable_timing_mode=False)
+
+
 def test_external_backend_worker_mode_reads_events_and_sends_commands(monkeypatch) -> None:
     obs = NormalizedObservation(
         target_id="ais:265123456",
