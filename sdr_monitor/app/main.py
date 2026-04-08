@@ -18,11 +18,12 @@ from app.env_utils import load_local_dotenv
 from app.fixed_objects import load_fixed_radar_objects
 from app.ingest_adsb import ADSBAircraftJsonIngestor
 from app.ingest_ais import AISTCPIngestor
+from app.ingest_dsc import DSCDirectReader, DSCIngestError
 from app.ingest_ogn import OGNTCPIngestor
 from app.logging_setup import configure_logging, get_logger
 from app.map_contours import build_map_contour_service
 from app.models import NormalizedObservation, Target
-from app.scanner import HybridBandScanner, ScannerConfig
+from app.scanner import HybridBandScanner, ObservationReader, ScannerConfig
 from app.state import LiveState
 from app.store import SQLiteStore
 from app.supervisor import DecoderProcessConfig, DecoderSupervisor
@@ -156,10 +157,30 @@ def create_service_components(
         ais_tcp_port=resolved.ais_tcp_port,
     )
 
+    # Initialize DSC reader if enabled
+    dsc_reader: ObservationReader | None = None
+    if resolved.dsc_window_seconds > 0:
+        try:
+            dsc_reader = DSCDirectReader(
+                rtl_host=resolved.dsc_rtl_host,
+                rtl_port=resolved.dsc_rtl_port,
+                sample_rate=resolved.dsc_rtl_sample_rate,
+                gain=resolved.dsc_rtl_gain,
+            )
+            if dsc_reader.connect():
+                logger.info("DSC reader initialized and connected")
+            else:
+                logger.warning("DSC reader created but failed to connect")
+                dsc_reader = None
+        except DSCIngestError as e:
+            logger.warning(f"DSC reader not available: {e}")
+            dsc_reader = None
+
     scanner = HybridBandScanner(
         adsb_reader=ADSBAircraftJsonIngestor(aircraft_json_path=adsb_snapshot_path),
         ogn_reader=OGNTCPIngestor.from_config(resolved),
         ais_reader=AISTCPIngestor.from_config(resolved),
+        dsc_reader=dsc_reader,
         state=state,
         store=store,
         supervisor=DecoderSupervisor(config=decoder_process_config),
@@ -167,6 +188,7 @@ def create_service_components(
             adsb_window_seconds=resolved.adsb_window_seconds,
             ogn_window_seconds=resolved.ogn_window_seconds,
             ais_window_seconds=resolved.ais_window_seconds,
+            dsc_window_seconds=resolved.dsc_window_seconds,
             inter_scan_pause_seconds=resolved.inter_scan_pause_seconds,
         ),
     )

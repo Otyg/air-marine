@@ -69,6 +69,7 @@ class Config:
     adsb_window_seconds: float = 8.0
     ogn_window_seconds: float = 0.0
     ais_window_seconds: float = 12.0
+    dsc_window_seconds: float = 0.0
     inter_scan_pause_seconds: float = 2.0
     fresh_seconds: int = 30
     aging_seconds: int = 120
@@ -78,6 +79,12 @@ class Config:
     ogn_tcp_port: int = 50001
     ais_tcp_host: str = "127.0.0.1"
     ais_tcp_port: int = 10110
+    dsc_tcp_host: str = "127.0.0.1"
+    dsc_tcp_port: int = 6021
+    dsc_rtl_host: str = "127.0.0.1"
+    dsc_rtl_port: int = 1234
+    dsc_rtl_sample_rate: int = 48000
+    dsc_rtl_gain: int = 30
     sqlite_path: Path = Path("./data/sdr_monitor.sqlite3")
     api_host: str = "0.0.0.0"
     api_port: int = 8000
@@ -117,6 +124,9 @@ class Config:
             ais_window_seconds=_read_float(
                 env_map, f"{ENV_PREFIX}AIS_WINDOW_SECONDS", defaults.ais_window_seconds
             ),
+            dsc_window_seconds=_read_float(
+                env_map, f"{ENV_PREFIX}DSC_WINDOW_SECONDS", defaults.dsc_window_seconds
+            ),
             inter_scan_pause_seconds=_read_float(
                 env_map,
                 f"{ENV_PREFIX}INTER_SCAN_PAUSE_SECONDS",
@@ -151,6 +161,28 @@ class Config:
                 env_map,
                 f"{ENV_PREFIX}AIS_TCP_PORT",
                 defaults.ais_tcp_port,
+            ),
+            dsc_tcp_host=_read_str(env_map, f"{ENV_PREFIX}DSC_TCP_HOST", defaults.dsc_tcp_host),
+            dsc_tcp_port=_read_int(
+                env_map,
+                f"{ENV_PREFIX}DSC_TCP_PORT",
+                defaults.dsc_tcp_port,
+            ),
+            dsc_rtl_host=_read_str(env_map, f"{ENV_PREFIX}DSC_RTL_HOST", defaults.dsc_rtl_host),
+            dsc_rtl_port=_read_int(
+                env_map,
+                f"{ENV_PREFIX}DSC_RTL_PORT",
+                defaults.dsc_rtl_port,
+            ),
+            dsc_rtl_sample_rate=_read_int(
+                env_map,
+                f"{ENV_PREFIX}DSC_RTL_SAMPLE_RATE",
+                defaults.dsc_rtl_sample_rate,
+            ),
+            dsc_rtl_gain=_read_int(
+                env_map,
+                f"{ENV_PREFIX}DSC_RTL_GAIN",
+                defaults.dsc_rtl_gain,
             ),
             sqlite_path=Path(
                 _read_str(env_map, f"{ENV_PREFIX}SQLITE_PATH", str(defaults.sqlite_path))
@@ -276,6 +308,16 @@ class Config:
             raise ValueError(f"{ENV_PREFIX}OGN_TCP_PORT must be in the range 1..65535.")
         if self.ais_window_seconds <= 0:
             raise ValueError(f"{ENV_PREFIX}AIS_WINDOW_SECONDS must be > 0.")
+        if self.dsc_window_seconds < 0:
+            raise ValueError(f"{ENV_PREFIX}DSC_WINDOW_SECONDS must be >= 0.")
+        if not (1 <= self.dsc_tcp_port <= 65535):
+            raise ValueError(f"{ENV_PREFIX}DSC_TCP_PORT must be in the range 1..65535.")
+        if not (1 <= self.dsc_rtl_port <= 65535):
+            raise ValueError(f"{ENV_PREFIX}DSC_RTL_PORT must be in the range 1..65535.")
+        if self.dsc_rtl_sample_rate <= 0:
+            raise ValueError(f"{ENV_PREFIX}DSC_RTL_SAMPLE_RATE must be > 0.")
+        if not (0 <= self.dsc_rtl_gain <= 50):
+            raise ValueError(f"{ENV_PREFIX}DSC_RTL_GAIN must be in the range 0..50.")
         if self.inter_scan_pause_seconds < 0:
             raise ValueError(f"{ENV_PREFIX}INTER_SCAN_PAUSE_SECONDS must be >= 0.")
         if self.fresh_seconds < 0:
@@ -288,6 +330,8 @@ class Config:
             raise ValueError(f"{ENV_PREFIX}MAX_POSITIONS_PER_TARGET must be > 0.")
         if not (1 <= self.ais_tcp_port <= 65535):
             raise ValueError(f"{ENV_PREFIX}AIS_TCP_PORT must be in the range 1..65535.")
+        if not (1 <= self.dsc_tcp_port <= 65535):
+            raise ValueError(f"{ENV_PREFIX}DSC_TCP_PORT must be in the range 1..65535.")
         if not (1 <= self.api_port <= 65535):
             raise ValueError(f"{ENV_PREFIX}API_PORT must be in the range 1..65535.")
         if not (-90 <= self.radar_center_lat <= 90):

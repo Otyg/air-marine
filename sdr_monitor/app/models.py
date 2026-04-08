@@ -15,6 +15,7 @@ class Source(str, Enum):
     ADSB = "adsb"
     AIS = "ais"
     OGN = "ogn"
+    DSC = "dsc"
 
 
 class TargetKind(str, Enum):
@@ -32,6 +33,7 @@ class ScanBand(str, Enum):
     ADSB = "adsb"
     AIS = "ais"
     OGN = "ogn"
+    DSC = "dsc"
 
 
 def _serialize_dt(value: datetime | None) -> str | None:

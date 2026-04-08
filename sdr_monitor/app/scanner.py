@@ -29,6 +29,7 @@ class ScannerConfig:
     adsb_window_seconds: float = 8.0
     ogn_window_seconds: float = 0.0
     ais_window_seconds: float = 12.0
+    dsc_window_seconds: float = 0.0
     inter_scan_pause_seconds: float = 2.0
 
 
@@ -51,6 +52,7 @@ class HybridBandScanner:
         adsb_reader: ObservationReader,
         ogn_reader: ObservationReader | None,
         ais_reader: ObservationReader,
+        dsc_reader: ObservationReader | None = None,
         state: LiveState,
         store: SQLiteStore | None,
         supervisor: DecoderSupervisor,
@@ -61,6 +63,7 @@ class HybridBandScanner:
         self._adsb_reader = adsb_reader
         self._ogn_reader = ogn_reader
         self._ais_reader = ais_reader
+        self._dsc_reader = dsc_reader
         self._state = state
         self._store = store
         self._supervisor = supervisor
@@ -83,6 +86,8 @@ class HybridBandScanner:
             raise ValueError("ogn_window_seconds must be >= 0")
         if self._config.ais_window_seconds <= 0:
             raise ValueError("ais_window_seconds must be > 0")
+        if self._config.dsc_window_seconds < 0:
+            raise ValueError("dsc_window_seconds must be >= 0")
         if self._config.inter_scan_pause_seconds < 0:
             raise ValueError("inter_scan_pause_seconds must be >= 0")
 
@@ -148,6 +153,17 @@ class HybridBandScanner:
                     window_seconds=self._config.ogn_window_seconds,
                     reader=self._ogn_reader,
                     timeout_seconds=self._config.ogn_window_seconds,
+                    keep_decoder_running=False,
+                )
+                if self._stop_event.is_set():
+                    return
+                self._pause_between_scans()
+            if self._config.dsc_window_seconds > 0 and self._dsc_reader:
+                self._run_band_window(
+                    band=ScanBand.DSC,
+                    window_seconds=self._config.dsc_window_seconds,
+                    reader=self._dsc_reader,
+                    timeout_seconds=self._config.dsc_window_seconds,
                     keep_decoder_running=False,
                 )
                 if self._stop_event.is_set():
