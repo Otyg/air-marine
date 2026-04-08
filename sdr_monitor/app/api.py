@@ -2237,11 +2237,8 @@ def _build_radar_html(
       syncRangeInput(rangeKm);
       ensureMapContoursForView(rangeKm);
       const status = error ? `Error: ${{error}}` : `${{visible}} visible / ${{targets.length}} total`;
-      const contourStatus = showMapContours
-        ? `Kartlager: ${{mapContourSource}}/${{mapContourStatus}}`
-        : "Kartlager: av";
       const contourErrorText = showMapContours && mapContourError ? ` | Konturer: ${{mapContourError}}` : "";
-      meta.textContent = `Home: ${{homeCenter.lat.toFixed(6)}}, ${{homeCenter.lon.toFixed(6)}} | View: ${{viewCenter.lat.toFixed(6)}}, ${{viewCenter.lon.toFixed(6)}} | Ringavstand: ${{ringSpacingKm.toFixed(2)}} km | UI-poll: ${{(nextPollMs / 1000).toFixed(2)}} s | ${{contourStatus}} | ${{status}}${{contourErrorText}}`;
+      meta.textContent = `View: ${{viewCenter.lat.toFixed(6)}}, ${{viewCenter.lon.toFixed(6)}} | Ringavstand: ${{ringSpacingKm.toFixed(2)}} km | ${{status}}${{contourErrorText}}`;
     }}
 
     async function loadTargets() {{
@@ -3862,16 +3859,13 @@ def _build_history_radar_html(
       ensureMapContoursForView(rangeKm);
       ensureHistoryTargetsInView(rangeKm);
 
-      const contourStatus = showMapContours
-        ? `Kartlager: ${{mapContourSource}}/${{mapContourStatus}}`
-        : "Kartlager: av";
       const contourErrorText = showMapContours && mapContourError ? ` | Konturer: ${{mapContourError}}` : "";
       const historyTimeFilterText = ` | ${{historyTimeFilterSummary.textContent}}`;
       const selectedText = selectedTargetId
         ? `Vald: ${{selectedTargetLabel || selectedTargetId}} | Positioner: ${{selectedPositionCount}} | Last seen: ${{selectedLastSeen || "-"}}`
         : "Vald: inget objekt";
       const errorText = error ? ` | Error: ${{error}}` : "";
-      meta.textContent = `Home: ${{homeCenter.lat.toFixed(6)}}, ${{homeCenter.lon.toFixed(6)}} | View: ${{viewCenter.lat.toFixed(6)}}, ${{viewCenter.lon.toFixed(6)}} | Ringavstand: ${{ringSpacingKm.toFixed(2)}} km | ${{contourStatus}}${{historyTimeFilterText}} | ${{selectedText}}${{contourErrorText}}${{errorText}}`;
+      meta.textContent = `View: ${{viewCenter.lat.toFixed(6)}}, ${{viewCenter.lon.toFixed(6)}} | Ringavstand: ${{ringSpacingKm.toFixed(2)}} km${{historyTimeFilterText}} | ${{selectedText}}${{contourErrorText}}${{errorText}}`;
     }}
 
     window.addEventListener("resize", draw);
