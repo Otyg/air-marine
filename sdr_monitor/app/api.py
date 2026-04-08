@@ -373,7 +373,7 @@ def _build_radar_html(
   <style>
     :root {{
       --radar-bg: #000000;
-      --radar-fg: #90ee90;
+      --radar-fg: #E9FCE9;
       --radar-ring: #2c7a2c;
       --radar-center: #d3d3d3;
       --panel-fg: #9be89b;
@@ -757,8 +757,20 @@ def _build_radar_html(
     const trailPointWindowSeconds = 120;
     const trailStaleStartSeconds = 30;
     const trailStaleFadeSeconds = 270;
+    const liveTrailAgeColors = [
+      "#C1F5C1",
+      "#90EE90",
+      "#72E972",
+      "#4AE34A",
+      "#22DD22",
+      "#1CB51C",
+      "#168D16",
+      "#106510",
+      "#0A3E0A",
+      "#031603",
+    ];
     const radarRingColor = "#2c7a2c";
-    const liveTargetColor = "#39FF14";
+    const liveTargetColor = "#E9FCE9";
     const defaultMapSource = {json.dumps(default_map_source)};
     const fixedObjects = {fixed_objects_json};
     const canvas = document.getElementById("radar");
@@ -852,6 +864,15 @@ def _build_radar_html(
       const clampedAge = clampUnitInterval(ageRank);
       const emphasis = Math.pow(1 - clampedAge, 0.85);
       return blendHexColors(radarRingColor, targetColor || liveTargetColor, emphasis);
+    }}
+
+    function liveTrailColorForAge(ageRank) {{
+      const clampedAge = clampUnitInterval(ageRank);
+      const paletteIndex = Math.min(
+        liveTrailAgeColors.length - 1,
+        Math.floor(clampedAge * liveTrailAgeColors.length),
+      );
+      return liveTrailAgeColors[paletteIndex];
     }}
 
     function clampPollMs(value) {{
@@ -1686,9 +1707,6 @@ def _build_radar_html(
 
       points.reverse();
       const fadeProgress = getTrailFadeProgress(target.last_seen);
-      const targetColor = target && target.target_id === selectedTargetId
-        ? selectedTargetColor
-        : liveTargetColor;
 
       ctx.save();
       ctx.lineWidth = 1;
@@ -1705,7 +1723,7 @@ def _build_radar_html(
           );
           if (clippedSegment) {{
             ctx.globalAlpha = newestOpacity;
-            ctx.strokeStyle = trailColorForAge(0, targetColor);
+            ctx.strokeStyle = liveTrailColorForAge(0);
             ctx.beginPath();
             ctx.moveTo(clippedSegment.start.x, clippedSegment.start.y);
             ctx.lineTo(clippedSegment.end.x, clippedSegment.end.y);
@@ -1718,7 +1736,7 @@ def _build_radar_html(
         const segmentOpacity = trailOpacityForAgeRank(segmentAgeRank, fadeProgress);
         if (segmentOpacity <= 0.02) continue;
         ctx.globalAlpha = segmentOpacity;
-        const color = trailColorForAge(segmentAgeRank, targetColor);
+        const color = liveTrailColorForAge(segmentAgeRank);
         const from = points[i];
         const to = points[i + 1];
         ctx.beginPath();
@@ -1733,7 +1751,7 @@ def _build_radar_html(
         const pointOpacity = trailOpacityForAgeRank(pointAgeRank, fadeProgress);
         if (pointOpacity <= 0.02) return;
         ctx.globalAlpha = pointOpacity;
-        const color = trailColorForAge(pointAgeRank, targetColor);
+        const color = liveTrailColorForAge(pointAgeRank);
         ctx.fillStyle = color;
         ctx.beginPath();
         ctx.arc(point.x, point.y, 1.6, 0, Math.PI * 2);
@@ -2412,7 +2430,7 @@ def _build_history_radar_html(
   <style>
     :root {{
       --radar-bg: #000000;
-      --radar-fg: #90ee90;
+      --radar-fg: #E9FCE9;
       --radar-ring: #2c7a2c;
       --radar-center: #d3d3d3;
       --panel-fg: #9be89b;
