@@ -109,6 +109,27 @@ class NormalizedObservation:
 
     payload_json: dict[str, Any] = field(default_factory=dict)
 
+    # Backward-compatible aliases used by older ingest/test code.
+    @property
+    def target_kind(self) -> TargetKind:
+        return self.kind
+
+    @property
+    def latitude(self) -> float | None:
+        return self.lat
+
+    @property
+    def longitude(self) -> float | None:
+        return self.lon
+
+    @property
+    def heading(self) -> float | None:
+        return self.course
+
+    @property
+    def speed_knots(self) -> float | None:
+        return self.speed
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "target_id": self.target_id,
