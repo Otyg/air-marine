@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from app.radio_v2 import ScannerOrchestratorV2
 from app.scanner import HybridBandScanner
 from app.store import SQLiteStore
 
@@ -12,7 +13,7 @@ from app.store import SQLiteStore
 def build_health_report(
     *,
     service_name: str,
-    scanner: HybridBandScanner | None,
+    scanner: HybridBandScanner | ScannerOrchestratorV2 | None,
     store: SQLiteStore | None,
 ) -> dict[str, Any]:
     """Build a normalized service health payload."""

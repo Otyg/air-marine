@@ -1,0 +1,41 @@
+{
+  "seed": 9,
+  "sample_rate": 48000,
+  "default_band": "ais",
+  "controls": {
+    "drop_rate": 0.0,
+    "jitter_profile": {"max_jitter_ms": 0},
+    "retune_map": {"162000000": "ais"}
+  },
+  "timeline": [
+    {"t_ms": 0, "band": "ais", "event_type": "decoded_frame", "payload": {}, "fault": "malformed_frame"},
+    {
+      "t_ms": 5,
+      "band": "ais",
+      "event_type": "observation",
+      "payload": {
+        "observation": {
+          "target_id": "ais:265200002",
+          "source": "ais",
+          "kind": "vessel",
+          "observed_at": "2026-04-08T10:32:00+00:00",
+          "label": "POST-MALFORMED",
+          "lat": 58.2,
+          "lon": 17.2,
+          "course": 45.0,
+          "speed": 9.0,
+          "altitude": null,
+          "last_scan_band": "ais",
+          "icao24": null,
+          "callsign": null,
+          "squawk": null,
+          "vertical_rate": null,
+          "mmsi": "265200002",
+          "shipname": "POST-MALFORMED",
+          "nav_status": null,
+          "payload_json": {"mock": true}
+        }
+      }
+    }
+  ]
+}

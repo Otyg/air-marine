@@ -19,6 +19,7 @@ from app.main import (
     resolve_adsb_snapshot_path,
 )
 from app.models import Freshness, ScanBand, Source, Target, TargetKind
+from app.radio_v2 import ScannerOrchestratorV2
 from app.state import LiveState
 from app.store import SQLiteStore
 
@@ -128,6 +129,29 @@ def test_create_service_components_without_background_scanner(tmp_path) -> None:
     assert "Harbor" in response.text
     assert components.app is not None
     assert components.scanner.status()["ogn_window_seconds"] == 0.0
+
+
+def test_create_service_components_with_mock_backend_uses_v2_scanner(tmp_path) -> None:
+    fixture_path = (
+        Path(__file__).resolve().parent / "fixtures" / "mock_radio" / "mixed_cycle.json"
+    )
+    config = Config(
+        sqlite_path=tmp_path / "service.sqlite3",
+        adsb_window_seconds=0.01,
+        ogn_window_seconds=0.01,
+        ais_window_seconds=0.01,
+        dsc_window_seconds=0.01,
+        radio_backend="mock",
+        mock_radio_fixture_path=fixture_path,
+    )
+
+    components = create_service_components(
+        config=config,
+        start_scanner=False,
+        recover_latest_targets=False,
+    )
+
+    assert isinstance(components.scanner, ScannerOrchestratorV2)
 
 
 def test_build_decoder_process_config_matches_ingestors() -> None:

@@ -1,0 +1,42 @@
+{
+  "seed": 8,
+  "sample_rate": 48000,
+  "default_band": "adsb",
+  "controls": {
+    "drop_rate": 0.0,
+    "jitter_profile": {"max_jitter_ms": 0},
+    "retune_map": {"1090000000": "adsb"}
+  },
+  "timeline": [
+    {"t_ms": 0, "band": "adsb", "event_type": "observation", "payload": {}, "fault": "disconnect"},
+    {"t_ms": 10, "band": "adsb", "event_type": "observation", "payload": {}, "fault": "reconnect"},
+    {
+      "t_ms": 20,
+      "band": "adsb",
+      "event_type": "observation",
+      "payload": {
+        "observation": {
+          "target_id": "adsb:cc00dd",
+          "source": "adsb",
+          "kind": "aircraft",
+          "observed_at": "2026-04-08T10:31:00+00:00",
+          "label": "RECOVERED",
+          "lat": 59.1,
+          "lon": 17.1,
+          "course": 88.0,
+          "speed": 205.0,
+          "altitude": 8500.0,
+          "last_scan_band": "adsb",
+          "icao24": "cc00dd",
+          "callsign": "RECOV",
+          "squawk": "7000",
+          "vertical_rate": 0.0,
+          "mmsi": null,
+          "shipname": null,
+          "nav_status": null,
+          "payload_json": {"mock": true}
+        }
+      }
+    }
+  ]
+}

@@ -85,6 +85,9 @@ class Config:
     dsc_rtl_port: int = 1234
     dsc_rtl_sample_rate: int = 48000
     dsc_rtl_gain: int = 30
+    radio_backend: str = "legacy"
+    mock_radio_fixture_path: Path = Path("./sdr_monitor/tests/fixtures/mock_radio/mixed_cycle.json")
+    mock_radio_timing_enabled: bool = False
     sqlite_path: Path = Path("./data/sdr_monitor.sqlite3")
     api_host: str = "0.0.0.0"
     api_port: int = 8000
@@ -183,6 +186,23 @@ class Config:
                 env_map,
                 f"{ENV_PREFIX}DSC_RTL_GAIN",
                 defaults.dsc_rtl_gain,
+            ),
+            radio_backend=_read_str(
+                env_map,
+                f"{ENV_PREFIX}RADIO_BACKEND",
+                defaults.radio_backend,
+            ).strip().lower(),
+            mock_radio_fixture_path=Path(
+                _read_str(
+                    env_map,
+                    f"{ENV_PREFIX}MOCK_RADIO_FIXTURE_PATH",
+                    str(defaults.mock_radio_fixture_path),
+                )
+            ),
+            mock_radio_timing_enabled=_read_bool(
+                env_map,
+                f"{ENV_PREFIX}MOCK_RADIO_TIMING_ENABLED",
+                defaults.mock_radio_timing_enabled,
             ),
             sqlite_path=Path(
                 _read_str(env_map, f"{ENV_PREFIX}SQLITE_PATH", str(defaults.sqlite_path))
@@ -318,6 +338,10 @@ class Config:
             raise ValueError(f"{ENV_PREFIX}DSC_RTL_SAMPLE_RATE must be > 0.")
         if not (0 <= self.dsc_rtl_gain <= 50):
             raise ValueError(f"{ENV_PREFIX}DSC_RTL_GAIN must be in the range 0..50.")
+        if self.radio_backend not in {"legacy", "inproc", "external", "mock"}:
+            raise ValueError(
+                f"{ENV_PREFIX}RADIO_BACKEND must be one of: legacy, inproc, external, mock."
+            )
         if self.inter_scan_pause_seconds < 0:
             raise ValueError(f"{ENV_PREFIX}INTER_SCAN_PAUSE_SECONDS must be >= 0.")
         if self.fresh_seconds < 0:

@@ -22,7 +22,18 @@ from app.ingest_dsc import DSCDirectReader, DSCIngestError
 from app.ingest_ogn import OGNTCPIngestor
 from app.logging_setup import configure_logging, get_logger
 from app.map_contours import build_map_contour_service
-from app.models import NormalizedObservation, Target
+from app.models import NormalizedObservation, ScanBand, Target
+from app.radio_v2 import (
+    ADSBPipeline,
+    AISPipeline,
+    DSCPipeline,
+    ExternalBackend,
+    InprocBackend,
+    LegacyBackend,
+    MockBackend,
+    OGNPipeline,
+    ScannerOrchestratorV2,
+)
 from app.scanner import HybridBandScanner, ObservationReader, ScannerConfig
 from app.state import LiveState
 from app.store import SQLiteStore
@@ -42,7 +53,7 @@ class ServiceComponents:
     config: Config
     state: LiveState
     store: SQLiteStore
-    scanner: HybridBandScanner
+    scanner: HybridBandScanner | ScannerOrchestratorV2
     app: Any
     scanner_worker: "ScannerWorker"
 
@@ -50,7 +61,7 @@ class ServiceComponents:
 class ScannerWorker:
     """Background scanner thread controller."""
 
-    def __init__(self, scanner: HybridBandScanner) -> None:
+    def __init__(self, scanner: HybridBandScanner | ScannerOrchestratorV2) -> None:
         self._scanner = scanner
         self._thread: Thread | None = None
 
@@ -157,40 +168,13 @@ def create_service_components(
         ais_tcp_port=resolved.ais_tcp_port,
     )
 
-    # Initialize DSC reader if enabled
-    dsc_reader: ObservationReader | None = None
-    if resolved.dsc_window_seconds > 0:
-        try:
-            dsc_reader = DSCDirectReader(
-                rtl_host=resolved.dsc_rtl_host,
-                rtl_port=resolved.dsc_rtl_port,
-                sample_rate=resolved.dsc_rtl_sample_rate,
-                gain=resolved.dsc_rtl_gain,
-            )
-            if dsc_reader.connect():
-                logger.info("DSC reader initialized and connected")
-            else:
-                logger.warning("DSC reader created but failed to connect")
-                dsc_reader = None
-        except DSCIngestError as e:
-            logger.warning(f"DSC reader not available: {e}")
-            dsc_reader = None
-
-    scanner = HybridBandScanner(
-        adsb_reader=ADSBAircraftJsonIngestor(aircraft_json_path=adsb_snapshot_path),
-        ogn_reader=OGNTCPIngestor.from_config(resolved),
-        ais_reader=AISTCPIngestor.from_config(resolved),
-        dsc_reader=dsc_reader,
+    scanner = _create_scanner(
+        config=resolved,
         state=state,
         store=store,
-        supervisor=DecoderSupervisor(config=decoder_process_config),
-        config=ScannerConfig(
-            adsb_window_seconds=resolved.adsb_window_seconds,
-            ogn_window_seconds=resolved.ogn_window_seconds,
-            ais_window_seconds=resolved.ais_window_seconds,
-            dsc_window_seconds=resolved.dsc_window_seconds,
-            inter_scan_pause_seconds=resolved.inter_scan_pause_seconds,
-        ),
+        logger=logger,
+        adsb_snapshot_path=adsb_snapshot_path,
+        decoder_process_config=decoder_process_config,
     )
     worker = ScannerWorker(scanner)
     fixed_radar_objects = load_fixed_radar_objects(resolved.fixed_objects_path, logger=logger)
@@ -219,7 +203,10 @@ def create_service_components(
 
         @app.on_event("startup")
         async def _startup() -> None:
-            connected = is_radio_connected(logger=logger)
+            if resolved.radio_backend == "mock":
+                connected = True
+            else:
+                connected = is_radio_connected(logger=logger)
             api_runtime.radio_connected = connected
             if not connected:
                 return
@@ -249,6 +236,94 @@ def create_service_components(
     )
     app.state.components = components
     return components
+
+
+def _create_scanner(
+    *,
+    config: Config,
+    state: LiveState,
+    store: SQLiteStore,
+    logger,
+    adsb_snapshot_path: Path,
+    decoder_process_config: DecoderProcessConfig,
+) -> HybridBandScanner | ScannerOrchestratorV2:
+    scanner_config = ScannerConfig(
+        adsb_window_seconds=config.adsb_window_seconds,
+        ogn_window_seconds=config.ogn_window_seconds,
+        ais_window_seconds=config.ais_window_seconds,
+        dsc_window_seconds=config.dsc_window_seconds,
+        inter_scan_pause_seconds=config.inter_scan_pause_seconds,
+    )
+
+    adsb_reader = ADSBAircraftJsonIngestor(aircraft_json_path=adsb_snapshot_path)
+    ogn_reader = OGNTCPIngestor.from_config(config)
+    ais_reader = AISTCPIngestor.from_config(config)
+    dsc_reader = _create_dsc_reader_if_enabled(config=config, logger=logger)
+
+    if config.radio_backend == "legacy":
+        return HybridBandScanner(
+            adsb_reader=adsb_reader,
+            ogn_reader=ogn_reader,
+            ais_reader=ais_reader,
+            dsc_reader=dsc_reader,
+            state=state,
+            store=store,
+            supervisor=DecoderSupervisor(config=decoder_process_config),
+            config=scanner_config,
+        )
+
+    readers: dict[ScanBand, ObservationReader] = {
+        ScanBand.ADSB: adsb_reader,
+        ScanBand.OGN: ogn_reader,
+        ScanBand.AIS: ais_reader,
+    }
+    if dsc_reader is not None:
+        readers[ScanBand.DSC] = dsc_reader
+
+    if config.radio_backend == "inproc":
+        backend = InprocBackend(readers)
+    elif config.radio_backend == "external":
+        backend = ExternalBackend(readers)
+    elif config.radio_backend == "mock":
+        backend = MockBackend(
+            fixture_path=config.mock_radio_fixture_path,
+            enable_timing_mode=config.mock_radio_timing_enabled,
+        )
+    else:
+        backend = LegacyBackend(readers)
+
+    pipelines = {
+        ScanBand.AIS: AISPipeline(),
+        ScanBand.ADSB: ADSBPipeline(),
+        ScanBand.OGN: OGNPipeline(),
+        ScanBand.DSC: DSCPipeline(),
+    }
+    return ScannerOrchestratorV2(
+        backend=backend,
+        pipelines=pipelines,
+        state=state,
+        store=store,
+        config=scanner_config,
+    )
+
+
+def _create_dsc_reader_if_enabled(*, config: Config, logger) -> ObservationReader | None:
+    if config.dsc_window_seconds <= 0:
+        return None
+    try:
+        dsc_reader = DSCDirectReader(
+            rtl_host=config.dsc_rtl_host,
+            rtl_port=config.dsc_rtl_port,
+            sample_rate=config.dsc_rtl_sample_rate,
+            gain=config.dsc_rtl_gain,
+        )
+        if dsc_reader.connect():
+            logger.info("DSC reader initialized and connected")
+            return dsc_reader
+        logger.warning("DSC reader created but failed to connect")
+    except DSCIngestError as exc:
+        logger.warning("DSC reader not available: %s", exc)
+    return None
 
 
 def recover_state_from_latest_targets(

@@ -1,0 +1,71 @@
+{
+  "seed": 7,
+  "sample_rate": 48000,
+  "default_band": "ais",
+  "controls": {
+    "drop_rate": 0.0,
+    "jitter_profile": {"max_jitter_ms": 2},
+    "retune_map": {
+      "162000000": "ais",
+      "1090000000": "adsb"
+    }
+  },
+  "timeline": [
+    {
+      "t_ms": 0,
+      "band": "ais",
+      "event_type": "observation",
+      "payload": {
+        "observation": {
+          "target_id": "ais:265100001",
+          "source": "ais",
+          "kind": "vessel",
+          "observed_at": "2026-04-08T10:30:00+00:00",
+          "label": "RETUNE-AIS",
+          "lat": 58.0,
+          "lon": 18.0,
+          "course": 90.0,
+          "speed": 11.0,
+          "altitude": null,
+          "last_scan_band": "ais",
+          "icao24": null,
+          "callsign": null,
+          "squawk": null,
+          "vertical_rate": null,
+          "mmsi": "265100001",
+          "shipname": "RETUNE-AIS",
+          "nav_status": null,
+          "payload_json": {"mock": true}
+        }
+      }
+    },
+    {
+      "t_ms": 50,
+      "band": "adsb",
+      "event_type": "observation",
+      "payload": {
+        "observation": {
+          "target_id": "adsb:ff00aa",
+          "source": "adsb",
+          "kind": "aircraft",
+          "observed_at": "2026-04-08T10:30:01+00:00",
+          "label": "RETUNE-ADSB",
+          "lat": 59.0,
+          "lon": 18.5,
+          "course": 95.0,
+          "speed": 210.0,
+          "altitude": 9000.0,
+          "last_scan_band": "adsb",
+          "icao24": "ff00aa",
+          "callsign": "RETUNE",
+          "squawk": "7000",
+          "vertical_rate": 100.0,
+          "mmsi": null,
+          "shipname": null,
+          "nav_status": null,
+          "payload_json": {"mock": true}
+        }
+      }
+    }
+  ]
+}

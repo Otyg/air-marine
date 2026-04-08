@@ -14,6 +14,7 @@ from app.fixed_objects import FixedRadarObject
 from app.health import build_health_report
 from app.map_contours import BBox, MapContourService
 from app.models import TargetKind
+from app.radio_v2 import ScannerOrchestratorV2
 from app.scanner import SCAN_MODE_VALUES, HybridBandScanner
 from app.state import LiveState
 from app.store import SQLiteStore
@@ -23,7 +24,7 @@ from app.store import SQLiteStore
 class APIRuntime:
     state: LiveState
     store: SQLiteStore | None = None
-    scanner: HybridBandScanner | None = None
+    scanner: HybridBandScanner | ScannerOrchestratorV2 | None = None
     map_contour_service: MapContourService | None = None
     service_name: str = "sdr-monitor"
     radar_center_lat: float = 0.0

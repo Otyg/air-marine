@@ -34,6 +34,8 @@ def test_config_uses_defaults_when_env_not_set() -> None:
     assert config.markhojd_direct_max_points_per_request == 1000
     assert config.ogn_tcp_host == "127.0.0.1"
     assert config.ogn_tcp_port == 50001
+    assert config.radio_backend == "legacy"
+    assert config.mock_radio_timing_enabled is False
 
 
 def test_config_reads_environment_values() -> None:
@@ -51,6 +53,9 @@ def test_config_reads_environment_values() -> None:
             "SDR_MONITOR_OGN_TCP_HOST": "127.0.0.2",
             "SDR_MONITOR_OGN_TCP_PORT": "50002",
             "SDR_MONITOR_AIS_TCP_PORT": "10111",
+            "SDR_MONITOR_RADIO_BACKEND": "mock",
+            "SDR_MONITOR_MOCK_RADIO_FIXTURE_PATH": "/tmp/mock-radio.json",
+            "SDR_MONITOR_MOCK_RADIO_TIMING_ENABLED": "true",
             "SDR_MONITOR_API_PORT": "18000",
             "SDR_MONITOR_RADAR_CENTER_LAT": "59.3345",
             "SDR_MONITOR_RADAR_CENTER_LON": "18.0732",
@@ -82,6 +87,9 @@ def test_config_reads_environment_values() -> None:
     assert config.ogn_tcp_host == "127.0.0.2"
     assert config.ogn_tcp_port == 50002
     assert config.ais_tcp_port == 10111
+    assert config.radio_backend == "mock"
+    assert str(config.mock_radio_fixture_path) == "/tmp/mock-radio.json"
+    assert config.mock_radio_timing_enabled is True
     assert config.api_port == 18000
     assert config.radar_center_lat == 59.3345
     assert config.radar_center_lon == 18.0732
@@ -155,6 +163,11 @@ def test_config_rejects_invalid_map_settings() -> None:
 
     with pytest.raises(ValueError, match="MARKHOJD_DIRECT_MAX_POINTS_PER_REQUEST"):
         Config.from_env({"SDR_MONITOR_MARKHOJD_DIRECT_MAX_POINTS_PER_REQUEST": "1001"})
+
+
+def test_config_rejects_invalid_radio_backend() -> None:
+    with pytest.raises(ValueError, match="RADIO_BACKEND"):
+        Config.from_env({"SDR_MONITOR_RADIO_BACKEND": "invalid-backend"})
 
 
 def test_config_reads_legacy_radar_coordinate_names() -> None:

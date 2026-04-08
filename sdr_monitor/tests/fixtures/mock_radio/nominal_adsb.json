@@ -1,0 +1,40 @@
+{
+  "seed": 21,
+  "sample_rate": 2000000,
+  "default_band": "adsb",
+  "controls": {
+    "drop_rate": 0.0,
+    "jitter_profile": {"max_jitter_ms": 0},
+    "retune_map": {"1090000000": "adsb"}
+  },
+  "timeline": [
+    {
+      "t_ms": 0,
+      "band": "adsb",
+      "event_type": "observation",
+      "payload": {
+        "observation": {
+          "target_id": "adsb:abcdef",
+          "source": "adsb",
+          "kind": "aircraft",
+          "observed_at": "2026-04-08T10:00:00+00:00",
+          "label": "FLT123",
+          "lat": 59.3,
+          "lon": 18.0,
+          "course": 90.0,
+          "speed": 240.0,
+          "altitude": 11000.0,
+          "last_scan_band": "adsb",
+          "icao24": "abcdef",
+          "callsign": "FLT123",
+          "squawk": "7000",
+          "vertical_rate": 0.0,
+          "mmsi": null,
+          "shipname": null,
+          "nav_status": null,
+          "payload_json": {"mock": true}
+        }
+      }
+    }
+  ]
+}

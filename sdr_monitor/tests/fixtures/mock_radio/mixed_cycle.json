@@ -1,0 +1,157 @@
+{
+  "seed": 99,
+  "sample_rate": 48000,
+  "default_band": "ais",
+  "controls": {
+    "drop_rate": 0.0,
+    "jitter_profile": {"max_jitter_ms": 8},
+    "retune_map": {
+      "162000000": "ais",
+      "1090000000": "adsb",
+      "868200000": "ogn",
+      "156525000": "dsc"
+    }
+  },
+  "timeline": [
+    {
+      "t_ms": 0,
+      "band": "ais",
+      "event_type": "observation",
+      "payload": {
+        "observation": {
+          "target_id": "ais:265123456",
+          "source": "ais",
+          "kind": "vessel",
+          "observed_at": "2026-04-08T10:00:00+00:00",
+          "label": "MIX-AIS",
+          "lat": 58.5,
+          "lon": 17.9,
+          "course": 181.0,
+          "speed": 12.5,
+          "altitude": null,
+          "last_scan_band": "ais",
+          "icao24": null,
+          "callsign": null,
+          "squawk": null,
+          "vertical_rate": null,
+          "mmsi": "265123456",
+          "shipname": "MIX-AIS",
+          "nav_status": "under way using engine",
+          "payload_json": {"mock": true, "band": "ais"}
+        }
+      }
+    },
+    {
+      "t_ms": 50,
+      "band": "adsb",
+      "event_type": "observation",
+      "payload": {
+        "observation": {
+          "target_id": "adsb:abcdef",
+          "source": "adsb",
+          "kind": "aircraft",
+          "observed_at": "2026-04-08T10:00:01+00:00",
+          "label": "MIX-ADSB",
+          "lat": 59.4,
+          "lon": 18.1,
+          "course": 92.0,
+          "speed": 250.0,
+          "altitude": 12000.0,
+          "last_scan_band": "adsb",
+          "icao24": "abcdef",
+          "callsign": "MIX-ADSB",
+          "squawk": "7000",
+          "vertical_rate": 0.0,
+          "mmsi": null,
+          "shipname": null,
+          "nav_status": null,
+          "payload_json": {"mock": true, "band": "adsb"}
+        }
+      }
+    },
+    {
+      "t_ms": 90,
+      "band": "ogn",
+      "event_type": "observation",
+      "payload": {
+        "observation": {
+          "target_id": "ogn:icao-abc123",
+          "source": "ogn",
+          "kind": "aircraft",
+          "observed_at": "2026-04-08T10:00:02+00:00",
+          "label": "MIX-OGN",
+          "lat": 57.7,
+          "lon": 11.9,
+          "course": 140.0,
+          "speed": 49.0,
+          "altitude": 1550.0,
+          "last_scan_band": "ogn",
+          "icao24": "abc123",
+          "callsign": "MIX-OGN",
+          "squawk": null,
+          "vertical_rate": 120.0,
+          "mmsi": null,
+          "shipname": null,
+          "nav_status": null,
+          "payload_json": {"mock": true, "band": "ogn"}
+        }
+      }
+    },
+    {
+      "t_ms": 110,
+      "band": "dsc",
+      "event_type": "observation",
+      "payload": {
+        "observation": {
+          "target_id": "dsc:265000111",
+          "source": "dsc",
+          "kind": "vessel",
+          "observed_at": "2026-04-08T10:00:03+00:00",
+          "label": "MIX-DSC",
+          "lat": 58.1,
+          "lon": 18.4,
+          "course": null,
+          "speed": null,
+          "altitude": null,
+          "last_scan_band": "dsc",
+          "icao24": null,
+          "callsign": null,
+          "squawk": null,
+          "vertical_rate": null,
+          "mmsi": "265000111",
+          "shipname": null,
+          "nav_status": null,
+          "payload_json": {"mock": true, "band": "dsc"}
+        }
+      }
+    },
+    {
+      "t_ms": 140,
+      "band": "ais",
+      "event_type": "decoded_frame",
+      "payload": {
+        "frame_type": "ais_nmea_lines",
+        "payload": {
+          "lines": [
+            "!AIVDM,1,1,,A,15N?;P001oG?VtN@E>4QwvN20<0H,0*14"
+          ]
+        }
+      },
+      "fault": "malformed_frame"
+    },
+    {
+      "t_ms": 160,
+      "band": "adsb",
+      "event_type": "observation",
+      "payload": {},
+      "fault": "disconnect"
+    },
+    {
+      "t_ms": 170,
+      "band": "adsb",
+      "event_type": "observation",
+      "payload": {},
+      "fault": "reconnect"
+    }
+  ]
+}

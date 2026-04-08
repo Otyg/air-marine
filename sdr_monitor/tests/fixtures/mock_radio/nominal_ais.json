@@ -1,0 +1,40 @@
+{
+  "seed": 11,
+  "sample_rate": 48000,
+  "default_band": "ais",
+  "controls": {
+    "drop_rate": 0.0,
+    "jitter_profile": {"max_jitter_ms": 0},
+    "retune_map": {"162000000": "ais"}
+  },
+  "timeline": [
+    {
+      "t_ms": 0,
+      "band": "ais",
+      "event_type": "observation",
+      "payload": {
+        "observation": {
+          "target_id": "ais:265123456",
+          "source": "ais",
+          "kind": "vessel",
+          "observed_at": "2026-04-08T10:00:00+00:00",
+          "label": "TEST-AIS",
+          "lat": 58.5,
+          "lon": 17.9,
+          "course": 180.0,
+          "speed": 12.0,
+          "altitude": null,
+          "last_scan_band": "ais",
+          "icao24": null,
+          "callsign": null,
+          "squawk": null,
+          "vertical_rate": null,
+          "mmsi": "265123456",
+          "shipname": "TEST-AIS",
+          "nav_status": "under way using engine",
+          "payload_json": {"mock": true}
+        }
+      }
+    }
+  ]
+}
