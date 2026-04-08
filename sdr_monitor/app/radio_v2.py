@@ -219,17 +219,31 @@ class LegacyBackend:
     def retune(self, hz: int) -> None:
         try:
             self._active_frequency_hz = _validate_frequency_hz(hz)
+            for reader in self._readers.values():
+                retune_fn = getattr(reader, "retune", None)
+                if callable(retune_fn):
+                    retune_fn(self._active_frequency_hz)
             self._last_error = None
         except ValueError as exc:
             self._last_error = str(exc)
+            raise
+        except Exception as exc:
+            self._last_error = f"retune failed: {exc}"
             raise
 
     def set_gain(self, db: int) -> None:
         try:
             self._gain_db = _validate_gain_db(db)
+            for reader in self._readers.values():
+                set_gain_fn = getattr(reader, "set_gain", None)
+                if callable(set_gain_fn):
+                    set_gain_fn(self._gain_db)
             self._last_error = None
         except ValueError as exc:
             self._last_error = str(exc)
+            raise
+        except Exception as exc:
+            self._last_error = f"set_gain failed: {exc}"
             raise
 
     def read(self, timeout_s: float, *, band: ScanBand | None = None) -> list[RadioEvent]:
@@ -789,6 +803,7 @@ class ScannerOrchestratorV2:
         *,
         backend: RadioBackend,
         pipelines: Mapping[ScanBand, ObservationPipeline],
+        band_frequencies_hz: Mapping[ScanBand, int] | None = None,
         state: LiveState,
         store: SQLiteStore | None,
         config: ScannerConfig | None = None,
@@ -797,6 +812,7 @@ class ScannerOrchestratorV2:
     ) -> None:
         self._backend = backend
         self._pipelines = dict(pipelines)
+        self._band_frequencies_hz = dict(band_frequencies_hz or {})
         self._state = state
         self._store = store
         self._config = config or ScannerConfig()
@@ -905,6 +921,9 @@ class ScannerOrchestratorV2:
             return
 
         try:
+            band_frequency = self._band_frequencies_hz.get(band)
+            if band_frequency is not None:
+                self._backend.retune(int(band_frequency))
             events = self._backend.read(window_seconds, band=band)
             observations = pipeline.process(events)
             self._ingest_observations(observations)

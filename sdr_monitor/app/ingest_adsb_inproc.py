@@ -94,6 +94,16 @@ class RTLTCPClient:
     def _set_gain(self, db: int) -> None:
         self._send_cmd(0x04, db)
 
+    def retune(self, hz: int) -> None:
+        self.frequency = int(hz)
+        if self._connected and self._sock is not None:
+            self._set_frequency(self.frequency)
+
+    def set_gain(self, db: int) -> None:
+        self.gain = int(db)
+        if self._connected and self._sock is not None:
+            self._set_gain(self.gain)
+
 
 class ADSBModeSDecoder:
     """Minimal Mode S detector/decoder for 2MHz rtl_tcp I/Q streams."""
@@ -328,6 +338,12 @@ class ADSBInprocReader:
             seen_target_ids.add(obs.target_id)
             observations.append(obs)
         return observations
+
+    def retune(self, frequency_hz: int) -> None:
+        self._client.retune(frequency_hz)
+
+    def set_gain(self, gain_db: int) -> None:
+        self._client.set_gain(gain_db)
 
     def close(self) -> None:
         self._client.close()

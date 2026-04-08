@@ -91,6 +91,9 @@ class Config:
     adsb_inproc_sample_rate: int = 2_000_000
     adsb_inproc_gain: int = 30
     adsb_inproc_frequency_hz: int = 1_090_000_000
+    ais_frequency_hz: int = 162_025_000
+    ogn_frequency_hz: int = 868_200_000
+    dsc_frequency_hz: int = 156_525_000
     radio_backend: str = "legacy"
     radio_external_use_worker: bool = False
     radio_external_control_host: str = "127.0.0.1"
@@ -227,6 +230,21 @@ class Config:
                 env_map,
                 f"{ENV_PREFIX}ADSB_INPROC_FREQUENCY_HZ",
                 defaults.adsb_inproc_frequency_hz,
+            ),
+            ais_frequency_hz=_read_int(
+                env_map,
+                f"{ENV_PREFIX}AIS_FREQUENCY_HZ",
+                defaults.ais_frequency_hz,
+            ),
+            ogn_frequency_hz=_read_int(
+                env_map,
+                f"{ENV_PREFIX}OGN_FREQUENCY_HZ",
+                defaults.ogn_frequency_hz,
+            ),
+            dsc_frequency_hz=_read_int(
+                env_map,
+                f"{ENV_PREFIX}DSC_FREQUENCY_HZ",
+                defaults.dsc_frequency_hz,
             ),
             radio_backend=_read_str(
                 env_map,
@@ -414,6 +432,12 @@ class Config:
             raise ValueError(f"{ENV_PREFIX}ADSB_INPROC_GAIN must be in the range 0..50.")
         if self.adsb_inproc_frequency_hz <= 0:
             raise ValueError(f"{ENV_PREFIX}ADSB_INPROC_FREQUENCY_HZ must be > 0.")
+        if self.ais_frequency_hz <= 0:
+            raise ValueError(f"{ENV_PREFIX}AIS_FREQUENCY_HZ must be > 0.")
+        if self.ogn_frequency_hz <= 0:
+            raise ValueError(f"{ENV_PREFIX}OGN_FREQUENCY_HZ must be > 0.")
+        if self.dsc_frequency_hz <= 0:
+            raise ValueError(f"{ENV_PREFIX}DSC_FREQUENCY_HZ must be > 0.")
         if self.radio_backend not in {"legacy", "inproc", "external", "mock"}:
             raise ValueError(
                 f"{ENV_PREFIX}RADIO_BACKEND must be one of: legacy, inproc, external, mock."

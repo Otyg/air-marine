@@ -41,6 +41,9 @@ def test_config_uses_defaults_when_env_not_set() -> None:
     assert config.adsb_inproc_sample_rate == 2_000_000
     assert config.adsb_inproc_gain == 30
     assert config.adsb_inproc_frequency_hz == 1_090_000_000
+    assert config.ais_frequency_hz == 162_025_000
+    assert config.ogn_frequency_hz == 868_200_000
+    assert config.dsc_frequency_hz == 156_525_000
     assert config.radio_external_use_worker is False
     assert config.radio_external_control_host == "127.0.0.1"
     assert config.radio_external_control_port == 17601
@@ -71,6 +74,9 @@ def test_config_reads_environment_values() -> None:
             "SDR_MONITOR_ADSB_INPROC_SAMPLE_RATE": "2400000",
             "SDR_MONITOR_ADSB_INPROC_GAIN": "37",
             "SDR_MONITOR_ADSB_INPROC_FREQUENCY_HZ": "1090000000",
+            "SDR_MONITOR_AIS_FREQUENCY_HZ": "161975000",
+            "SDR_MONITOR_OGN_FREQUENCY_HZ": "868400000",
+            "SDR_MONITOR_DSC_FREQUENCY_HZ": "156525000",
             "SDR_MONITOR_RADIO_EXTERNAL_USE_WORKER": "true",
             "SDR_MONITOR_RADIO_EXTERNAL_CONTROL_HOST": "10.0.0.2",
             "SDR_MONITOR_RADIO_EXTERNAL_CONTROL_PORT": "18601",
@@ -116,6 +122,9 @@ def test_config_reads_environment_values() -> None:
     assert config.adsb_inproc_sample_rate == 2_400_000
     assert config.adsb_inproc_gain == 37
     assert config.adsb_inproc_frequency_hz == 1_090_000_000
+    assert config.ais_frequency_hz == 161_975_000
+    assert config.ogn_frequency_hz == 868_400_000
+    assert config.dsc_frequency_hz == 156_525_000
     assert config.radio_external_use_worker is True
     assert config.radio_external_control_host == "10.0.0.2"
     assert config.radio_external_control_port == 18601
@@ -214,6 +223,12 @@ def test_config_rejects_invalid_adsb_inproc_settings() -> None:
         Config.from_env({"SDR_MONITOR_ADSB_INPROC_GAIN": "99"})
     with pytest.raises(ValueError, match="ADSB_INPROC_FREQUENCY_HZ"):
         Config.from_env({"SDR_MONITOR_ADSB_INPROC_FREQUENCY_HZ": "0"})
+    with pytest.raises(ValueError, match="AIS_FREQUENCY_HZ"):
+        Config.from_env({"SDR_MONITOR_AIS_FREQUENCY_HZ": "0"})
+    with pytest.raises(ValueError, match="OGN_FREQUENCY_HZ"):
+        Config.from_env({"SDR_MONITOR_OGN_FREQUENCY_HZ": "0"})
+    with pytest.raises(ValueError, match="DSC_FREQUENCY_HZ"):
+        Config.from_env({"SDR_MONITOR_DSC_FREQUENCY_HZ": "0"})
 
 
 def test_config_rejects_invalid_external_radio_ports() -> None:

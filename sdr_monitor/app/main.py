@@ -321,6 +321,12 @@ def _create_scanner(
     return ScannerOrchestratorV2(
         backend=backend,
         pipelines=pipelines,
+        band_frequencies_hz={
+            ScanBand.AIS: config.ais_frequency_hz,
+            ScanBand.ADSB: config.adsb_inproc_frequency_hz,
+            ScanBand.OGN: config.ogn_frequency_hz,
+            ScanBand.DSC: config.dsc_frequency_hz,
+        },
         state=state,
         store=store,
         config=scanner_config,

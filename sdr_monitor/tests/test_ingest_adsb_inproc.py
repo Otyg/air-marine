@@ -66,3 +66,27 @@ def test_adsb_inproc_reader_returns_empty_when_connect_fails() -> None:
     reader._client = _Client()
     observations = reader.read_observations(timeout_seconds=0.01)
     assert observations == []
+
+
+def test_adsb_inproc_reader_exposes_retune_and_gain_to_client() -> None:
+    reader = ADSBInprocReader()
+
+    class _Client:
+        def __init__(self) -> None:
+            self.retunes: list[int] = []
+            self.gains: list[int] = []
+
+        def retune(self, frequency_hz: int) -> None:
+            self.retunes.append(frequency_hz)
+
+        def set_gain(self, gain_db: int) -> None:
+            self.gains.append(gain_db)
+
+    client = _Client()
+    reader._client = client
+
+    reader.retune(1_090_000_000)
+    reader.set_gain(28)
+
+    assert client.retunes == [1_090_000_000]
+    assert client.gains == [28]

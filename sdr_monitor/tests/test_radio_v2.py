@@ -19,6 +19,7 @@ from app.radio_v2 import (
     ObservationEvent,
     ExternalBackend,
     ScannerOrchestratorV2,
+    RadioStatus,
 )
 from app.scanner import ScannerConfig
 from app.state import LiveState
@@ -48,6 +49,37 @@ class _StaticSource:
 class _FailingSource:
     def read_events(self, *, timeout_s: float, band: ScanBand):
         raise RuntimeError("source failed")
+
+
+class _RetuneRecordingBackend:
+    def __init__(self) -> None:
+        self.retuned: list[int] = []
+        self.read_bands: list[ScanBand] = []
+        self._running = False
+
+    def start(self) -> None:
+        self._running = True
+
+    def stop(self) -> None:
+        self._running = False
+
+    def retune(self, hz: int) -> None:
+        self.retuned.append(int(hz))
+
+    def set_gain(self, db: int) -> None:  # noqa: ARG002
+        return None
+
+    def read(self, timeout_s: float, *, band: ScanBand | None = None):  # noqa: ANN001, ARG002
+        if band is not None:
+            self.read_bands.append(band)
+        return []
+
+    def status(self) -> RadioStatus:
+        return RadioStatus(
+            backend_name="retune-test",
+            is_running=self._running,
+            connected=True,
+        )
 
 
 def test_mock_backend_deterministic_replay_returns_expected_sequence() -> None:
@@ -162,6 +194,39 @@ def test_scanner_orchestrator_v2_survives_store_errors() -> None:
     assert "store" in scanner.status()["last_error"]
 
 
+def test_scanner_orchestrator_v2_retunes_per_window_in_hybrid_mode() -> None:
+    backend = _RetuneRecordingBackend()
+    scanner = ScannerOrchestratorV2(
+        backend=backend,
+        pipelines={
+            ScanBand.AIS: AISPipeline(),
+            ScanBand.ADSB: ADSBPipeline(),
+            ScanBand.OGN: OGNPipeline(),
+        },
+        band_frequencies_hz={
+            ScanBand.AIS: 162_025_000,
+            ScanBand.ADSB: 1_090_000_000,
+            ScanBand.OGN: 868_200_000,
+        },
+        state=LiveState(clock=lambda: datetime(2026, 4, 8, tzinfo=timezone.utc)),
+        store=None,
+        config=ScannerConfig(
+            adsb_window_seconds=0.01,
+            ogn_window_seconds=0.01,
+            ais_window_seconds=0.01,
+            dsc_window_seconds=0.0,
+            inter_scan_pause_seconds=0.0,
+        ),
+        sleep_fn=lambda _: None,
+        now_fn=lambda: datetime(2026, 4, 8, tzinfo=timezone.utc),
+    )
+
+    scanner.run_cycle()
+
+    assert backend.retuned == [162_025_000, 1_090_000_000, 868_200_000]
+    assert backend.read_bands == [ScanBand.AIS, ScanBand.ADSB, ScanBand.OGN]
+
+
 def test_parity_legacy_inproc_and_mock_for_observation_events() -> None:
     fixture = json.loads((FIXTURE_DIR / "mixed_cycle.json").read_text(encoding="utf-8"))
     by_band: dict[ScanBand, list[NormalizedObservation]] = {}
@@ -273,6 +338,31 @@ def test_inproc_backend_falls_back_to_reader_on_source_failure() -> None:
     assert len(events) == 1
     assert isinstance(events[0], ObservationEvent)
     assert events[0].observation.target_id == "ais:265000123"
+
+
+def test_legacy_backend_forwards_retune_and_gain_to_retunable_reader() -> None:
+    class _RetunableReader:
+        def __init__(self) -> None:
+            self.retunes: list[int] = []
+            self.gains: list[int] = []
+
+        def retune(self, hz: int) -> None:
+            self.retunes.append(hz)
+
+        def set_gain(self, db: int) -> None:
+            self.gains.append(db)
+
+        def read_observations(self, **kwargs):  # noqa: ANN003
+            return []
+
+    reader = _RetunableReader()
+    backend = LegacyBackend({ScanBand.ADSB: reader})
+    backend.start()
+    backend.retune(1_090_000_000)
+    backend.set_gain(27)
+
+    assert reader.retunes == [1_090_000_000]
+    assert reader.gains == [27]
     assert backend.status().last_error is None
 
 

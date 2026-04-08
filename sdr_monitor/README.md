@@ -70,6 +70,15 @@ Key runtime variables:
 - `SDR_MONITOR_AIS_TCP_HOST`: AIS TCP host
 - `SDR_MONITOR_AIS_TCP_PORT`: AIS TCP port
 - `SDR_MONITOR_RADIO_BACKEND`: `legacy|inproc|external|mock` (default `legacy`)
+- `SDR_MONITOR_ADSB_INPROC_SOURCE`: `readsb|rtl_tcp` for ADS-B when using `inproc`
+- `SDR_MONITOR_ADSB_INPROC_RTL_HOST`: host for ADS-B rtl_tcp source
+- `SDR_MONITOR_ADSB_INPROC_RTL_PORT`: port for ADS-B rtl_tcp source
+- `SDR_MONITOR_ADSB_INPROC_SAMPLE_RATE`: ADS-B rtl_tcp sample rate
+- `SDR_MONITOR_ADSB_INPROC_GAIN`: ADS-B rtl_tcp gain
+- `SDR_MONITOR_ADSB_INPROC_FREQUENCY_HZ`: ADS-B retune frequency
+- `SDR_MONITOR_AIS_FREQUENCY_HZ`: AIS retune frequency for v2 window switching
+- `SDR_MONITOR_OGN_FREQUENCY_HZ`: OGN/FLARM retune frequency for v2 window switching
+- `SDR_MONITOR_DSC_FREQUENCY_HZ`: DSC retune frequency for v2 window switching
 - `SDR_MONITOR_RADIO_EXTERNAL_USE_WORKER`: enable external worker sockets for `external` backend
 - `SDR_MONITOR_RADIO_EXTERNAL_CONTROL_HOST`: control socket host for external worker
 - `SDR_MONITOR_RADIO_EXTERNAL_CONTROL_PORT`: control socket port for external worker
@@ -154,6 +163,16 @@ Use in-process v2 backend:
 
 ```bash
 SDR_MONITOR_RADIO_BACKEND=inproc python -m app.main
+```
+
+Use one dongle with external `rtl_tcp` for ADS-B inproc decode:
+
+```bash
+SDR_MONITOR_RADIO_BACKEND=inproc \
+SDR_MONITOR_ADSB_INPROC_SOURCE=rtl_tcp \
+SDR_MONITOR_ADSB_INPROC_RTL_HOST=127.0.0.1 \
+SDR_MONITOR_ADSB_INPROC_RTL_PORT=1234 \
+python -m app.main
 ```
 
 Use fixture-driven mock backend:
