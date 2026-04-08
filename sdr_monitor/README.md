@@ -1,6 +1,7 @@
 # SDR Monitor
 
-Backend service for hybrid, single-RTL-SDR AIS/ADS-B monitoring.
+Backend service for hybrid AIS/ADS-B/OGN/DSC monitoring with pluggable
+radio/scanner backends (`legacy`, `inproc`, `external`, `mock`).
 
 ## What it does
 
@@ -10,10 +11,11 @@ Backend service for hybrid, single-RTL-SDR AIS/ADS-B monitoring.
 - Maintains live in-memory targets with last five valid positions
 - Persists observations and latest target state to SQLite
 - Exposes HTTP endpoints for health, live targets, stats, and history
+- Supports v2 radio backend architecture with optional external worker mode
 
 ## Project status
 
-Implemented through phase 10:
+Implemented through phase 10 + v2 radio backend migration work:
 
 - bootstrap, configuration, logging, domain models
 - live state and persistence
@@ -21,6 +23,9 @@ Implemented through phase 10:
 - scanner and subprocess supervision
 - API endpoints
 - startup wiring and optional in-memory recovery from SQLite latest targets
+- scanner/radio v2 backend contracts and orchestration
+- hybrid mock-radio fixtures and tests
+- external worker protocol support (control + data channels)
 
 ## System requirements
 
@@ -64,6 +69,14 @@ Key runtime variables:
 - `SDR_MONITOR_OGN_TCP_PORT`: TCP port for decoded OGN/FLARM/ADS-L APRS traffic (commonly `50001`)
 - `SDR_MONITOR_AIS_TCP_HOST`: AIS TCP host
 - `SDR_MONITOR_AIS_TCP_PORT`: AIS TCP port
+- `SDR_MONITOR_RADIO_BACKEND`: `legacy|inproc|external|mock` (default `legacy`)
+- `SDR_MONITOR_RADIO_EXTERNAL_USE_WORKER`: enable external worker sockets for `external` backend
+- `SDR_MONITOR_RADIO_EXTERNAL_CONTROL_HOST`: control socket host for external worker
+- `SDR_MONITOR_RADIO_EXTERNAL_CONTROL_PORT`: control socket port for external worker
+- `SDR_MONITOR_RADIO_EXTERNAL_DATA_HOST`: data socket host for external worker
+- `SDR_MONITOR_RADIO_EXTERNAL_DATA_PORT`: data socket port for external worker
+- `SDR_MONITOR_MOCK_RADIO_FIXTURE_PATH`: mock fixture JSON path when using `mock` backend
+- `SDR_MONITOR_MOCK_RADIO_TIMING_ENABLED`: enable timing/jitter mode for mock backend
 - `SDR_MONITOR_SQLITE_PATH`: SQLite database path
 - `SDR_MONITOR_API_HOST`: API bind host
 - `SDR_MONITOR_API_PORT`: API bind port
@@ -128,6 +141,54 @@ Notes:
 cd sdr_monitor
 python -m app.main
 ```
+
+### Backend selection examples
+
+Use existing subprocess scanner (default):
+
+```bash
+SDR_MONITOR_RADIO_BACKEND=legacy python -m app.main
+```
+
+Use in-process v2 backend:
+
+```bash
+SDR_MONITOR_RADIO_BACKEND=inproc python -m app.main
+```
+
+Use fixture-driven mock backend:
+
+```bash
+SDR_MONITOR_RADIO_BACKEND=mock \
+SDR_MONITOR_MOCK_RADIO_FIXTURE_PATH=tests/fixtures/mock_radio/mixed_cycle.json \
+python -m app.main
+```
+
+Use external backend with worker sockets:
+
+```bash
+SDR_MONITOR_RADIO_BACKEND=external \
+SDR_MONITOR_RADIO_EXTERNAL_USE_WORKER=true \
+python -m app.main
+```
+
+### Run external worker
+
+Start worker service (control + data sockets):
+
+```bash
+cd sdr_monitor
+python scripts/run_radio_worker.py
+```
+
+Optional flags:
+
+- `--control-host`
+- `--control-port`
+- `--data-host`
+- `--data-port`
+- `--fixture-path`
+- `--timing-mode`
 
 The service starts:
 
