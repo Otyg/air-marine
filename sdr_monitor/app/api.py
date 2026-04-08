@@ -2238,7 +2238,7 @@ def _build_radar_html(
         const markerColor = isSelected ? selectedTargetColor : liveTargetColor;
         drawCourseVector(x, y, course, speed, markerColor);
         ctx.fillStyle = markerColor;
-        const symbol = target.kind === "vessel" ? "*" : "+";
+        const symbol = target.kind === "vessel" ? "🞜" : "🞋";
         ctx.fillText(symbol, x, y);
         if (showTargetLabels) {{
           drawMapTargetLabel(targetDisplayLabel(target), x, y, markerColor);
@@ -3620,7 +3620,7 @@ def _build_history_radar_html(
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillStyle = selectedTargetColor;
-      const symbol = selectedTargetKind === "vessel" ? "*" : "+";
+      const symbol = selectedTargetKind === "vessel" ? "🞜" : "🞋";
       ctx.fillText(symbol, x, y);
       if (showTargetLabels) {{
         drawMapTargetLabel(selectedTargetLabel || selectedTargetId || "", x, y, selectedTargetColor);
