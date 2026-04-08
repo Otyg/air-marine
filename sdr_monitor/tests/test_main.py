@@ -155,6 +155,47 @@ def test_create_service_components_with_mock_backend_uses_v2_scanner(tmp_path) -
     assert isinstance(components.scanner, ScannerOrchestratorV2)
 
 
+def test_mock_backend_v2_scanner_produces_observations_end_to_end(tmp_path) -> None:
+    fixture_path = (
+        Path(__file__).resolve().parent / "fixtures" / "mock_radio" / "mixed_cycle.json"
+    )
+    config = Config(
+        sqlite_path=tmp_path / "service-mock-e2e.sqlite3",
+        adsb_window_seconds=0.01,
+        ogn_window_seconds=0.01,
+        ais_window_seconds=0.01,
+        dsc_window_seconds=0.01,
+        inter_scan_pause_seconds=0.0,
+        radio_backend="mock",
+        mock_radio_fixture_path=fixture_path,
+    )
+
+    components = create_service_components(
+        config=config,
+        start_scanner=False,
+        recover_latest_targets=False,
+    )
+    assert isinstance(components.scanner, ScannerOrchestratorV2)
+
+    components.scanner.run_cycle()
+
+    stats = components.state.get_stats()
+    assert stats["total_live_targets"] >= 4
+
+    latest_targets = components.store.load_latest_targets()
+    latest_ids = {target.target_id for target in latest_targets}
+    assert "ais:265123456" in latest_ids
+    assert "adsb:abcdef" in latest_ids
+    assert "ogn:icao-abc123" in latest_ids
+    assert "dsc:265000111" in latest_ids
+
+    response = _request(components.app, "GET", "/ui/targets-latest")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] >= 4
+    assert payload["scanner"]["scan_mode"] == "hybrid"
+
+
 @pytest.mark.parametrize("backend_name", ["inproc", "external"])
 def test_create_service_components_with_v2_backends_use_v2_scanner(
     tmp_path,
