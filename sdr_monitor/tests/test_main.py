@@ -178,6 +178,31 @@ def test_create_service_components_with_v2_backends_use_v2_scanner(
     assert isinstance(components.scanner, ScannerOrchestratorV2)
 
 
+def test_external_backend_worker_configuration_is_reflected_in_status(tmp_path) -> None:
+    config = Config(
+        sqlite_path=tmp_path / "service-external-worker.sqlite3",
+        adsb_window_seconds=0.01,
+        ogn_window_seconds=0.0,
+        ais_window_seconds=0.01,
+        dsc_window_seconds=0.0,
+        radio_backend="external",
+        radio_external_use_worker=True,
+        radio_external_control_host="127.0.0.1",
+        radio_external_control_port=17611,
+        radio_external_data_host="127.0.0.1",
+        radio_external_data_port=17612,
+    )
+
+    components = create_service_components(
+        config=config,
+        start_scanner=False,
+        recover_latest_targets=False,
+    )
+
+    status = components.scanner.status()
+    assert status["supervisor"]["backend_name"] == "external"
+
+
 def test_build_decoder_process_config_matches_ingestors() -> None:
     decoder_config = build_decoder_process_config(
         adsb_snapshot_path=Path("/tmp/readsb/aircraft.json"),

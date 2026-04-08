@@ -86,6 +86,11 @@ class Config:
     dsc_rtl_sample_rate: int = 48000
     dsc_rtl_gain: int = 30
     radio_backend: str = "legacy"
+    radio_external_use_worker: bool = False
+    radio_external_control_host: str = "127.0.0.1"
+    radio_external_control_port: int = 17601
+    radio_external_data_host: str = "127.0.0.1"
+    radio_external_data_port: int = 17602
     mock_radio_fixture_path: Path = Path("./sdr_monitor/tests/fixtures/mock_radio/mixed_cycle.json")
     mock_radio_timing_enabled: bool = False
     sqlite_path: Path = Path("./data/sdr_monitor.sqlite3")
@@ -192,6 +197,31 @@ class Config:
                 f"{ENV_PREFIX}RADIO_BACKEND",
                 defaults.radio_backend,
             ).strip().lower(),
+            radio_external_use_worker=_read_bool(
+                env_map,
+                f"{ENV_PREFIX}RADIO_EXTERNAL_USE_WORKER",
+                defaults.radio_external_use_worker,
+            ),
+            radio_external_control_host=_read_str(
+                env_map,
+                f"{ENV_PREFIX}RADIO_EXTERNAL_CONTROL_HOST",
+                defaults.radio_external_control_host,
+            ),
+            radio_external_control_port=_read_int(
+                env_map,
+                f"{ENV_PREFIX}RADIO_EXTERNAL_CONTROL_PORT",
+                defaults.radio_external_control_port,
+            ),
+            radio_external_data_host=_read_str(
+                env_map,
+                f"{ENV_PREFIX}RADIO_EXTERNAL_DATA_HOST",
+                defaults.radio_external_data_host,
+            ),
+            radio_external_data_port=_read_int(
+                env_map,
+                f"{ENV_PREFIX}RADIO_EXTERNAL_DATA_PORT",
+                defaults.radio_external_data_port,
+            ),
             mock_radio_fixture_path=Path(
                 _read_str(
                     env_map,
@@ -342,6 +372,10 @@ class Config:
             raise ValueError(
                 f"{ENV_PREFIX}RADIO_BACKEND must be one of: legacy, inproc, external, mock."
             )
+        if not (1 <= self.radio_external_control_port <= 65535):
+            raise ValueError(f"{ENV_PREFIX}RADIO_EXTERNAL_CONTROL_PORT must be in the range 1..65535.")
+        if not (1 <= self.radio_external_data_port <= 65535):
+            raise ValueError(f"{ENV_PREFIX}RADIO_EXTERNAL_DATA_PORT must be in the range 1..65535.")
         if self.inter_scan_pause_seconds < 0:
             raise ValueError(f"{ENV_PREFIX}INTER_SCAN_PAUSE_SECONDS must be >= 0.")
         if self.fresh_seconds < 0:

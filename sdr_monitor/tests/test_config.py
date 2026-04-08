@@ -35,6 +35,11 @@ def test_config_uses_defaults_when_env_not_set() -> None:
     assert config.ogn_tcp_host == "127.0.0.1"
     assert config.ogn_tcp_port == 50001
     assert config.radio_backend == "legacy"
+    assert config.radio_external_use_worker is False
+    assert config.radio_external_control_host == "127.0.0.1"
+    assert config.radio_external_control_port == 17601
+    assert config.radio_external_data_host == "127.0.0.1"
+    assert config.radio_external_data_port == 17602
     assert config.mock_radio_timing_enabled is False
 
 
@@ -54,6 +59,11 @@ def test_config_reads_environment_values() -> None:
             "SDR_MONITOR_OGN_TCP_PORT": "50002",
             "SDR_MONITOR_AIS_TCP_PORT": "10111",
             "SDR_MONITOR_RADIO_BACKEND": "mock",
+            "SDR_MONITOR_RADIO_EXTERNAL_USE_WORKER": "true",
+            "SDR_MONITOR_RADIO_EXTERNAL_CONTROL_HOST": "10.0.0.2",
+            "SDR_MONITOR_RADIO_EXTERNAL_CONTROL_PORT": "18601",
+            "SDR_MONITOR_RADIO_EXTERNAL_DATA_HOST": "10.0.0.3",
+            "SDR_MONITOR_RADIO_EXTERNAL_DATA_PORT": "18602",
             "SDR_MONITOR_MOCK_RADIO_FIXTURE_PATH": "/tmp/mock-radio.json",
             "SDR_MONITOR_MOCK_RADIO_TIMING_ENABLED": "true",
             "SDR_MONITOR_API_PORT": "18000",
@@ -88,6 +98,11 @@ def test_config_reads_environment_values() -> None:
     assert config.ogn_tcp_port == 50002
     assert config.ais_tcp_port == 10111
     assert config.radio_backend == "mock"
+    assert config.radio_external_use_worker is True
+    assert config.radio_external_control_host == "10.0.0.2"
+    assert config.radio_external_control_port == 18601
+    assert config.radio_external_data_host == "10.0.0.3"
+    assert config.radio_external_data_port == 18602
     assert str(config.mock_radio_fixture_path) == "/tmp/mock-radio.json"
     assert config.mock_radio_timing_enabled is True
     assert config.api_port == 18000
@@ -168,6 +183,13 @@ def test_config_rejects_invalid_map_settings() -> None:
 def test_config_rejects_invalid_radio_backend() -> None:
     with pytest.raises(ValueError, match="RADIO_BACKEND"):
         Config.from_env({"SDR_MONITOR_RADIO_BACKEND": "invalid-backend"})
+
+
+def test_config_rejects_invalid_external_radio_ports() -> None:
+    with pytest.raises(ValueError, match="RADIO_EXTERNAL_CONTROL_PORT"):
+        Config.from_env({"SDR_MONITOR_RADIO_EXTERNAL_CONTROL_PORT": "0"})
+    with pytest.raises(ValueError, match="RADIO_EXTERNAL_DATA_PORT"):
+        Config.from_env({"SDR_MONITOR_RADIO_EXTERNAL_DATA_PORT": "70000"})
 
 
 def test_config_reads_legacy_radar_coordinate_names() -> None:

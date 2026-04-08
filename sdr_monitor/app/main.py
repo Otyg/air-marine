@@ -283,7 +283,14 @@ def _create_scanner(
     if config.radio_backend == "inproc":
         backend = InprocBackend(readers)
     elif config.radio_backend == "external":
-        backend = ExternalBackend(readers)
+        backend = ExternalBackend(
+            readers,
+            use_worker=config.radio_external_use_worker,
+            control_host=config.radio_external_control_host,
+            control_port=config.radio_external_control_port,
+            data_host=config.radio_external_data_host,
+            data_port=config.radio_external_data_port,
+        )
     elif config.radio_backend == "mock":
         backend = MockBackend(
             fixture_path=config.mock_radio_fixture_path,

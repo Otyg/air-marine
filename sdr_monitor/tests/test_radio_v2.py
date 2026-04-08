@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import io
 import json
 from pathlib import Path
 
 import pytest
 
-from app.models import NormalizedObservation
-from app.models import ScanBand
+from app.models import NormalizedObservation, ScanBand, Source, TargetKind
 from app.radio_v2 import (
     ADSBPipeline,
     AISPipeline,
@@ -17,6 +17,7 @@ from app.radio_v2 import (
     MockBackend,
     OGNPipeline,
     ObservationEvent,
+    ExternalBackend,
     ScannerOrchestratorV2,
 )
 from app.scanner import ScannerConfig
@@ -212,3 +213,114 @@ def test_invalid_gain_is_rejected_in_backend_status() -> None:
 
     assert backend.status().last_error is not None
     assert "Invalid gain" in backend.status().last_error
+
+
+def test_external_backend_worker_mode_reads_events_and_sends_commands(monkeypatch) -> None:
+    obs = NormalizedObservation(
+        target_id="ais:265123456",
+        source=Source.AIS,
+        kind=TargetKind.VESSEL,
+        observed_at=datetime(2026, 4, 8, tzinfo=timezone.utc),
+        lat=58.0,
+        lon=18.0,
+    )
+    commands: list[dict] = []
+
+    class _FakeSocket:
+        def __init__(self, mode: str):
+            self._mode = mode
+            self._buffer = io.BytesIO()
+            if mode == "data":
+                payload = (
+                    json.dumps(
+                        {
+                            "type": "observation",
+                            "source_band": "ais",
+                            "observation": obs.to_dict(),
+                        }
+                    )
+                    + "\n"
+                )
+                self._stream = io.StringIO(payload)
+            else:
+                self._stream = io.StringIO("")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def sendall(self, data: bytes) -> None:
+            self._buffer.write(data)
+            text = data.decode("utf-8", errors="replace").strip()
+            if text:
+                parsed = json.loads(text)
+                if isinstance(parsed, dict):
+                    commands.append(parsed)
+
+        def recv(self, size: int) -> bytes:
+            return b'{"ok": true}\n'
+
+        def settimeout(self, value: float) -> None:
+            return None
+
+        def makefile(self, mode: str, encoding: str = "utf-8", errors: str = "replace"):
+            return self._stream
+
+    def _fake_create_connection(address, timeout=1.0):  # noqa: ANN001, ARG001
+        host, port = address
+        if port == 17601:
+            return _FakeSocket("control")
+        if port == 17602:
+            return _FakeSocket("data")
+        raise ConnectionRefusedError(f"unexpected address: {address}")
+
+    monkeypatch.setattr("app.radio_v2.socket.create_connection", _fake_create_connection)
+
+    backend = ExternalBackend(
+        readers={},
+        use_worker=True,
+        control_host="127.0.0.1",
+        control_port=17601,
+        data_host="127.0.0.1",
+        data_port=17602,
+    )
+    backend.start()
+    backend.retune(162000000)
+    backend.set_gain(20)
+
+    events = backend.read(0.2, band=ScanBand.AIS)
+    assert len(events) == 1
+    assert isinstance(events[0], ObservationEvent)
+    assert events[0].observation.target_id == "ais:265123456"
+    assert any(command.get("cmd") == "retune" for command in commands)
+    assert any(command.get("cmd") == "set_gain" for command in commands)
+    assert backend.status().connected is True
+
+
+def test_external_backend_worker_failure_falls_back_to_reader() -> None:
+    observation = NormalizedObservation(
+        target_id="adsb:abcdef",
+        source=Source.ADSB,
+        kind=TargetKind.AIRCRAFT,
+        observed_at=datetime(2026, 4, 8, tzinfo=timezone.utc),
+        lat=59.0,
+        lon=18.0,
+    )
+    backend = ExternalBackend(
+        readers={ScanBand.ADSB: _StaticReader([observation])},
+        use_worker=True,
+        control_host="127.0.0.1",
+        control_port=19991,
+        data_host="127.0.0.1",
+        data_port=19992,
+    )
+    backend.start()
+    events = backend.read(0.1, band=ScanBand.ADSB)
+
+    assert len(events) == 1
+    assert isinstance(events[0], ObservationEvent)
+    assert events[0].observation.target_id == "adsb:abcdef"
+    assert backend.status().last_error is not None
+    assert "external worker read failed" in backend.status().last_error

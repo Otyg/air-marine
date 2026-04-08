@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
 import random
+import socket
 from pathlib import Path
 import time
 from threading import Event, Lock
@@ -282,18 +283,156 @@ class InprocBackend(LegacyBackend):
 
 
 class ExternalBackend(LegacyBackend):
-    """External radio-worker backend placeholder.
+    """External radio-worker backend with optional reader fallback.
 
-    Current implementation shares reader adapters while preserving
-    the control-plane contract (`retune`, `set_gain`).
+    When `use_worker` is enabled this backend sends control commands over a
+    control socket and consumes JSON-line events from a data socket.
     """
+
+    def __init__(
+        self,
+        readers: Mapping[ScanBand, Any],
+        *,
+        use_worker: bool = False,
+        control_host: str = "127.0.0.1",
+        control_port: int = 17601,
+        data_host: str = "127.0.0.1",
+        data_port: int = 17602,
+    ) -> None:
+        super().__init__(readers)
+        self._use_worker = bool(use_worker)
+        self._control_host = control_host
+        self._control_port = int(control_port)
+        self._data_host = data_host
+        self._data_port = int(data_port)
+        self._worker_connected = False
+
+    def retune(self, hz: int) -> None:
+        super().retune(hz)
+        if not self._use_worker:
+            return
+        self._send_control_command({"cmd": "retune", "hz": self._active_frequency_hz})
+
+    def set_gain(self, db: int) -> None:
+        super().set_gain(db)
+        if not self._use_worker:
+            return
+        self._send_control_command({"cmd": "set_gain", "db": self._gain_db})
+
+    def read(self, timeout_s: float, *, band: ScanBand | None = None) -> list[RadioEvent]:
+        if not self._use_worker:
+            return super().read(timeout_s, band=band)
+        try:
+            events = self._read_worker_events(timeout_s=timeout_s, band=band)
+            self._last_error = None
+            return events
+        except Exception as exc:
+            self._last_error = f"external worker read failed: {exc}"
+            self._worker_connected = False
+            return super().read(timeout_s, band=band)
+
+    def _send_control_command(self, payload: dict[str, Any]) -> None:
+        message = json.dumps(payload) + "\n"
+        try:
+            with socket.create_connection((self._control_host, self._control_port), timeout=1.0) as sock:
+                sock.sendall(message.encode("utf-8"))
+                sock.settimeout(1.0)
+                response = sock.recv(4096).decode("utf-8", errors="replace").strip()
+            if response:
+                parsed = json.loads(response)
+                if isinstance(parsed, Mapping) and parsed.get("ok") is False:
+                    raise RuntimeError(str(parsed.get("error") or "control command rejected"))
+            self._worker_connected = True
+            self._last_error = None
+        except Exception as exc:
+            self._worker_connected = False
+            self._last_error = f"external worker control failed: {exc}"
+            raise RuntimeError(self._last_error) from exc
+
+    def _read_worker_events(self, *, timeout_s: float, band: ScanBand | None) -> list[RadioEvent]:
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        connect_timeout = max(0.05, min(1.0, timeout_s if timeout_s > 0 else 0.2))
+        events: list[RadioEvent] = []
+        with socket.create_connection((self._data_host, self._data_port), timeout=connect_timeout) as sock:
+            stream = sock.makefile("r", encoding="utf-8", errors="replace")
+            while True:
+                if timeout_s > 0 and time.monotonic() >= deadline:
+                    break
+                read_timeout = max(0.05, min(1.0, deadline - time.monotonic())) if timeout_s > 0 else 0.2
+                sock.settimeout(read_timeout)
+                try:
+                    line = stream.readline()
+                except socket.timeout:
+                    break
+                if not line:
+                    break
+                payload = json.loads(line)
+                if not isinstance(payload, Mapping):
+                    continue
+                event = self._event_from_worker_payload(payload)
+                if event is None:
+                    continue
+                if band is not None and getattr(event, "source_band", None) != band:
+                    continue
+                events.append(event)
+        self._worker_connected = True
+        return events
+
+    @staticmethod
+    def _event_from_worker_payload(payload: Mapping[str, Any]) -> RadioEvent | None:
+        event_type = str(payload.get("type") or payload.get("event_type") or "").strip().lower()
+        if not event_type:
+            return None
+
+        source_band_raw = payload.get("source_band", ScanBand.AIS.value)
+        try:
+            source_band = ScanBand(str(source_band_raw))
+        except ValueError:
+            return None
+
+        if event_type == "observation":
+            observation_payload = payload.get("observation")
+            if not isinstance(observation_payload, Mapping):
+                return None
+            try:
+                observation = NormalizedObservation.from_dict(dict(observation_payload))
+            except Exception:
+                return None
+            return ObservationEvent(source_band=source_band, observation=observation)
+
+        if event_type == "decoded_frame":
+            frame_type = str(payload.get("frame_type") or "generic")
+            frame_payload = payload.get("payload")
+            return DecodedFrameEvent(
+                source_band=source_band,
+                ts=_utcnow(),
+                frame_type=frame_type,
+                payload=dict(frame_payload) if isinstance(frame_payload, Mapping) else {},
+            )
+
+        if event_type == "iq_chunk":
+            iq_hex = payload.get("iq_hex")
+            if not isinstance(iq_hex, str):
+                return None
+            try:
+                iq_bytes = bytes.fromhex(iq_hex)
+            except ValueError:
+                return None
+            return IQChunkEvent(
+                source_band=source_band,
+                ts=_utcnow(),
+                iq_bytes=iq_bytes,
+                sample_rate=int(payload.get("sample_rate", 48000)),
+            )
+        return None
 
     def status(self) -> RadioStatus:
         status = super().status()
+        connected = self._worker_connected if self._use_worker else status.connected
         return RadioStatus(
             backend_name="external",
             is_running=status.is_running,
-            connected=status.connected,
+            connected=connected,
             active_frequency_hz=status.active_frequency_hz,
             gain_db=status.gain_db,
             last_error=status.last_error,
