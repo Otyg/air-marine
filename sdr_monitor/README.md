@@ -76,6 +76,11 @@ Key runtime variables:
 - `SDR_MONITOR_ADSB_INPROC_SAMPLE_RATE`: ADS-B rtl_tcp sample rate
 - `SDR_MONITOR_ADSB_INPROC_GAIN`: ADS-B rtl_tcp gain
 - `SDR_MONITOR_ADSB_INPROC_FREQUENCY_HZ`: ADS-B retune frequency
+- `SDR_MONITOR_AIS_INPROC_SOURCE`: `tcp|rtl_tcp` for AIS when using `inproc`
+- `SDR_MONITOR_AIS_INPROC_RTL_HOST`: host for AIS rtl_tcp source
+- `SDR_MONITOR_AIS_INPROC_RTL_PORT`: port for AIS rtl_tcp source
+- `SDR_MONITOR_AIS_INPROC_SAMPLE_RATE`: AIS rtl_tcp sample rate
+- `SDR_MONITOR_AIS_INPROC_GAIN`: AIS rtl_tcp gain
 - `SDR_MONITOR_AIS_FREQUENCY_HZ`: AIS retune frequency for v2 window switching
 - `SDR_MONITOR_OGN_FREQUENCY_HZ`: OGN/FLARM retune frequency for v2 window switching
 - `SDR_MONITOR_DSC_FREQUENCY_HZ`: DSC retune frequency for v2 window switching
@@ -174,6 +179,21 @@ SDR_MONITOR_ADSB_INPROC_RTL_HOST=127.0.0.1 \
 SDR_MONITOR_ADSB_INPROC_RTL_PORT=1234 \
 python -m app.main
 ```
+
+Use one dongle with `rtl_tcp` for both ADS-B and AIS inproc readers:
+
+```bash
+SDR_MONITOR_RADIO_BACKEND=inproc \
+SDR_MONITOR_ADSB_INPROC_SOURCE=rtl_tcp \
+SDR_MONITOR_AIS_INPROC_SOURCE=rtl_tcp \
+SDR_MONITOR_ADSB_INPROC_RTL_HOST=127.0.0.1 \
+SDR_MONITOR_ADSB_INPROC_RTL_PORT=1234 \
+python -m app.main
+```
+
+Note: AIS `rtl_tcp` decode is currently DSP-backend driven. The default Python
+fallback keeps contracts stable but emits no AIS lines until an accelerated
+decoder include provides `decode_ais_nmea_lines(...)`.
 
 Use fixture-driven mock backend:
 

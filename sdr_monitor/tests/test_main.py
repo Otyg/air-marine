@@ -13,6 +13,7 @@ import pytest
 from app.config import Config
 from app.env_utils import load_local_dotenv
 from app.ingest_adsb_inproc import ADSBInprocReader
+from app.ingest_ais_inproc import AISInprocReader
 from app.main import (
     build_decoder_process_config,
     create_service_components,
@@ -267,6 +268,29 @@ def test_inproc_backend_can_use_direct_adsb_reader(tmp_path) -> None:
     assert isinstance(components.scanner._backend, InprocBackend)
     adsb_reader = components.scanner._backend._readers[ScanBand.ADSB]
     assert isinstance(adsb_reader, ADSBInprocReader)
+
+
+def test_inproc_backend_can_use_direct_ais_reader(tmp_path) -> None:
+    config = Config(
+        sqlite_path=tmp_path / "service-inproc-ais-rtl.sqlite3",
+        adsb_window_seconds=0.01,
+        ogn_window_seconds=0.0,
+        ais_window_seconds=0.01,
+        dsc_window_seconds=0.0,
+        radio_backend="inproc",
+        ais_inproc_source="rtl_tcp",
+    )
+
+    components = create_service_components(
+        config=config,
+        start_scanner=False,
+        recover_latest_targets=False,
+    )
+
+    assert isinstance(components.scanner, ScannerOrchestratorV2)
+    assert isinstance(components.scanner._backend, InprocBackend)
+    ais_reader = components.scanner._backend._readers[ScanBand.AIS]
+    assert isinstance(ais_reader, AISInprocReader)
 
 
 def test_build_decoder_process_config_matches_ingestors() -> None:

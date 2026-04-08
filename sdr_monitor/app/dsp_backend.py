@@ -23,6 +23,7 @@ class DSPBackend:
         self._impl_name = "python"
         self._accelerated = False
         self._demodulate_fn: Callable[[bytes], bytes] = _python_demodulate
+        self._decode_ais_fn: Callable[..., list[str]] | None = None
 
         try:
             from app import _radio_dsp  # type: ignore[attr-defined]
@@ -32,6 +33,9 @@ class DSPBackend:
                 self._demodulate_fn = demodulate
                 self._impl_name = "cpp"
                 self._accelerated = True
+            decode_ais = getattr(_radio_dsp, "decode_ais_nmea_lines", None)
+            if callable(decode_ais):
+                self._decode_ais_fn = decode_ais
         except Exception:
             # Python fallback is expected in CI/dev environments.
             self._impl_name = "python"
@@ -39,6 +43,17 @@ class DSPBackend:
 
     def demodulate(self, iq_data: bytes) -> bytes:
         return self._demodulate_fn(iq_data)
+
+    def decode_ais_nmea_lines(self, iq_data: bytes, sample_rate: int) -> list[str]:
+        decode_fn = getattr(self, "_decode_ais_fn", None)
+        if callable(decode_fn):
+            try:
+                decoded = decode_fn(iq_data, sample_rate)
+            except TypeError:
+                decoded = decode_fn(iq_data)
+            if isinstance(decoded, list):
+                return [str(line) for line in decoded if isinstance(line, str)]
+        return []
 
     def info(self) -> DSPBackendInfo:
         return DSPBackendInfo(name=self._impl_name, accelerated=self._accelerated)

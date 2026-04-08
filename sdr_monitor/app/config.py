@@ -91,6 +91,11 @@ class Config:
     adsb_inproc_sample_rate: int = 2_000_000
     adsb_inproc_gain: int = 30
     adsb_inproc_frequency_hz: int = 1_090_000_000
+    ais_inproc_source: str = "tcp"
+    ais_inproc_rtl_host: str = "127.0.0.1"
+    ais_inproc_rtl_port: int = 1234
+    ais_inproc_sample_rate: int = 288_000
+    ais_inproc_gain: int = 30
     ais_frequency_hz: int = 162_025_000
     ogn_frequency_hz: int = 868_200_000
     dsc_frequency_hz: int = 156_525_000
@@ -230,6 +235,31 @@ class Config:
                 env_map,
                 f"{ENV_PREFIX}ADSB_INPROC_FREQUENCY_HZ",
                 defaults.adsb_inproc_frequency_hz,
+            ),
+            ais_inproc_source=_read_str(
+                env_map,
+                f"{ENV_PREFIX}AIS_INPROC_SOURCE",
+                defaults.ais_inproc_source,
+            ).strip().lower(),
+            ais_inproc_rtl_host=_read_str(
+                env_map,
+                f"{ENV_PREFIX}AIS_INPROC_RTL_HOST",
+                defaults.ais_inproc_rtl_host,
+            ),
+            ais_inproc_rtl_port=_read_int(
+                env_map,
+                f"{ENV_PREFIX}AIS_INPROC_RTL_PORT",
+                defaults.ais_inproc_rtl_port,
+            ),
+            ais_inproc_sample_rate=_read_int(
+                env_map,
+                f"{ENV_PREFIX}AIS_INPROC_SAMPLE_RATE",
+                defaults.ais_inproc_sample_rate,
+            ),
+            ais_inproc_gain=_read_int(
+                env_map,
+                f"{ENV_PREFIX}AIS_INPROC_GAIN",
+                defaults.ais_inproc_gain,
             ),
             ais_frequency_hz=_read_int(
                 env_map,
@@ -432,6 +462,14 @@ class Config:
             raise ValueError(f"{ENV_PREFIX}ADSB_INPROC_GAIN must be in the range 0..50.")
         if self.adsb_inproc_frequency_hz <= 0:
             raise ValueError(f"{ENV_PREFIX}ADSB_INPROC_FREQUENCY_HZ must be > 0.")
+        if self.ais_inproc_source not in {"tcp", "rtl_tcp"}:
+            raise ValueError(f"{ENV_PREFIX}AIS_INPROC_SOURCE must be one of: tcp, rtl_tcp.")
+        if not (1 <= self.ais_inproc_rtl_port <= 65535):
+            raise ValueError(f"{ENV_PREFIX}AIS_INPROC_RTL_PORT must be in the range 1..65535.")
+        if self.ais_inproc_sample_rate <= 0:
+            raise ValueError(f"{ENV_PREFIX}AIS_INPROC_SAMPLE_RATE must be > 0.")
+        if not (0 <= self.ais_inproc_gain <= 50):
+            raise ValueError(f"{ENV_PREFIX}AIS_INPROC_GAIN must be in the range 0..50.")
         if self.ais_frequency_hz <= 0:
             raise ValueError(f"{ENV_PREFIX}AIS_FREQUENCY_HZ must be > 0.")
         if self.ogn_frequency_hz <= 0:

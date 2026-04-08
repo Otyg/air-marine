@@ -17,8 +17,9 @@ from app.config import Config, load_config
 from app.env_utils import load_local_dotenv
 from app.fixed_objects import load_fixed_radar_objects
 from app.ingest_adsb import ADSBAircraftJsonIngestor
-from app.ingest_adsb_inproc import ADSBInprocReader
+from app.ingest_adsb_inproc import ADSBInprocReader, RTLTCPClient
 from app.ingest_ais import AISTCPIngestor
+from app.ingest_ais_inproc import AISInprocReader
 from app.ingest_dsc import DSCDirectReader, DSCIngestError
 from app.ingest_ogn import OGNTCPIngestor
 from app.logging_setup import configure_logging, get_logger
@@ -259,6 +260,30 @@ def _create_scanner(
         inter_scan_pause_seconds=config.inter_scan_pause_seconds,
     )
 
+    shared_rtl_client: RTLTCPClient | None = None
+    if config.radio_backend == "inproc" and (
+        config.adsb_inproc_source == "rtl_tcp" or config.ais_inproc_source == "rtl_tcp"
+    ):
+        if config.adsb_inproc_source == "rtl_tcp":
+            rtl_host = config.adsb_inproc_rtl_host
+            rtl_port = config.adsb_inproc_rtl_port
+            rtl_sample_rate = config.adsb_inproc_sample_rate
+            rtl_gain = config.adsb_inproc_gain
+            rtl_frequency = config.adsb_inproc_frequency_hz
+        else:
+            rtl_host = config.ais_inproc_rtl_host
+            rtl_port = config.ais_inproc_rtl_port
+            rtl_sample_rate = config.ais_inproc_sample_rate
+            rtl_gain = config.ais_inproc_gain
+            rtl_frequency = config.ais_frequency_hz
+        shared_rtl_client = RTLTCPClient(
+            host=rtl_host,
+            port=rtl_port,
+            sample_rate=rtl_sample_rate,
+            gain=rtl_gain,
+            frequency=rtl_frequency,
+        )
+
     adsb_reader: ObservationReader = ADSBAircraftJsonIngestor(aircraft_json_path=adsb_snapshot_path)
     if config.radio_backend == "inproc" and config.adsb_inproc_source == "rtl_tcp":
         adsb_reader = ADSBInprocReader(
@@ -267,9 +292,19 @@ def _create_scanner(
             sample_rate=config.adsb_inproc_sample_rate,
             gain=config.adsb_inproc_gain,
             frequency_hz=config.adsb_inproc_frequency_hz,
+            client=shared_rtl_client,
         )
     ogn_reader = OGNTCPIngestor.from_config(config)
-    ais_reader = AISTCPIngestor.from_config(config)
+    ais_reader: ObservationReader = AISTCPIngestor.from_config(config)
+    if config.radio_backend == "inproc" and config.ais_inproc_source == "rtl_tcp":
+        ais_reader = AISInprocReader(
+            rtl_host=config.ais_inproc_rtl_host,
+            rtl_port=config.ais_inproc_rtl_port,
+            sample_rate=config.ais_inproc_sample_rate,
+            gain=config.ais_inproc_gain,
+            frequency_hz=config.ais_frequency_hz,
+            client=shared_rtl_client,
+        )
     dsc_reader = _create_dsc_reader_if_enabled(config=config, logger=logger)
 
     if config.radio_backend == "legacy":

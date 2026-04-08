@@ -299,8 +299,9 @@ class ADSBInprocReader:
         sample_rate: int = MODE_S_SAMPLE_RATE_HZ,
         gain: int = 30,
         frequency_hz: int = MODE_S_FREQUENCY_HZ,
+        client: RTLTCPClient | None = None,
     ) -> None:
-        self._client = RTLTCPClient(
+        self._client = client or RTLTCPClient(
             host=rtl_host,
             port=rtl_port,
             sample_rate=sample_rate,

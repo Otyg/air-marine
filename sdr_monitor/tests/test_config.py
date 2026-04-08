@@ -41,6 +41,11 @@ def test_config_uses_defaults_when_env_not_set() -> None:
     assert config.adsb_inproc_sample_rate == 2_000_000
     assert config.adsb_inproc_gain == 30
     assert config.adsb_inproc_frequency_hz == 1_090_000_000
+    assert config.ais_inproc_source == "tcp"
+    assert config.ais_inproc_rtl_host == "127.0.0.1"
+    assert config.ais_inproc_rtl_port == 1234
+    assert config.ais_inproc_sample_rate == 288_000
+    assert config.ais_inproc_gain == 30
     assert config.ais_frequency_hz == 162_025_000
     assert config.ogn_frequency_hz == 868_200_000
     assert config.dsc_frequency_hz == 156_525_000
@@ -74,6 +79,11 @@ def test_config_reads_environment_values() -> None:
             "SDR_MONITOR_ADSB_INPROC_SAMPLE_RATE": "2400000",
             "SDR_MONITOR_ADSB_INPROC_GAIN": "37",
             "SDR_MONITOR_ADSB_INPROC_FREQUENCY_HZ": "1090000000",
+            "SDR_MONITOR_AIS_INPROC_SOURCE": "rtl_tcp",
+            "SDR_MONITOR_AIS_INPROC_RTL_HOST": "127.0.0.8",
+            "SDR_MONITOR_AIS_INPROC_RTL_PORT": "2234",
+            "SDR_MONITOR_AIS_INPROC_SAMPLE_RATE": "384000",
+            "SDR_MONITOR_AIS_INPROC_GAIN": "22",
             "SDR_MONITOR_AIS_FREQUENCY_HZ": "161975000",
             "SDR_MONITOR_OGN_FREQUENCY_HZ": "868400000",
             "SDR_MONITOR_DSC_FREQUENCY_HZ": "156525000",
@@ -122,6 +132,11 @@ def test_config_reads_environment_values() -> None:
     assert config.adsb_inproc_sample_rate == 2_400_000
     assert config.adsb_inproc_gain == 37
     assert config.adsb_inproc_frequency_hz == 1_090_000_000
+    assert config.ais_inproc_source == "rtl_tcp"
+    assert config.ais_inproc_rtl_host == "127.0.0.8"
+    assert config.ais_inproc_rtl_port == 2234
+    assert config.ais_inproc_sample_rate == 384_000
+    assert config.ais_inproc_gain == 22
     assert config.ais_frequency_hz == 161_975_000
     assert config.ogn_frequency_hz == 868_400_000
     assert config.dsc_frequency_hz == 156_525_000
@@ -223,6 +238,14 @@ def test_config_rejects_invalid_adsb_inproc_settings() -> None:
         Config.from_env({"SDR_MONITOR_ADSB_INPROC_GAIN": "99"})
     with pytest.raises(ValueError, match="ADSB_INPROC_FREQUENCY_HZ"):
         Config.from_env({"SDR_MONITOR_ADSB_INPROC_FREQUENCY_HZ": "0"})
+    with pytest.raises(ValueError, match="AIS_INPROC_SOURCE"):
+        Config.from_env({"SDR_MONITOR_AIS_INPROC_SOURCE": "invalid"})
+    with pytest.raises(ValueError, match="AIS_INPROC_RTL_PORT"):
+        Config.from_env({"SDR_MONITOR_AIS_INPROC_RTL_PORT": "0"})
+    with pytest.raises(ValueError, match="AIS_INPROC_SAMPLE_RATE"):
+        Config.from_env({"SDR_MONITOR_AIS_INPROC_SAMPLE_RATE": "0"})
+    with pytest.raises(ValueError, match="AIS_INPROC_GAIN"):
+        Config.from_env({"SDR_MONITOR_AIS_INPROC_GAIN": "99"})
     with pytest.raises(ValueError, match="AIS_FREQUENCY_HZ"):
         Config.from_env({"SDR_MONITOR_AIS_FREQUENCY_HZ": "0"})
     with pytest.raises(ValueError, match="OGN_FREQUENCY_HZ"):

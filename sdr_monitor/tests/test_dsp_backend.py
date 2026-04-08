@@ -19,3 +19,9 @@ def test_dsp_backend_demodulate_is_callable() -> None:
 
     assert isinstance(output, bytes)
     assert len(output) == len(data)
+
+
+def test_dsp_backend_decode_ais_lines_returns_list() -> None:
+    backend = DSPBackend()
+    lines = backend.decode_ais_nmea_lines(bytes([1, 2, 3, 4]), 288000)
+    assert isinstance(lines, list)
