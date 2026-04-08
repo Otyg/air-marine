@@ -32,6 +32,7 @@ from app.radio_v2 import (
     LegacyBackend,
     MockBackend,
     OGNPipeline,
+    ReaderBandSource,
     ScannerOrchestratorV2,
 )
 from app.scanner import HybridBandScanner, ObservationReader, ScannerConfig
@@ -283,7 +284,8 @@ def _create_scanner(
         readers[ScanBand.DSC] = dsc_reader
 
     if config.radio_backend == "inproc":
-        backend = InprocBackend(readers)
+        sources = {band: ReaderBandSource(reader) for band, reader in readers.items()}
+        backend = InprocBackend(readers, sources=sources)
     elif config.radio_backend == "external":
         backend = ExternalBackend(
             readers,

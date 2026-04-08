@@ -35,6 +35,21 @@ class _StaticReader:
         return list(self._observations)
 
 
+class _StaticSource:
+    def __init__(self, events):
+        self._events = list(events)
+        self.calls = 0
+
+    def read_events(self, *, timeout_s: float, band: ScanBand):
+        self.calls += 1
+        return list(self._events)
+
+
+class _FailingSource:
+    def read_events(self, *, timeout_s: float, band: ScanBand):
+        raise RuntimeError("source failed")
+
+
 def test_mock_backend_deterministic_replay_returns_expected_sequence() -> None:
     backend = MockBackend(fixture_path=FIXTURE_DIR / "mixed_cycle.json", enable_timing_mode=False)
     backend.start()
@@ -213,6 +228,52 @@ def test_invalid_gain_is_rejected_in_backend_status() -> None:
 
     assert backend.status().last_error is not None
     assert "Invalid gain" in backend.status().last_error
+
+
+def test_inproc_backend_prefers_source_events_over_reader() -> None:
+    observation = NormalizedObservation(
+        target_id="adsb:aa11bb",
+        source=Source.ADSB,
+        kind=TargetKind.AIRCRAFT,
+        observed_at=datetime(2026, 4, 8, tzinfo=timezone.utc),
+        lat=59.0,
+        lon=18.0,
+    )
+    source = _StaticSource([ObservationEvent(source_band=ScanBand.ADSB, observation=observation)])
+    reader = _StaticReader([])
+    backend = InprocBackend(
+        readers={ScanBand.ADSB: reader},
+        sources={ScanBand.ADSB: source},
+    )
+    backend.start()
+    events = backend.read(0.1, band=ScanBand.ADSB)
+
+    assert len(events) == 1
+    assert isinstance(events[0], ObservationEvent)
+    assert events[0].observation.target_id == "adsb:aa11bb"
+    assert source.calls == 1
+
+
+def test_inproc_backend_falls_back_to_reader_on_source_failure() -> None:
+    observation = NormalizedObservation(
+        target_id="ais:265000123",
+        source=Source.AIS,
+        kind=TargetKind.VESSEL,
+        observed_at=datetime(2026, 4, 8, tzinfo=timezone.utc),
+        lat=58.0,
+        lon=17.0,
+    )
+    backend = InprocBackend(
+        readers={ScanBand.AIS: _StaticReader([observation])},
+        sources={ScanBand.AIS: _FailingSource()},
+    )
+    backend.start()
+    events = backend.read(0.1, band=ScanBand.AIS)
+
+    assert len(events) == 1
+    assert isinstance(events[0], ObservationEvent)
+    assert events[0].observation.target_id == "ais:265000123"
+    assert backend.status().last_error is None
 
 
 def test_mock_backend_supports_payload_ref_catalog() -> None:

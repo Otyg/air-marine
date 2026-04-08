@@ -116,6 +116,11 @@ class ObservationPipeline(Protocol):
         ...
 
 
+class InprocBandSource(Protocol):
+    def read_events(self, *, timeout_s: float, band: ScanBand) -> list[RadioEvent]:
+        ...
+
+
 class AISPipeline:
     def process(self, events: list[RadioEvent]) -> list[NormalizedObservation]:
         observations: list[NormalizedObservation] = []
@@ -267,8 +272,36 @@ class LegacyBackend:
 class InprocBackend(LegacyBackend):
     """In-process backend (initially backed by existing adapters).
 
-    In a future iteration this can read directly from SDR drivers.
+    This backend runs in-process and does not manage subprocess decoders.
+    It can read from explicit in-process band sources and falls back to
+    reader adapters when a source is unavailable for a band.
     """
+
+    def __init__(
+        self,
+        readers: Mapping[ScanBand, Any],
+        *,
+        sources: Mapping[ScanBand, InprocBandSource] | None = None,
+    ) -> None:
+        super().__init__(readers)
+        self._sources = dict(sources or {})
+
+    def read(self, timeout_s: float, *, band: ScanBand | None = None) -> list[RadioEvent]:
+        if not self._running or band is None:
+            return []
+        source = self._sources.get(band)
+        if source is None:
+            return super().read(timeout_s, band=band)
+        try:
+            events = source.read_events(timeout_s=timeout_s, band=band)
+            self._last_error = None
+            return events
+        except Exception as exc:
+            self._last_error = f"inproc source read failed: {exc}"
+            fallback_events = super().read(timeout_s, band=band)
+            if fallback_events:
+                self._last_error = None
+            return fallback_events
 
     def status(self) -> RadioStatus:
         status = super().status()
@@ -280,6 +313,27 @@ class InprocBackend(LegacyBackend):
             gain_db=status.gain_db,
             last_error=status.last_error,
         )
+
+
+class ReaderBandSource:
+    """Adapter that exposes existing observation readers as inproc sources."""
+
+    def __init__(self, reader: Any) -> None:
+        self._reader = reader
+
+    def read_events(self, *, timeout_s: float, band: ScanBand) -> list[RadioEvent]:
+        kwargs: dict[str, Any] = {}
+        if timeout_s > 0:
+            kwargs["timeout_seconds"] = timeout_s
+        try:
+            observations = self._reader.read_observations(**kwargs)
+        except TypeError:
+            observations = self._reader.read_observations()
+        return [
+            ObservationEvent(source_band=band, observation=observation)
+            for observation in observations
+            if isinstance(observation, NormalizedObservation)
+        ]
 
 
 class ExternalBackend(LegacyBackend):
