@@ -373,7 +373,7 @@ def _build_radar_html(
   <style>
     :root {{
       --radar-bg: #000000;
-      --radar-fg: #E9FCE9;
+      --radar-fg: #C1F5C1;
       --radar-ring: #2c7a2c;
       --radar-center: #d3d3d3;
       --panel-fg: #9be89b;
@@ -770,7 +770,7 @@ def _build_radar_html(
       "#031603",
     ];
     const radarRingColor = "#2c7a2c";
-    const liveTargetColor = "#E9FCE9";
+    const liveTargetColor = "#C1F5C1";
     const defaultMapSource = {json.dumps(default_map_source)};
     const fixedObjects = {fixed_objects_json};
     const canvas = document.getElementById("radar");
@@ -2238,7 +2238,7 @@ def _build_radar_html(
         const markerColor = isSelected ? selectedTargetColor : liveTargetColor;
         drawCourseVector(x, y, course, speed, markerColor);
         ctx.fillStyle = markerColor;
-        const symbol = target.kind === "vessel" ? "🞜" : "🞋";
+        const symbol = target.kind === "vessel" ? "◆" : "●";
         ctx.fillText(symbol, x, y);
         if (showTargetLabels) {{
           drawMapTargetLabel(targetDisplayLabel(target), x, y, markerColor);
