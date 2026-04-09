@@ -54,8 +54,8 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
 
         try:
             latest_by_source = runtime.store.latest_position_timestamps_by_source()
-        except Exception as exc:
-            LOGGER.warning("Failed to build reception status payload: %s", exc)
+        except Exception:
+            LOGGER.exception("Failed to build reception status payload.")
             return _default_reception_status_payload()
 
         payload = _default_reception_status_payload()
@@ -112,6 +112,7 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
         try:
             targets = runtime.store.load_latest_targets()
         except Exception as exc:
+            LOGGER.exception("Failed to load latest targets.")
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to load latest targets: {exc}",
@@ -156,6 +157,7 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
                 observed_before=observed_before,
             )
         except Exception as exc:
+            LOGGER.exception("Failed to load historical targets.")
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to load historical targets: {exc}",
@@ -191,8 +193,10 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
                 observed_before=observed_before,
             )
         except ValueError as exc:
+            LOGGER.exception("Invalid request for historical targets in view.")
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:
+            LOGGER.exception("Failed to load historical targets in view.")
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to load historical targets in view: {exc}",
@@ -227,8 +231,10 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
                 observed_before=observed_before,
             )
         except ValueError as exc:
+            LOGGER.exception("Invalid request for historical tracks in view.")
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:
+            LOGGER.exception("Failed to load historical tracks in view.")
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to load historical tracks in view: {exc}",
@@ -256,6 +262,7 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
         try:
             parsed_bbox = _parse_bbox(bbox)
         except ValueError as exc:
+            LOGGER.exception("Invalid bbox for map contours request.")
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         contour_service = runtime.map_contour_service
@@ -284,6 +291,7 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
                 range_km=range_km,
             )
         except ValueError as exc:
+            LOGGER.exception("Failed to resolve map contours.")
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         return result.to_payload(
@@ -313,6 +321,7 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
         try:
             runtime.scanner.set_scan_mode(requested_mode)
         except ValueError as exc:
+            LOGGER.exception("Failed to set scanner mode.")
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         scanner_status = runtime.scanner.status()
@@ -357,6 +366,7 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
             try:
                 total_observations_stored = runtime.store.count_observations()
             except Exception:
+                LOGGER.exception("Failed to count observations for stats.")
                 total_observations_stored = None
 
         return {
@@ -386,8 +396,11 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
                 observed_before=observed_before,
             )
         except ValueError as exc:
+            LOGGER.exception("Invalid history lookup request.")
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:
+            LOGGER.exception(exc)
+            LOGGER.exception(f"History lookup failed. Target: {target_id}, limit: {limit},observed_after: {observed_after}, observed_before: {observed_before}")
             raise HTTPException(status_code=500, detail=f"History lookup failed: {exc}") from exc
 
         serialized = [observation.to_dict() for observation in observations]
@@ -415,6 +428,7 @@ def _parse_bbox(raw_bbox: str) -> BBox:
     try:
         min_lon, min_lat, max_lon, max_lat = (float(part) for part in parts)
     except ValueError as exc:
+        LOGGER.exception("Failed to parse bbox coordinates.")
         raise ValueError("bbox must contain valid floating-point coordinates.") from exc
     if min_lon >= max_lon:
         raise ValueError("bbox min_lon must be smaller than max_lon.")

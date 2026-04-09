@@ -11,6 +11,7 @@ from typing import Mapping
 ENV_PREFIX = "SDR_MONITOR_"
 VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 VALID_MAP_SOURCES = {"hydro", "elevation"}
+DEFAULT_STDERR_LOG_PATH = Path("./data/errors.log")
 
 
 def _default_map_cache_dir() -> Path:
@@ -60,12 +61,27 @@ def _read_bool(env: Mapping[str, str], key: str, default: bool) -> bool:
     raise ValueError(f"Invalid boolean for {key}: {raw_value!r}")
 
 
+def _read_optional_path(
+    env: Mapping[str, str],
+    key: str,
+    default: Path | None = None,
+) -> Path | None:
+    raw_value = env.get(key)
+    if raw_value is None:
+        return default
+    trimmed = raw_value.strip()
+    if not trimmed:
+        return default
+    return Path(trimmed)
+
+
 @dataclass(frozen=True, slots=True)
 class Config:
     """Resolved runtime settings for the monitor service."""
 
     service_name: str = "sdr-monitor"
     log_level: str = "INFO"
+    stderr_log_path: Path | None = None
     adsb_window_seconds: float = 8.0
     ogn_window_seconds: float = 0.0
     ais_window_seconds: float = 12.0
@@ -108,6 +124,11 @@ class Config:
                 env_map, f"{ENV_PREFIX}SERVICE_NAME", defaults.service_name
             ),
             log_level=_read_str(env_map, f"{ENV_PREFIX}LOG_LEVEL", defaults.log_level).upper(),
+            stderr_log_path=_read_optional_path(
+                env_map,
+                f"{ENV_PREFIX}STDERR_LOG_PATH",
+                default=DEFAULT_STDERR_LOG_PATH,
+            ),
             adsb_window_seconds=_read_float(
                 env_map, f"{ENV_PREFIX}ADSB_WINDOW_SECONDS", defaults.adsb_window_seconds
             ),
@@ -268,6 +289,9 @@ class Config:
                 f"Invalid {ENV_PREFIX}LOG_LEVEL={self.log_level!r}. "
                 f"Expected one of: {valid_levels}."
             )
+        if self.stderr_log_path is not None and self.stderr_log_path.exists():
+            if self.stderr_log_path.is_dir():
+                raise ValueError(f"{ENV_PREFIX}STDERR_LOG_PATH must be a file path, not a directory.")
         if self.adsb_window_seconds <= 0:
             raise ValueError(f"{ENV_PREFIX}ADSB_WINDOW_SECONDS must be > 0.")
         if self.ogn_window_seconds < 0:

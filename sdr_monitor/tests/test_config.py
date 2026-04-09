@@ -9,6 +9,7 @@ def test_config_uses_defaults_when_env_not_set() -> None:
     config = Config.from_env({})
     assert config.service_name == "sdr-monitor"
     assert config.log_level == "INFO"
+    assert str(config.stderr_log_path) == "data/errors.log"
     assert config.adsb_window_seconds == 8.0
     assert config.ogn_window_seconds == 0.0
     assert config.ais_window_seconds == 12.0
@@ -41,6 +42,7 @@ def test_config_reads_environment_values() -> None:
         {
             "SDR_MONITOR_SERVICE_NAME": "air-marine",
             "SDR_MONITOR_LOG_LEVEL": "debug",
+            "SDR_MONITOR_STDERR_LOG_PATH": "/tmp/sdr-monitor/stderr.log",
             "SDR_MONITOR_ADSB_WINDOW_SECONDS": "5.5",
             "SDR_MONITOR_OGN_WINDOW_SECONDS": "4",
             "SDR_MONITOR_AIS_WINDOW_SECONDS": "9",
@@ -72,6 +74,7 @@ def test_config_reads_environment_values() -> None:
     )
     assert config.service_name == "air-marine"
     assert config.log_level == "DEBUG"
+    assert str(config.stderr_log_path) == "/tmp/sdr-monitor/stderr.log"
     assert config.adsb_window_seconds == 5.5
     assert config.ogn_window_seconds == 4.0
     assert config.ais_window_seconds == 9.0
@@ -155,6 +158,19 @@ def test_config_rejects_invalid_map_settings() -> None:
 
     with pytest.raises(ValueError, match="MARKHOJD_DIRECT_MAX_POINTS_PER_REQUEST"):
         Config.from_env({"SDR_MONITOR_MARKHOJD_DIRECT_MAX_POINTS_PER_REQUEST": "1001"})
+
+
+def test_config_rejects_stderr_log_path_when_directory(tmp_path) -> None:
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+
+    with pytest.raises(ValueError, match="STDERR_LOG_PATH"):
+        Config.from_env({"SDR_MONITOR_STDERR_LOG_PATH": str(logs_dir)})
+
+
+def test_config_uses_default_stderr_log_path_when_env_is_empty() -> None:
+    config = Config.from_env({"SDR_MONITOR_STDERR_LOG_PATH": "   "})
+    assert str(config.stderr_log_path) == "data/errors.log"
 
 
 def test_config_reads_legacy_radar_coordinate_names() -> None:
