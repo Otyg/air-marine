@@ -37,6 +37,7 @@ class SQLiteStore:
 
     def __init__(self, sqlite_path: str | Path) -> None:
         self._path = Path(sqlite_path)
+        self._resolved_path = self._path.expanduser().resolve(strict=False)
         self._lock = RLock()
 
     @property
@@ -46,7 +47,7 @@ class SQLiteStore:
     def initialize(self) -> None:
         """Create database directories and schema if needed."""
 
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._ensure_parent_dir()
         with self._lock, self._connect() as conn:
             conn.executescript(
                 """
@@ -417,6 +418,115 @@ class SQLiteStore:
                 matched.add(str(row["target_id"]))
 
         return sorted(matched)
+
+    def fetch_historical_tracks_in_view(
+        self,
+        *,
+        center_lat: float,
+        center_lon: float,
+        range_km: float,
+        observed_after: datetime | None = None,
+        observed_before: datetime | None = None,
+    ) -> dict[str, list[NormalizedObservation]]:
+        """Fetch historical observations grouped by target for the active radar view."""
+
+        if range_km <= 0:
+            raise ValueError("range_km must be > 0")
+
+        lat_padding = range_km / _KM_PER_DEG_LAT
+        lon_padding = range_km / _km_per_deg_lon(center_lat)
+
+        params: list[object] = [
+            center_lat - lat_padding,
+            center_lat + lat_padding,
+            center_lon - lon_padding,
+            center_lon + lon_padding,
+        ]
+        query = """
+                SELECT
+                    target_id,
+                    source,
+                    kind,
+                    observed_at,
+                    lat,
+                    lon,
+                    course,
+                    speed,
+                    altitude,
+                    payload_json
+                FROM observations
+                WHERE lat IS NOT NULL
+                  AND lon IS NOT NULL
+                  AND lat BETWEEN ? AND ?
+                  AND lon BETWEEN ? AND ?
+        """
+        if observed_after is not None:
+            query += "\n                  AND observed_at >= ?"
+            params.append(_to_iso(observed_after))
+        if observed_before is not None:
+            query += "\n                  AND observed_at <= ?"
+            params.append(_to_iso(observed_before))
+        query += "\n                ORDER BY target_id ASC, observed_at ASC"
+
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+
+        grouped: dict[str, list[NormalizedObservation]] = {}
+        km_lon = _km_per_deg_lon(center_lat)
+        max_distance_sq = range_km * range_km
+        for row in rows:
+            lat = float(row["lat"])
+            lon = float(row["lon"])
+            dy = (lat - center_lat) * _KM_PER_DEG_LAT
+            dx = (lon - center_lon) * km_lon
+            if (dx * dx) + (dy * dy) > max_distance_sq:
+                continue
+
+            target_id = str(row["target_id"])
+            grouped.setdefault(target_id, []).append(
+                NormalizedObservation(
+                    target_id=target_id,
+                    source=Source(row["source"]),
+                    kind=TargetKind(row["kind"]),
+                    observed_at=_parse_dt(row["observed_at"]),
+                    lat=lat,
+                    lon=lon,
+                    course=row["course"],
+                    speed=row["speed"],
+                    altitude=row["altitude"],
+                    payload_json=json.loads(row["payload_json"]),
+                )
+            )
+
+        return grouped
+
+    def latest_position_timestamps_by_source(self) -> dict[str, datetime | None]:
+        """Return latest known positioned timestamps for monitored sources."""
+
+        query = """
+            SELECT source, MAX(last_seen) AS last_seen
+            FROM targets_latest
+            WHERE source IN ('adsb', 'ais')
+              AND last_lat IS NOT NULL
+              AND last_lon IS NOT NULL
+            GROUP BY source
+        """
+
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(query).fetchall()
+
+        latest_by_source: dict[str, datetime | None] = {
+            "adsb": None,
+            "ais": None,
+        }
+        for row in rows:
+            source = str(row["source"])
+            if source not in latest_by_source:
+                continue
+            last_seen = row["last_seen"]
+            latest_by_source[source] = _parse_dt(last_seen) if last_seen is not None else None
+
+        return latest_by_source
 
     def load_latest_targets(self, limit: int | None = None) -> list[Target]:
         """Load latest target states from persistence for optional warm start."""
@@ -1083,9 +1193,13 @@ class SQLiteStore:
         )
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._path)
+        self._ensure_parent_dir()
+        conn = sqlite3.connect(self._resolved_path)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _ensure_parent_dir(self) -> None:
+        self._resolved_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _ensure_column(
         self,

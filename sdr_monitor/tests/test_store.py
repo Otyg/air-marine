@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from app.models import Freshness, NormalizedObservation, ScanBand, Source, Target, TargetKind
 from app.store import SQLiteStore
@@ -62,6 +63,28 @@ def test_initialize_creates_schema(tmp_path) -> None:
     assert "map_hydro_features" in tables
     assert "map_hydro_bbox_cache" in tables
     assert "map_hydro_bbox_features" in tables
+
+
+def test_relative_sqlite_path_stays_stable_after_working_directory_changes(tmp_path, monkeypatch) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    monkeypatch.chdir(project_dir)
+
+    store = SQLiteStore(Path("data") / "relative.sqlite3")
+
+    other_dir = tmp_path / "other"
+    other_dir.mkdir()
+    monkeypatch.chdir(other_dir)
+
+    seen_at = datetime(2026, 3, 30, 12, 0, tzinfo=timezone.utc)
+    store.initialize()
+    store.insert_observation(_observation("adsb:stable", seen_at, altitude=1000.0))
+
+    expected_db_path = project_dir / "data" / "relative.sqlite3"
+    assert expected_db_path.exists()
+    with sqlite3.connect(expected_db_path) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
+    assert count == 1
 
 
 def test_persist_observation_and_target_and_count(tmp_path) -> None:
@@ -253,6 +276,116 @@ def test_list_historical_target_ids_in_view_honors_observed_interval(tmp_path) -
     )
 
     assert target_ids == ["adsb:inside"]
+
+
+def test_fetch_historical_tracks_in_view_returns_grouped_points_in_time_order(tmp_path) -> None:
+    seen_at = datetime(2026, 3, 30, 12, 0, tzinfo=timezone.utc)
+    store = SQLiteStore(tmp_path / "history_tracks_in_view.sqlite3")
+    store.initialize()
+
+    store.insert_observation(
+        NormalizedObservation(
+            target_id="adsb:alpha",
+            source=Source.ADSB,
+            kind=TargetKind.AIRCRAFT,
+            observed_at=seen_at + timedelta(minutes=2),
+            lat=59.0002,
+            lon=18.0002,
+        )
+    )
+    store.insert_observation(
+        NormalizedObservation(
+            target_id="adsb:alpha",
+            source=Source.ADSB,
+            kind=TargetKind.AIRCRAFT,
+            observed_at=seen_at,
+            lat=59.0,
+            lon=18.0,
+        )
+    )
+    store.insert_observation(
+        NormalizedObservation(
+            target_id="adsb:bravo",
+            source=Source.ADSB,
+            kind=TargetKind.AIRCRAFT,
+            observed_at=seen_at + timedelta(minutes=1),
+            lat=59.0001,
+            lon=18.0001,
+        )
+    )
+    store.insert_observation(
+        NormalizedObservation(
+            target_id="adsb:outside",
+            source=Source.ADSB,
+            kind=TargetKind.AIRCRAFT,
+            observed_at=seen_at + timedelta(minutes=1),
+            lat=59.2000,
+            lon=18.2000,
+        )
+    )
+
+    tracks = store.fetch_historical_tracks_in_view(
+        center_lat=59.0,
+        center_lon=18.0,
+        range_km=5.0,
+    )
+
+    assert list(tracks) == ["adsb:alpha", "adsb:bravo"]
+    assert [item.observed_at for item in tracks["adsb:alpha"]] == [
+        seen_at,
+        seen_at + timedelta(minutes=2),
+    ]
+    assert [item.lat for item in tracks["adsb:bravo"]] == [59.0001]
+
+
+def test_latest_position_timestamps_by_source_returns_adsb_and_ais(tmp_path) -> None:
+    now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+    store = SQLiteStore(tmp_path / "latest_position_timestamps.sqlite3")
+    store.initialize()
+
+    store.upsert_latest_target(
+        Target(
+            target_id="adsb:alpha",
+            source=Source.ADSB,
+            kind=TargetKind.AIRCRAFT,
+            label="FLT1",
+            lat=59.0,
+            lon=18.0,
+            course=90.0,
+            speed=120.0,
+            altitude=1000.0,
+            first_seen=now - timedelta(minutes=10),
+            last_seen=now - timedelta(minutes=30),
+            freshness=Freshness.FRESH,
+            last_scan_band=ScanBand.ADSB,
+            icao24="abcdef",
+        )
+    )
+    store.upsert_latest_target(
+        Target(
+            target_id="ais:265123456",
+            source=Source.AIS,
+            kind=TargetKind.VESSEL,
+            label="VESSEL1",
+            lat=59.1,
+            lon=18.1,
+            course=180.0,
+            speed=15.0,
+            altitude=None,
+            first_seen=now - timedelta(minutes=20),
+            last_seen=now - timedelta(minutes=15),
+            freshness=Freshness.FRESH,
+            last_scan_band=ScanBand.AIS,
+            mmsi="265123456",
+        )
+    )
+
+    latest = store.latest_position_timestamps_by_source()
+
+    assert latest["adsb"] == now - timedelta(minutes=30)
+    assert latest["ais"] == now - timedelta(minutes=15)
+
+
 def test_delete_latest_targets_older_than_removes_only_stale_rows(tmp_path) -> None:
     now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
     store = SQLiteStore(tmp_path / "prune.sqlite3")

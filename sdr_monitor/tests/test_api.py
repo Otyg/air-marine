@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import sqlite3
 
 import httpx
 
@@ -220,6 +221,7 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
         APIRuntime(
             state=state,
             store=None,
+            radio_connected=True,
             radar_center_lat=59.3293,
             radar_center_lon=18.0686,
             fixed_objects=[
@@ -245,6 +247,7 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
     assert "id=\"showFixedNames\"" in response.text
     assert "id=\"showTargetLabels\"" in response.text
     assert "id=\"showMapContours\"" in response.text
+    assert "id=\"receptionWarning\"" in response.text
     assert "id=\"objectsList\"" in response.text
     assert "id=\"outsideObjectsList\"" in response.text
     assert "id=\"targetTypeFilter\"" in response.text
@@ -300,11 +303,29 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
     assert "function targetDisplayLabel(target)" in response.text
     assert "function drawMapTargetLabel(label, x, y, color)" in response.text
     assert "function matchesTargetTypeFilter(target, filterValue)" in response.text
+    assert "function updateReceptionWarning()" in response.text
+    assert "ingen positionsdata från AIS eller ADS-B" in response.text
     assert "#ff4d4d" in response.text
-    assert "#39FF14" in response.text
+    assert "#4AE34A" in response.text
     assert "last_seen:" in response.text
     assert "59.32930000" in response.text
     assert "18.06860000" in response.text
+
+
+def test_radar_ui_root_redirects_to_history_when_radio_is_disconnected() -> None:
+    state = LiveState(clock=lambda: datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc))
+    app = create_api_app(
+        APIRuntime(
+            state=state,
+            store=None,
+            radio_connected=False,
+        )
+    )
+
+    response = _request(app, "GET", "/", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "/history-radar"
 
 
 def test_history_radar_ui_renders_html_with_history_panel() -> None:
@@ -330,6 +351,9 @@ def test_history_radar_ui_renders_html_with_history_panel() -> None:
     assert "id=\"historyTimeFilterModal\"" in response.text
     assert "id=\"historyObservedAfterInput\"" in response.text
     assert "id=\"historyObservedBeforeInput\"" in response.text
+    assert "id=\"historyReceptionWarning\"" in response.text
+    assert ".modal-backdrop[hidden]" in response.text
+    assert "position: fixed;" in response.text
     assert "id=\"showTargetLabels\"" in response.text
     assert "Historiska objekt" in response.text
     assert "Alla spår" in response.text
@@ -341,13 +365,21 @@ def test_history_radar_ui_renders_html_with_history_panel() -> None:
     assert "function targetTypeIcon(kind)" in response.text
     assert "function setHistoryTimeFilterModalOpen(isOpen)" in response.text
     assert "function applyHistoryTimeFilter(nextObservedAfterIso, nextObservedBeforeIso)" in response.text
+    assert "function updateReceptionWarning()" in response.text
+    assert "ingen positionsdata från AIS eller ADS-B" in response.text
     assert "observed_after" in response.text
     assert "function drawMapTargetLabel(label, x, y, color)" in response.text
     assert "function matchesTargetTypeFilter(target, filterValue)" in response.text
     assert "function matchesHistorySpeedFilter(target, minSpeed)" in response.text
     assert "function ensureHistoryTargetsInView(rangeKm)" in response.text
+    assert "function ensureHistoryTracksInView(rangeKm)" in response.text
     assert "if (leftInView !== rightInView)" in response.text
     assert "function drawSelectedHistoryPath(cx, cy, pxPerKm, radius)" in response.text
+    assert "function drawUnselectedHistoryTracks(cx, cy, pxPerKm, radius)" in response.text
+    assert "function drawUnselectedHistoryTargets(cx, cy, pxPerKm, radius)" in response.text
+    assert "fetch(`ui/history-tracks-in-view?${params.toString()}`" in response.text
+    assert "#72E972" in response.text
+    assert "#4AE34A" in response.text
     assert "function fitHistoryToView(points)" in response.text
     assert "fitHistoryToView(historyPoints);" not in response.text
     assert "href=\"./\"" in response.text
@@ -505,6 +537,65 @@ def test_history_targets_in_view_endpoint_honors_observed_interval(tmp_path) -> 
     assert payload["target_ids"] == ["adsb:inside-earlier"]
 
 
+def test_history_tracks_in_view_endpoint_returns_grouped_observations(tmp_path) -> None:
+    now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+    state = LiveState(clock=lambda: now)
+    store = SQLiteStore(tmp_path / "history_tracks_in_view.sqlite3")
+    store.initialize()
+    store.insert_observation(
+        NormalizedObservation(
+            target_id="adsb:alpha",
+            source=Source.ADSB,
+            kind=TargetKind.AIRCRAFT,
+            observed_at=now - timedelta(minutes=2),
+            lat=59.0,
+            lon=18.0,
+        )
+    )
+    store.insert_observation(
+        NormalizedObservation(
+            target_id="adsb:alpha",
+            source=Source.ADSB,
+            kind=TargetKind.AIRCRAFT,
+            observed_at=now - timedelta(minutes=1),
+            lat=59.0002,
+            lon=18.0002,
+        )
+    )
+    store.insert_observation(
+        NormalizedObservation(
+            target_id="adsb:outside",
+            source=Source.ADSB,
+            kind=TargetKind.AIRCRAFT,
+            observed_at=now - timedelta(minutes=1),
+            lat=59.3,
+            lon=18.3,
+        )
+    )
+
+    app = create_api_app(APIRuntime(state=state, store=store))
+    response = _request(
+        app,
+        "GET",
+        "/ui/history-tracks-in-view",
+        params={
+            "center_lat": 59.0,
+            "center_lon": 18.0,
+            "range_km": 5.0,
+            "observed_after": (now - timedelta(minutes=3)).isoformat(),
+            "observed_before": now.isoformat(),
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["target_count"] == 1
+    assert payload["count"] == 2
+    assert len(payload["tracks"]) == 1
+    assert payload["tracks"][0]["target_id"] == "adsb:alpha"
+    assert [item["lat"] for item in payload["tracks"][0]["observations"]] == [59.0, 59.0002]
+
+
 def test_history_endpoint_honors_observed_interval(tmp_path) -> None:
     now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
     state = LiveState(clock=lambda: now)
@@ -565,9 +656,41 @@ def test_targets_latest_ui_endpoint_returns_store_rows(tmp_path) -> None:
     assert payload["radio_connected"] is False
     assert payload["targets"][0]["target_id"] == "adsb:abcdef"
     assert payload["targets"][0]["recent_positions"] == []
+    assert payload["reception_status"]["threshold_hours"] == 2
+    assert payload["reception_status"]["adsb_last_position_at"] == now.isoformat()
+    assert payload["reception_status"]["ais_last_position_at"] is None
     assert payload["scanner"]["active_scan_band"] is None
     assert payload["scanner"]["last_scan_switch"] is None
     assert payload["scanner"]["scan_mode"] is None
+
+
+def test_targets_latest_ui_endpoint_tolerates_reception_status_store_errors() -> None:
+    now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+    state = LiveState(clock=lambda: now)
+
+    class FailingReceptionStatusStore:
+        def load_latest_targets(self) -> list[Target]:
+            return [_target("adsb:abcdef", now)]
+
+        def latest_position_timestamps_by_source(self) -> dict[str, datetime | None]:
+            raise sqlite3.OperationalError("unable to open database file")
+
+    app = create_api_app(
+        APIRuntime(
+            state=state,
+            store=FailingReceptionStatusStore(),  # type: ignore[arg-type]
+        )
+    )
+
+    response = _request(app, "GET", "/ui/targets-latest")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 1
+    assert payload["targets"][0]["target_id"] == "adsb:abcdef"
+    assert payload["reception_status"]["threshold_hours"] == 2
+    assert payload["reception_status"]["adsb_last_position_at"] is None
+    assert payload["reception_status"]["ais_last_position_at"] is None
 
 
 def test_map_contours_endpoint_uses_runtime_service() -> None:
@@ -672,6 +795,23 @@ def test_targets_latest_ui_endpoint_includes_scanner_timing_fields(tmp_path) -> 
     assert payload["scanner"]["ogn_window_seconds"] == 4.0
     assert payload["scanner"]["ais_window_seconds"] == 9.0
     assert payload["scanner"]["inter_scan_pause_seconds"] == 0.25
+
+
+def test_history_targets_ui_endpoint_includes_reception_status(tmp_path) -> None:
+    now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+    state = LiveState(clock=lambda: now)
+    store = SQLiteStore(tmp_path / "history_reception.sqlite3")
+    store.initialize()
+    store.upsert_latest_target(_target("adsb:abcdef", now - timedelta(hours=3)))
+
+    app = create_api_app(APIRuntime(state=state, store=store))
+    response = _request(app, "GET", "/ui/history-targets")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["reception_status"]["threshold_hours"] == 2
+    assert payload["reception_status"]["adsb_last_position_at"] == (now - timedelta(hours=3)).isoformat()
+    assert payload["reception_status"]["ais_last_position_at"] is None
 
 
 def test_scanner_mode_endpoints_get_and_set() -> None:

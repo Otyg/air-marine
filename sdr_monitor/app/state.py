@@ -222,6 +222,11 @@ class LiveState:
                 "stale_count": stale_count,
             }
 
+    def now(self) -> datetime:
+        """Return the state's current clock value."""
+
+        return self._clock()
+
     def _calculate_freshness(self, last_seen: datetime, now: datetime) -> Freshness:
         age_seconds = max(0.0, (now - _ensure_aware(last_seen)).total_seconds())
         if age_seconds <= self._fresh_seconds:

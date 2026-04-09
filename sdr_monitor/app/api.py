@@ -8,15 +8,18 @@ import json
 from typing import Any
 
 from fastapi import Body, FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.fixed_objects import FixedRadarObject
 from app.health import build_health_report
+from app.logging_setup import get_logger
 from app.map_contours import BBox, MapContourService
 from app.models import TargetKind
 from app.scanner import SCAN_MODE_VALUES, HybridBandScanner
 from app.state import LiveState
 from app.store import SQLiteStore
+
+LOGGER = get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -38,8 +41,32 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
 
     app = FastAPI(title=runtime.service_name)
 
+    def _default_reception_status_payload() -> dict[str, Any]:
+        return {
+            "threshold_hours": 2,
+            "adsb_last_position_at": None,
+            "ais_last_position_at": None,
+        }
+
+    def _build_reception_status_payload() -> dict[str, Any]:
+        if runtime.store is None:
+            return _default_reception_status_payload()
+
+        try:
+            latest_by_source = runtime.store.latest_position_timestamps_by_source()
+        except Exception as exc:
+            LOGGER.warning("Failed to build reception status payload: %s", exc)
+            return _default_reception_status_payload()
+
+        payload = _default_reception_status_payload()
+        payload["adsb_last_position_at"] = _to_iso(latest_by_source.get("adsb"))
+        payload["ais_last_position_at"] = _to_iso(latest_by_source.get("ais"))
+        return payload
+
     @app.get("/", response_class=HTMLResponse)
     async def get_radar_screen() -> str:
+        if not runtime.radio_connected:
+            return RedirectResponse(url="/history-radar", status_code=307)
         return _build_radar_html(
             center_lat=runtime.radar_center_lat,
             center_lon=runtime.radar_center_lon,
@@ -79,6 +106,7 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
                 "targets": [],
                 "radio_connected": runtime.radio_connected,
                 "scanner": scanner_payload,
+                "reception_status": _build_reception_status_payload(),
             }
 
         try:
@@ -107,6 +135,7 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
             "targets": serialized,
             "radio_connected": runtime.radio_connected,
             "scanner": scanner_payload,
+            "reception_status": _build_reception_status_payload(),
         }
 
     @app.get("/ui/history-targets")
@@ -118,6 +147,7 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
             return {
                 "count": 0,
                 "targets": [],
+                "reception_status": _build_reception_status_payload(),
             }
 
         try:
@@ -135,6 +165,7 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
         return {
             "count": len(serialized),
             "targets": serialized,
+            "reception_status": _build_reception_status_payload(),
         }
 
     @app.get("/ui/history-targets-in-view")
@@ -170,6 +201,50 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
         return {
             "count": len(target_ids),
             "target_ids": target_ids,
+        }
+
+    @app.get("/ui/history-tracks-in-view")
+    async def get_history_tracks_in_view(
+        center_lat: float = Query(..., ge=-90, le=90),
+        center_lon: float = Query(..., ge=-180, le=180),
+        range_km: float = Query(..., gt=0),
+        observed_after: datetime | None = Query(default=None),
+        observed_before: datetime | None = Query(default=None),
+    ) -> dict[str, Any]:
+        if runtime.store is None:
+            return {
+                "count": 0,
+                "target_count": 0,
+                "tracks": [],
+            }
+
+        try:
+            tracks_by_target_id = runtime.store.fetch_historical_tracks_in_view(
+                center_lat=center_lat,
+                center_lon=center_lon,
+                range_km=range_km,
+                observed_after=observed_after,
+                observed_before=observed_before,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to load historical tracks in view: {exc}",
+            ) from exc
+
+        tracks = [
+            {
+                "target_id": target_id,
+                "observations": [observation.to_dict() for observation in observations],
+            }
+            for target_id, observations in tracks_by_target_id.items()
+        ]
+        return {
+            "count": sum(len(item["observations"]) for item in tracks),
+            "target_count": len(tracks),
+            "tracks": tracks,
         }
 
     @app.get("/ui/map-contours")
@@ -430,7 +505,19 @@ def _build_radar_html(
     .hud-right {{
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
       gap: 12px;
+    }}
+    .status-warning {{
+      border: 1px solid #8b5a1b;
+      background: rgba(72, 42, 8, 0.68);
+      color: #ffd48f;
+      padding: 6px 10px;
+      font-size: 12px;
+      line-height: 1.4;
+    }}
+    .status-warning[hidden] {{
+      display: none;
     }}
     .scan-mode-control {{
       display: inline-flex;
@@ -646,6 +733,93 @@ def _build_radar_html(
       color: var(--panel-dim);
       font-size: 12px;
     }}
+    .panel-filter-row {{
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }}
+    .panel-filter-control {{
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 6px;
+      color: var(--panel-dim);
+      font-size: 12px;
+      min-width: 0;
+    }}
+    .panel-filter-control select,
+    .panel-filter-control input {{
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid #226322;
+      background: #041104;
+      color: var(--panel-fg);
+      font: inherit;
+      padding: 6px 8px;
+      min-height: 34px;
+    }}
+    .panel-filter-control select:focus,
+    .panel-filter-control input:focus {{
+      outline: none;
+      border-color: #2f8b2f;
+      background: #0a1f0a;
+    }}
+    .panel-action-button {{
+      border: 1px solid #226322;
+      background: #051805;
+      color: var(--panel-fg);
+      font: inherit;
+      padding: 6px 10px;
+      cursor: pointer;
+    }}
+    .panel-action-button:hover {{
+      background: #0a260a;
+    }}
+    .modal-backdrop {{
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      background: rgba(0, 0, 0, 0.74);
+    }}
+    .modal-backdrop[hidden] {{
+      display: none;
+    }}
+    .modal-card {{
+      width: min(460px, calc(100vw - 32px));
+      border: 1px solid #226322;
+      background: #020b02;
+      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+    }}
+    .modal-head {{
+      padding: 12px 14px;
+      border-bottom: 1px solid #154815;
+    }}
+    .modal-title {{
+      color: var(--radar-fg);
+      font-size: 14px;
+      margin-bottom: 6px;
+    }}
+    .modal-copy {{
+      color: var(--panel-dim);
+      font-size: 12px;
+      line-height: 1.45;
+    }}
+    .modal-body {{
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 14px;
+    }}
+    .modal-actions {{
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-wrap: wrap;
+    }}
     @media (max-width: 1000px) {{
       .screen {{
         flex-direction: column;
@@ -705,6 +879,7 @@ def _build_radar_html(
           Visa kust/sjö-konturer
         </label>
         <div id="meta" class="dim">Center: {center_lat:.6f}, {center_lon:.6f}</div>
+        <div id="receptionWarning" class="status-warning" hidden></div>
       </div>
     </div>
     <div class="screen">
@@ -789,6 +964,7 @@ def _build_radar_html(
     const objectsList = document.getElementById("objectsList");
     const outsideObjectsSummary = document.getElementById("outsideObjectsSummary");
     const outsideObjectsList = document.getElementById("outsideObjectsList");
+    const receptionWarning = document.getElementById("receptionWarning");
     const ctx = canvas.getContext("2d");
     let targets = [];
     let retainedTrailTargets = [];
@@ -817,6 +993,7 @@ def _build_radar_html(
     let lastDataChangeAtMs = Date.now();
     const observedUpdateIntervalsMs = [];
     let lastScannerState = null;
+    let receptionStatus = null;
     let scanMode = "hybrid";
     let scanModeUpdateInFlight = false;
     let mapContours = [];
@@ -1330,6 +1507,48 @@ def _build_radar_html(
       if (typeof value !== "string" || !value.trim()) return NaN;
       const parsed = Date.parse(value);
       return Number.isFinite(parsed) ? parsed : NaN;
+    }}
+
+    function normalizeReceptionStatus(rawStatus) {{
+      if (!rawStatus || typeof rawStatus !== "object") {{
+        return {{
+          threshold_ms: 2 * 60 * 60 * 1000,
+          adsb_last_position_at: null,
+          ais_last_position_at: null,
+        }};
+      }}
+      const thresholdHours = toOptionalNumber(rawStatus.threshold_hours);
+      return {{
+        threshold_ms: Number.isFinite(thresholdHours) && thresholdHours > 0
+          ? thresholdHours * 60 * 60 * 1000
+          : 2 * 60 * 60 * 1000,
+        adsb_last_position_at: typeof rawStatus.adsb_last_position_at === "string"
+          ? rawStatus.adsb_last_position_at
+          : null,
+        ais_last_position_at: typeof rawStatus.ais_last_position_at === "string"
+          ? rawStatus.ais_last_position_at
+          : null,
+      }};
+    }}
+
+    function updateReceptionWarning() {{
+      if (!(receptionWarning instanceof HTMLElement)) return;
+      const status = receptionStatus && typeof receptionStatus === "object"
+        ? receptionStatus
+        : normalizeReceptionStatus(null);
+      const nowMs = Date.now();
+      const thresholdMs = Number.isFinite(status.threshold_ms)
+        ? status.threshold_ms
+        : 2 * 60 * 60 * 1000;
+      const adsbLastMs = parseTimestampMs(status.adsb_last_position_at);
+      const aisLastMs = parseTimestampMs(status.ais_last_position_at);
+      const adsbStale = !Number.isFinite(adsbLastMs) || (nowMs - adsbLastMs) >= thresholdMs;
+      const aisStale = !Number.isFinite(aisLastMs) || (nowMs - aisLastMs) >= thresholdMs;
+      const shouldShow = adsbStale && aisStale;
+      receptionWarning.hidden = !shouldShow;
+      receptionWarning.textContent = shouldShow
+        ? "Varning: ingen positionsdata från AIS eller ADS-B har mottagits de senaste 2 timmarna."
+        : "";
     }}
 
     function buildTrailPoint(sample, fallbackTsMs = NaN) {{
@@ -2248,6 +2467,7 @@ def _build_radar_html(
       drawSelectionBox();
       syncRangeInput(rangeKm);
       ensureMapContoursForView(rangeKm);
+      updateReceptionWarning();
       const status = error ? `Error: ${{error}}` : `${{visible}} visible / ${{targets.length}} total`;
       const contourErrorText = showMapContours && mapContourError ? ` | Konturer: ${{mapContourError}}` : "";
       meta.textContent = `View: ${{viewCenter.lat.toFixed(6)}}, ${{viewCenter.lon.toFixed(6)}} | Ringavstand: ${{ringSpacingKm.toFixed(2)}} km | ${{status}}${{contourErrorText}}`;
@@ -2274,6 +2494,7 @@ def _build_radar_html(
         targets = loadedTargets.filter(isDynamicTrackTarget);
         updateTrailCacheFromTargets(targets);
         radioConnected = Boolean(payload.radio_connected);
+        receptionStatus = normalizeReceptionStatus(payload.reception_status);
         const latestLastSeenMs = deriveLatestLastSeenMs(targets);
         if (Number.isFinite(latestLastSeenMs)) {{
           if (Number.isFinite(lastSeenWatermarkMs) && latestLastSeenMs > lastSeenWatermarkMs) {{
@@ -2294,6 +2515,7 @@ def _build_radar_html(
       }} catch (err) {{
         error = err instanceof Error ? err.message : String(err);
         radioConnected = false;
+        receptionStatus = normalizeReceptionStatus(null);
         nextPollMs = clampPollMs(nextPollMs * pollBackoffFactor);
       }} finally {{
         requestInFlight = false;
@@ -2481,7 +2703,19 @@ def _build_history_radar_html(
     .hud-right {{
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
       gap: 12px;
+    }}
+    .status-warning {{
+      border: 1px solid #8b5a1b;
+      background: rgba(72, 42, 8, 0.68);
+      color: #ffd48f;
+      padding: 6px 10px;
+      font-size: 12px;
+      line-height: 1.4;
+    }}
+    .status-warning[hidden] {{
+      display: none;
     }}
     .zoom-controls {{
       display: inline-flex;
@@ -2625,6 +2859,93 @@ def _build_history_radar_html(
       color: var(--panel-dim);
       font-size: 12px;
     }}
+    .panel-filter-row {{
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }}
+    .panel-filter-control {{
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 6px;
+      color: var(--panel-dim);
+      font-size: 12px;
+      min-width: 0;
+    }}
+    .panel-filter-control select,
+    .panel-filter-control input {{
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid #226322;
+      background: #041104;
+      color: var(--panel-fg);
+      font: inherit;
+      padding: 6px 8px;
+      min-height: 34px;
+    }}
+    .panel-filter-control select:focus,
+    .panel-filter-control input:focus {{
+      outline: none;
+      border-color: #2f8b2f;
+      background: #0a1f0a;
+    }}
+    .panel-action-button {{
+      border: 1px solid #226322;
+      background: #051805;
+      color: var(--panel-fg);
+      font: inherit;
+      padding: 6px 10px;
+      cursor: pointer;
+    }}
+    .panel-action-button:hover {{
+      background: #0a260a;
+    }}
+    .modal-backdrop {{
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      background: rgba(0, 0, 0, 0.74);
+    }}
+    .modal-backdrop[hidden] {{
+      display: none;
+    }}
+    .modal-card {{
+      width: min(460px, calc(100vw - 32px));
+      border: 1px solid #226322;
+      background: #020b02;
+      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+    }}
+    .modal-head {{
+      padding: 12px 14px;
+      border-bottom: 1px solid #154815;
+    }}
+    .modal-title {{
+      color: var(--radar-fg);
+      font-size: 14px;
+      margin-bottom: 6px;
+    }}
+    .modal-copy {{
+      color: var(--panel-dim);
+      font-size: 12px;
+      line-height: 1.45;
+    }}
+    .modal-body {{
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 14px;
+    }}
+    .modal-actions {{
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-wrap: wrap;
+    }}
     @media (max-width: 1000px) {{
       .screen {{
         flex-direction: column;
@@ -2675,6 +2996,7 @@ def _build_history_radar_html(
           Visa kust/sjö-konturer
         </label>
         <div id="meta" class="dim">Center: {center_lat:.6f}, {center_lon:.6f}</div>
+        <div id="historyReceptionWarning" class="status-warning" hidden></div>
       </div>
     </div>
     <div class="screen">
@@ -2773,6 +3095,8 @@ def _build_history_radar_html(
     const maxRangeKm = 500.0;
     const radarRingColor = "#2c7a2c";
     const selectedTargetColor = "#ff4d4d";
+    const unselectedHistoryTargetColor = "#72E972";
+    const unselectedHistoryTrailColor = "#4AE34A";
     const defaultMapSource = {json.dumps(default_map_source)};
     const fixedObjects = {fixed_objects_json};
     const canvas = document.getElementById("radar");
@@ -2796,6 +3120,7 @@ def _build_history_radar_html(
     const historyTimeFilterApplyButton = document.getElementById("historyTimeFilterApplyButton");
     const historyTimeFilterClearButton = document.getElementById("historyTimeFilterClearButton");
     const historyTimeFilterCancelButton = document.getElementById("historyTimeFilterCancelButton");
+    const historyReceptionWarning = document.getElementById("historyReceptionWarning");
     const ctx = canvas.getContext("2d");
 
     let historyTargets = [];
@@ -2808,8 +3133,10 @@ def _build_history_radar_html(
     let selectedPositionCount = 0;
     let selectedLastSeen = null;
     let selectedHistoryPoints = [];
+    let historyTracksInViewByTargetId = new Map();
     let historyObservedAfterIso = null;
     let historyObservedBeforeIso = null;
+    let receptionStatus = null;
     let error = null;
     let viewCenter = {{ ...homeCenter }};
     let manualRangeKm = defaultRangeKm;
@@ -2830,6 +3157,10 @@ def _build_history_radar_html(
     let historyTargetsInViewRequestKey = null;
     let historyTargetsInViewLoadedKey = null;
     let historyTargetsInViewRequestInFlight = false;
+    let historyTracksInViewRequestKey = null;
+    let historyTracksInViewLoadedKey = null;
+    let historyTracksInViewRequestInFlight = false;
+    let historyTracksInViewRequestToken = 0;
 
     function clampUnitInterval(value) {{
       if (!Number.isFinite(value)) return 0;
@@ -2867,6 +3198,15 @@ def _build_history_radar_html(
       const emphasis = Math.pow(1 - clampedAge, 0.85);
       return blendHexColors(radarRingColor, targetColor, emphasis);
     }}
+
+    function hasActiveHistoryTimeFilter() {{
+      return Boolean(historyObservedAfterIso || historyObservedBeforeIso);
+    }}
+
+    function shouldDrawUnselectedHistoryTracks() {{
+      return !selectedTargetId && hasActiveHistoryTimeFilter();
+    }}
+
     function clampRangeKm(value) {{
       return Math.max(minRangeKm, Math.min(maxRangeKm, value));
     }}
@@ -2901,6 +3241,48 @@ def _build_history_radar_html(
       if (typeof value !== "string" || !value.trim()) return NaN;
       const parsed = Date.parse(value);
       return Number.isFinite(parsed) ? parsed : NaN;
+    }}
+
+    function normalizeReceptionStatus(rawStatus) {{
+      if (!rawStatus || typeof rawStatus !== "object") {{
+        return {{
+          threshold_ms: 2 * 60 * 60 * 1000,
+          adsb_last_position_at: null,
+          ais_last_position_at: null,
+        }};
+      }}
+      const thresholdHours = toOptionalNumber(rawStatus.threshold_hours);
+      return {{
+        threshold_ms: Number.isFinite(thresholdHours) && thresholdHours > 0
+          ? thresholdHours * 60 * 60 * 1000
+          : 2 * 60 * 60 * 1000,
+        adsb_last_position_at: typeof rawStatus.adsb_last_position_at === "string"
+          ? rawStatus.adsb_last_position_at
+          : null,
+        ais_last_position_at: typeof rawStatus.ais_last_position_at === "string"
+          ? rawStatus.ais_last_position_at
+          : null,
+      }};
+    }}
+
+    function updateReceptionWarning() {{
+      if (!(historyReceptionWarning instanceof HTMLElement)) return;
+      const status = receptionStatus && typeof receptionStatus === "object"
+        ? receptionStatus
+        : normalizeReceptionStatus(null);
+      const nowMs = Date.now();
+      const thresholdMs = Number.isFinite(status.threshold_ms)
+        ? status.threshold_ms
+        : 2 * 60 * 60 * 1000;
+      const adsbLastMs = parseTimestampMs(status.adsb_last_position_at);
+      const aisLastMs = parseTimestampMs(status.ais_last_position_at);
+      const adsbStale = !Number.isFinite(adsbLastMs) || (nowMs - adsbLastMs) >= thresholdMs;
+      const aisStale = !Number.isFinite(aisLastMs) || (nowMs - aisLastMs) >= thresholdMs;
+      const shouldShow = adsbStale && aisStale;
+      historyReceptionWarning.hidden = !shouldShow;
+      historyReceptionWarning.textContent = shouldShow
+        ? "Varning: ingen positionsdata från AIS eller ADS-B har mottagits de senaste 2 timmarna."
+        : "";
     }}
 
     function formatHistoryFilterDateLabel(isoValue) {{
@@ -2995,6 +3377,14 @@ def _build_history_radar_html(
       selectedPositionCount = 0;
       selectedLastSeen = null;
       selectedHistoryPoints = [];
+    }}
+
+    function clearHistoryTracksInViewState() {{
+      historyTracksInViewByTargetId = new Map();
+      historyTracksInViewLoadedKey = null;
+      historyTracksInViewRequestKey = null;
+      historyTracksInViewRequestInFlight = false;
+      historyTracksInViewRequestToken += 1;
     }}
 
     function updateHistoryTimeFilterSummary() {{
@@ -3223,6 +3613,16 @@ def _build_history_radar_html(
       ].join("|");
     }}
 
+    function historyTracksInViewRequestKeyForView(rangeKm) {{
+      return [
+        viewCenter.lat.toFixed(4),
+        viewCenter.lon.toFixed(4),
+        rangeKm.toFixed(3),
+        historyObservedAfterIso || "all",
+        historyObservedBeforeIso || "all",
+      ].join("|");
+    }}
+
     function normalizeMapContourFeatures(features) {{
       if (!Array.isArray(features)) return [];
       return features.filter((feature) => feature && typeof feature === "object");
@@ -3405,6 +3805,60 @@ def _build_history_radar_html(
       void loadHistoryTargetsInView(rangeKm);
     }}
 
+    async function loadHistoryTracksInView(rangeKm) {{
+      if (!shouldDrawUnselectedHistoryTracks()) return;
+      if (dragStart) return;
+      if (historyTracksInViewRequestInFlight) return;
+      const requestKey = historyTracksInViewRequestKeyForView(rangeKm);
+      if (
+        requestKey === historyTracksInViewLoadedKey
+        || requestKey === historyTracksInViewRequestKey
+      ) {{
+        return;
+      }}
+
+      historyTracksInViewRequestInFlight = true;
+      historyTracksInViewRequestKey = requestKey;
+      const requestToken = historyTracksInViewRequestToken + 1;
+      historyTracksInViewRequestToken = requestToken;
+      try {{
+        const params = new URLSearchParams({{
+          center_lat: viewCenter.lat.toFixed(6),
+          center_lon: viewCenter.lon.toFixed(6),
+          range_km: rangeKm.toFixed(3),
+        }});
+        appendHistoryTimeFilterParams(params);
+        const response = await fetch(`ui/history-tracks-in-view?${{params.toString()}}`, {{
+          cache: "no-store",
+        }});
+        if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
+        const payload = await response.json();
+        if (historyTracksInViewRequestToken !== requestToken) return;
+        historyTracksInViewByTargetId = normalizeHistoryTracksByTarget(payload.tracks);
+        historyTracksInViewLoadedKey = requestKey;
+      }} catch (err) {{
+        if (historyTracksInViewRequestToken !== requestToken) return;
+        historyTracksInViewByTargetId = new Map();
+        historyTracksInViewLoadedKey = null;
+      }} finally {{
+        if (historyTracksInViewRequestToken === requestToken) {{
+          historyTracksInViewRequestInFlight = false;
+          historyTracksInViewRequestKey = null;
+        }}
+        draw();
+      }}
+    }}
+
+    function ensureHistoryTracksInView(rangeKm) {{
+      if (!shouldDrawUnselectedHistoryTracks()) {{
+        if (historyTracksInViewByTargetId.size > 0 || historyTracksInViewLoadedKey || historyTracksInViewRequestKey) {{
+          clearHistoryTracksInViewState();
+        }}
+        return;
+      }}
+      void loadHistoryTracksInView(rangeKm);
+    }}
+
     function drawFixedObjects(cx, cy, pxPerKm, radius, rangeKm) {{
       if (!Array.isArray(fixedObjects) || fixedObjects.length === 0) return;
       ctx.save();
@@ -3516,6 +3970,20 @@ def _build_history_radar_html(
         .sort((a, b) => a.ts_ms - b.ts_ms);
     }}
 
+    function normalizeHistoryTracksByTarget(tracks) {{
+      const next = new Map();
+      if (!Array.isArray(tracks)) return next;
+      for (const track of tracks) {{
+        if (!track || typeof track !== "object") continue;
+        const targetId = typeof track.target_id === "string" ? track.target_id : "";
+        if (!targetId) continue;
+        const points = normalizeHistoryPoints(track.observations);
+        if (points.length === 0) continue;
+        next.set(targetId, points);
+      }}
+      return next;
+    }}
+
     function fitHistoryToView(points) {{
       if (!Array.isArray(points) || points.length === 0) return false;
 
@@ -3616,6 +4084,88 @@ def _build_history_radar_html(
       ctx.restore();
     }}
 
+    function historyTargetsMatchingActiveFilters() {{
+      return historyTargets
+        .filter((target) => matchesTargetTypeFilter(target, historyTargetTypeFilter))
+        .filter((target) => matchesHistorySpeedFilter(target, historyMinSpeedFilter))
+        .filter((target) => {{
+          const targetId = typeof target?.target_id === "string" ? target.target_id : "";
+          return targetId && historyTracksInViewByTargetId.has(targetId);
+        }});
+    }}
+
+    function drawUnselectedHistoryTracks(cx, cy, pxPerKm, radius) {{
+      if (!shouldDrawUnselectedHistoryTracks()) return;
+      const visibleTargets = historyTargetsMatchingActiveFilters();
+      if (visibleTargets.length === 0) return;
+
+      ctx.save();
+      ctx.lineWidth = 1.3;
+      ctx.setLineDash([4, 3]);
+      ctx.globalAlpha = 0.95;
+      for (const target of visibleTargets) {{
+        const targetId = typeof target?.target_id === "string" ? target.target_id : "";
+        const historyPoints = historyTracksInViewByTargetId.get(targetId);
+        if (!Array.isArray(historyPoints) || historyPoints.length < 2) continue;
+        for (let i = 1; i < historyPoints.length; i += 1) {{
+          const previousPoint = historyPoints[i - 1];
+          const currentPoint = historyPoints[i];
+          const previousOffset = toOffsetKm(previousPoint.lat, previousPoint.lon, viewCenter);
+          const currentOffset = toOffsetKm(currentPoint.lat, currentPoint.lon, viewCenter);
+          const clippedSegment = clipSegmentToCircle(
+            {{
+              x: cx + (previousOffset.dx * pxPerKm),
+              y: cy - (previousOffset.dy * pxPerKm),
+            }},
+            {{
+              x: cx + (currentOffset.dx * pxPerKm),
+              y: cy - (currentOffset.dy * pxPerKm),
+            }},
+            cx,
+            cy,
+            radius,
+          );
+          if (!clippedSegment) continue;
+          ctx.strokeStyle = unselectedHistoryTrailColor;
+          ctx.beginPath();
+          ctx.moveTo(clippedSegment.start.x, clippedSegment.start.y);
+          ctx.lineTo(clippedSegment.end.x, clippedSegment.end.y);
+          ctx.stroke();
+        }}
+      }}
+      ctx.restore();
+    }}
+
+    function drawUnselectedHistoryTargets(cx, cy, pxPerKm, radius) {{
+      if (!shouldDrawUnselectedHistoryTracks()) return;
+      const visibleTargets = historyTargetsMatchingActiveFilters();
+      if (visibleTargets.length === 0) return;
+
+      ctx.save();
+      ctx.font = "bold 10px Courier New, monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = unselectedHistoryTargetColor;
+      for (const target of visibleTargets) {{
+        const targetId = typeof target?.target_id === "string" ? target.target_id : "";
+        const historyPoints = historyTracksInViewByTargetId.get(targetId);
+        if (!Array.isArray(historyPoints) || historyPoints.length === 0) continue;
+        const latestPoint = historyPoints[historyPoints.length - 1];
+        if (!latestPoint) continue;
+        const {{ dx, dy }} = toOffsetKm(latestPoint.lat, latestPoint.lon, viewCenter);
+        const x = cx + (dx * pxPerKm);
+        const y = cy - (dy * pxPerKm);
+        if (!isInsideRadarCircle(x, y, cx, cy, radius)) continue;
+
+        const symbol = target.kind === "vessel" ? "🞜" : "🞋";
+        ctx.fillText(symbol, x, y);
+        if (showTargetLabels) {{
+          drawMapTargetLabel(target.label || targetId || "", x, y, unselectedHistoryTargetColor);
+        }}
+      }}
+      ctx.restore();
+    }}
+
     function renderHistoryCards(items) {{
       if (items.length === 0) {{
         const emptyText = historyObservedBeforeIso
@@ -3700,12 +4250,14 @@ def _build_history_radar_html(
         if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
         const payload = await response.json();
         historyTargets = Array.isArray(payload.targets) ? payload.targets : [];
+        receptionStatus = normalizeReceptionStatus(payload.reception_status);
         if (selectedTargetId && !findHistoryTargetById(selectedTargetId)) {{
           clearSelectedTargetState();
         }}
         error = null;
       }} catch (err) {{
         historyTargets = [];
+        receptionStatus = normalizeReceptionStatus(null);
         error = err instanceof Error ? err.message : String(err);
       }} finally {{
         renderHistoryPanel();
@@ -3788,6 +4340,7 @@ def _build_history_radar_html(
       historyTargetsInView = new Set();
       historyTargetsInViewLoadedKey = null;
       historyTargetsInViewRequestKey = null;
+      clearHistoryTracksInViewState();
       await loadHistoryTargets();
       if (selectedTargetId) {{
         await refreshSelectedTargetHistory();
@@ -3858,12 +4411,16 @@ def _build_history_radar_html(
 
       drawMapContours(cx, cy, pxPerKm, radius);
       drawFixedObjects(cx, cy, pxPerKm, radius, rangeKm);
+      drawUnselectedHistoryTracks(cx, cy, pxPerKm, radius);
+      drawUnselectedHistoryTargets(cx, cy, pxPerKm, radius);
       drawSelectedHistoryPath(cx, cy, pxPerKm, radius);
       drawSelectedTargetMarker(cx, cy, pxPerKm, radius);
       drawSelectionBox();
       syncRangeInput(rangeKm);
       ensureMapContoursForView(rangeKm);
       ensureHistoryTargetsInView(rangeKm);
+      ensureHistoryTracksInView(rangeKm);
+      updateReceptionWarning();
 
       const contourErrorText = showMapContours && mapContourError ? ` | Konturer: ${{mapContourError}}` : "";
       const historyTimeFilterText = ` | ${{historyTimeFilterSummary.textContent}}`;
