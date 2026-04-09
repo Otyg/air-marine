@@ -24,19 +24,19 @@
     "name": "Utklippan",
     "latitude": 55.9535655, 
     "longitude": 15.699949,
-    "symbol": "🟊"
+    "symbol": "★"
   },
   {
     "name": "Ronneby ATC",
     "latitude": 56.266089, 
     "longitude": 15.272824,
-    "symbol": "🛧"
+    "symbol": "✈"
   },
   {
     "name": "Saltärna",
     "latitude": 56.145590,  
     "longitude": 15.175685,
-    "symbol": "🟊"
+    "symbol": "★"
   }, 
   {
     "name": "Lindö Udde",
@@ -61,7 +61,7 @@
     "name": "Hanö",
     "latitude": 55.9964931, 
     "longitude": 14.7861776,
-    "symbol": "🟊"
+    "symbol": "★"
   },
   {
     "name": "Torhamn",
@@ -80,36 +80,36 @@
     "name": "Långe Jan",
     "latitude": 56.197983, 
     "longitude": 16.3988,
-    "symbol": "🟊"
+    "symbol": "★"
   },
   {
     "name": "Kalmar Airport",
     "latitude": 56.685278, 
     "longitude": 16.2875,
-    "symbol": "🛧"
+    "symbol": "✈"
   },
   {
     "name": "Kristianstad Airport",
     "latitude": 55.911944,
     "longitude": 14.083333,
-    "symbol": "🛧"
+    "symbol": "✈"
   },
   {
     "name": "Växjö Airport",
     "latitude": 56.928889, 
     "longitude": 14.727778,
-    "symbol": "🛧"
+    "symbol": "✈"
   },
   {
     "name": "Uråsa",
     "latitude": 56.681389,
     "longitude": 14.946667,
-    "symbol": "🛧"
+    "symbol": "✈"
   }, 
   {
     "name": "Kosta Skjutfält",
     "latitude": 56.86, 
     "longitude": 15.5,
-    "symbol": "🛧"
+    "symbol": "✈"
   }
 ]
