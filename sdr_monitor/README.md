@@ -139,6 +139,38 @@ The service starts:
 4. Background scanner loop
 5. FastAPI server
 
+## Run in background (systemd, survives logout)
+
+Use a user-level `systemd` service so the app keeps running even when you are not logged in.
+
+Install and start:
+
+```bash
+cd sdr_monitor
+./scripts/install_systemd_user_service.sh
+```
+
+Enable lingering once so user services continue after logout/reboot:
+
+```bash
+sudo loginctl enable-linger "$USER"
+```
+
+Service commands:
+
+```bash
+systemctl --user status sdr-monitor.service
+systemctl --user restart sdr-monitor.service
+systemctl --user stop sdr-monitor.service
+journalctl --user -u sdr-monitor.service -f
+```
+
+If you prefer manual setup, use the template unit file:
+
+```bash
+./deploy/systemd/sdr-monitor.service
+```
+
 ## API endpoints
 
 - `GET /` (radar-like web UI)
