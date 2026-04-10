@@ -393,6 +393,8 @@ def test_history_radar_ui_renders_html_with_history_panel() -> None:
     assert "function drawSelectedHistoryPath(cx, cy, pxPerKm, radius)" in response.text
     assert "function drawUnselectedHistoryTracks(cx, cy, pxPerKm, radius)" in response.text
     assert "function drawUnselectedHistoryTargets(cx, cy, pxPerKm, radius)" in response.text
+    assert "const historyTrackMaxGapMs = 20 * 60 * 1000;" in response.text
+    assert "function shouldConnectHistoryPoints(leftPoint, rightPoint)" in response.text
     assert "fetch(`ui/history-tracks-in-view?${params.toString()}`" in response.text
     assert "#72E972" in response.text
     assert "#4AE34A" in response.text

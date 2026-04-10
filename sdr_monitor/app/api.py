@@ -2065,6 +2065,11 @@ def _build_radar_html(
       ctx.setLineDash([4, 3]);
       if (canvasPoints.length > 1) {{
         for (let i = 1; i < canvasPoints.length; i += 1) {{
+          const previousHistoryPoint = selectedHistoryPoints[i - 1];
+          const currentHistoryPoint = selectedHistoryPoints[i];
+          if (!shouldConnectHistoryPoints(previousHistoryPoint, currentHistoryPoint)) {{
+            continue;
+          }}
           const ageRank = canvasPoints.length <= 1 ? 1 : 1 - (i / (canvasPoints.length - 1));
           const clippedSegment = clipSegmentToCircle(
             canvasPoints[i - 1],
@@ -3204,6 +3209,7 @@ def _build_history_radar_html(
     let historyTracksInViewLoadedKey = null;
     let historyTracksInViewRequestInFlight = false;
     let historyTracksInViewRequestToken = 0;
+    const historyTrackMaxGapMs = 20 * 60 * 1000;
 
     function clampUnitInterval(value) {{
       if (!Number.isFinite(value)) return 0;
@@ -4027,6 +4033,16 @@ def _build_history_radar_html(
       return next;
     }}
 
+    function shouldConnectHistoryPoints(leftPoint, rightPoint) {{
+      if (!leftPoint || !rightPoint) return false;
+      const leftTsMs = Number(leftPoint.ts_ms);
+      const rightTsMs = Number(rightPoint.ts_ms);
+      if (!Number.isFinite(leftTsMs) || !Number.isFinite(rightTsMs)) {{
+        return true;
+      }}
+      return Math.abs(rightTsMs - leftTsMs) <= historyTrackMaxGapMs;
+    }}
+
     function fitHistoryToView(points) {{
       if (!Array.isArray(points) || points.length === 0) return false;
 
@@ -4075,6 +4091,9 @@ def _build_history_radar_html(
       ctx.setLineDash([4, 3]);
       if (canvasPoints.length > 1) {{
         for (let i = 1; i < canvasPoints.length; i += 1) {{
+          const previousHistoryPoint = selectedHistoryPoints[i - 1];
+          const currentHistoryPoint = selectedHistoryPoints[i];
+          if (!shouldConnectHistoryPoints(previousHistoryPoint, currentHistoryPoint)) continue;
           const ageRank = canvasPoints.length <= 1 ? 1 : 1 - (i / (canvasPoints.length - 1));
           const clippedSegment = clipSegmentToCircle(
             canvasPoints[i - 1],
@@ -4153,6 +4172,7 @@ def _build_history_radar_html(
         for (let i = 1; i < historyPoints.length; i += 1) {{
           const previousPoint = historyPoints[i - 1];
           const currentPoint = historyPoints[i];
+          if (!shouldConnectHistoryPoints(previousPoint, currentPoint)) continue;
           const previousOffset = toOffsetKm(previousPoint.lat, previousPoint.lon, viewCenter);
           const currentOffset = toOffsetKm(currentPoint.lat, currentPoint.lon, viewCenter);
           const clippedSegment = clipSegmentToCircle(

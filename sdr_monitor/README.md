@@ -184,6 +184,21 @@ If you prefer manual setup, use the template unit file:
 - `GET /stats`
 - `GET /history/{target_id}?limit=100`
 
+Set scanner selection via API:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/scanner/scan" \
+  -H "Content-Type: application/json" \
+  -d '{"scan":["AIS","ADS","FLARM"]}'
+```
+
+Examples:
+
+- AIS only: `{"scan":["AIS"]}`
+- ADS-B only: `{"scan":["ADS"]}`
+- FLARM/OGN only: `{"scan":["FLARM"]}`
+- Hybrid without FLARM: `{"scan":["AIS","ADS"]}`
+
 ## Nginx reverse proxy on `/radar/`
 
 The frontend uses relative UI/API paths, so it works both:
