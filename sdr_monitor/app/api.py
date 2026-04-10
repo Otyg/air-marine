@@ -15,7 +15,7 @@ from app.health import build_health_report
 from app.logging_setup import get_logger
 from app.map_contours import BBox, MapContourService
 from app.models import TargetKind
-from app.scanner import SCAN_MODE_VALUES, HybridBandScanner
+from app.scanner import SCAN_MODE_VALUES, SCAN_VALUES, HybridBandScanner
 from app.state import LiveState
 from app.store import SQLiteStore
 
@@ -95,6 +95,8 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
             "last_error": scanner_status.get("last_error"),
             "cycle_count": scanner_status.get("cycle_count"),
             "scan_mode": scanner_status.get("scan_mode"),
+            "scan": scanner_status.get("scan"),
+            "supported_scan": scanner_status.get("supported_scan"),
             "adsb_window_seconds": scanner_status.get("adsb_window_seconds"),
             "ogn_window_seconds": scanner_status.get("ogn_window_seconds"),
             "ais_window_seconds": scanner_status.get("ais_window_seconds"),
@@ -309,6 +311,16 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
             "supported_scan_modes": list(SCAN_MODE_VALUES),
         }
 
+    @app.get("/scanner/scan")
+    async def get_scanner_scan_targets() -> dict[str, Any]:
+        if runtime.scanner is None:
+            raise HTTPException(status_code=503, detail="Scanner is not configured.")
+        scanner_status = runtime.scanner.status()
+        return {
+            "scan": list(scanner_status.get("scan") or []),
+            "supported_scan": list(scanner_status.get("supported_scan") or SCAN_VALUES),
+        }
+
     @app.post("/scanner/mode")
     async def set_scanner_mode(payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
         if runtime.scanner is None:
@@ -328,6 +340,27 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
         return {
             "scan_mode": scanner_status.get("scan_mode"),
             "supported_scan_modes": list(SCAN_MODE_VALUES),
+        }
+
+    @app.post("/scanner/scan")
+    async def set_scanner_scan_targets(payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        if runtime.scanner is None:
+            raise HTTPException(status_code=503, detail="Scanner is not configured.")
+
+        requested_scan = payload.get("scan")
+        if not isinstance(requested_scan, list):
+            raise HTTPException(status_code=422, detail="scan must be an array.")
+
+        try:
+            runtime.scanner.set_scan_targets(requested_scan)
+        except ValueError as exc:
+            LOGGER.exception("Failed to set scanner scan targets.")
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        scanner_status = runtime.scanner.status()
+        return {
+            "scan": list(scanner_status.get("scan") or []),
+            "supported_scan": list(scanner_status.get("supported_scan") or SCAN_VALUES),
         }
 
     @app.get("/health")
@@ -533,27 +566,36 @@ def _build_radar_html(
     .status-warning[hidden] {{
       display: none;
     }}
-    .scan-mode-control {{
+    .scan-toggle-group {{
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      color: var(--panel-dim);
-      font-size: 12px;
       white-space: nowrap;
     }}
-    .scan-mode-control select {{
-      border: 1px solid #226322;
-      background: #041104;
-      color: var(--panel-fg);
-      font: inherit;
-      padding: 2px 6px;
-      height: 28px;
-      min-width: 170px;
+    .scan-toggle-label {{
+      color: var(--panel-dim);
+      font-size: 12px;
     }}
-    .scan-mode-control select:focus {{
-      outline: none;
+    .scan-status-pill {{
+      border: 1px solid #225522;
+      background: #041104;
+      color: #7ca27c;
+      font: inherit;
+      min-height: 28px;
+      padding: 2px 8px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+    }}
+    .scan-status-pill .icon {{
+      width: 16px;
+      text-align: center;
+    }}
+    .scan-status-pill.is-active {{
       border-color: #2f8b2f;
-      background: #0a1f0a;
+      background: #0c2b0c;
+      color: var(--panel-fg);
     }}
     .zoom-controls {{
       display: inline-flex;
@@ -871,15 +913,18 @@ def _build_radar_html(
           <button id="zoomIn" type="button" aria-label="Zooma in">+</button>
           <button id="zoomReset" type="button" aria-label="Reset range">Hem</button>
         </div>
-        <label class="scan-mode-control" for="scanModeSelect">
-          Mottagning
-          <select id="scanModeSelect" aria-label="Mottagningsläge">
-            <option value="hybrid">Scan AIS + ADS-B + OGN/FLARM/ADS-L</option>
-            <option value="continuous_ais">Kontinuerlig AIS</option>
-            <option value="continuous_adsb">Kontinuerlig ADS-B</option>
-            <option value="continuous_ogn">Kontinuerlig OGN/FLARM/ADS-L</option>
-          </select>
-        </label>
+        <div class="scan-toggle-group" aria-label="Aktiv scanning">
+          <span class="scan-toggle-label">Scannar</span>
+          <span id="scanStatusAIS" class="scan-status-pill" aria-label="AIS scanning status">
+            <span class="icon">⛵</span><span>AIS</span>
+          </span>
+          <span id="scanStatusADS" class="scan-status-pill" aria-label="ADS-B scanning status">
+            <span class="icon">✈</span><span>ADS</span>
+          </span>
+          <span id="scanStatusFLARM" class="scan-status-pill" aria-label="FLARM scanning status">
+            <span class="icon">🛩</span><span>FLARM</span>
+          </span>
+        </div>
         <label class="toggle-control" for="showFixedNames">
           <input id="showFixedNames" type="checkbox" checked />
           Visa namn fasta punkter
@@ -967,7 +1012,9 @@ def _build_radar_html(
     const zoomInButton = document.getElementById("zoomIn");
     const zoomOutButton = document.getElementById("zoomOut");
     const zoomResetButton = document.getElementById("zoomReset");
-    const scanModeSelect = document.getElementById("scanModeSelect");
+    const scanStatusAISElement = document.getElementById("scanStatusAIS");
+    const scanStatusADSElement = document.getElementById("scanStatusADS");
+    const scanStatusFLARMElement = document.getElementById("scanStatusFLARM");
     const rangeInput = document.getElementById("rangeInput");
     const showFixedNamesCheckbox = document.getElementById("showFixedNames");
     const showTargetLabelsCheckbox = document.getElementById("showTargetLabels");
@@ -1008,8 +1055,13 @@ def _build_radar_html(
     const observedUpdateIntervalsMs = [];
     let lastScannerState = null;
     let receptionStatus = null;
-    let scanMode = "hybrid";
-    let scanModeUpdateInFlight = false;
+    const scanOrder = ["AIS", "ADS", "FLARM"];
+    const scanIndicatorsByValue = {{
+      AIS: scanStatusAISElement,
+      ADS: scanStatusADSElement,
+      FLARM: scanStatusFLARMElement,
+    }};
+    let scanSelection = ["AIS", "ADS"];
     let mapContours = [];
     let mapContourSource = defaultMapSource;
     let mapContourStatus = "idle";
@@ -1174,45 +1226,26 @@ def _build_radar_html(
       return clampPollMs((baseMs * 0.65) + (bandAwareMs * 0.35));
     }}
 
-    function scanModeLabel(mode) {{
-      if (mode === "continuous_ais") return "Kontinuerlig AIS";
-      if (mode === "continuous_adsb") return "Kontinuerlig ADS-B";
-      if (mode === "continuous_ogn") return "Kontinuerlig OGN/FLARM/ADS-L";
-      return "Scan AIS + ADS-B + OGN/FLARM/ADS-L";
-    }}
-
-    function syncScanModeSelect() {{
-      if (!(scanModeSelect instanceof HTMLSelectElement)) return;
-      if (document.activeElement === scanModeSelect) return;
-      scanModeSelect.value = scanMode;
-    }}
-
-    async function setScanMode(nextMode) {{
-      if (!(scanModeSelect instanceof HTMLSelectElement)) return;
-      if (scanModeUpdateInFlight) return;
-      scanModeUpdateInFlight = true;
-      scanModeSelect.disabled = true;
-      try {{
-        const response = await fetch("scanner/mode", {{
-          method: "POST",
-          headers: {{ "Content-Type": "application/json" }},
-          body: JSON.stringify({{ scan_mode: nextMode }}),
-        }});
-        if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
-        const payload = await response.json();
-        if (payload && typeof payload.scan_mode === "string") {{
-          scanMode = payload.scan_mode;
-        }} else {{
-          scanMode = nextMode;
+    function normalizeScanSelection(rawValues) {{
+      if (!Array.isArray(rawValues)) return [];
+      const normalized = new Set();
+      for (const value of rawValues) {{
+        if (typeof value !== "string") continue;
+        const normalizedValue = value.trim().toUpperCase();
+        if (scanOrder.includes(normalizedValue)) {{
+          normalized.add(normalizedValue);
         }}
-        error = null;
-      }} catch (err) {{
-        error = err instanceof Error ? err.message : String(err);
-      }} finally {{
-        scanModeUpdateInFlight = false;
-        scanModeSelect.disabled = false;
-        syncScanModeSelect();
-        draw();
+      }}
+      return scanOrder.filter((value) => normalized.has(value));
+    }}
+
+    function syncScanIndicators() {{
+      for (const scanValue of scanOrder) {{
+        const indicator = scanIndicatorsByValue[scanValue];
+        if (!(indicator instanceof HTMLElement)) continue;
+        const isActive = scanSelection.includes(scanValue);
+        indicator.classList.toggle("is-active", isActive);
+        indicator.setAttribute("data-active", isActive ? "true" : "false");
       }}
     }}
 
@@ -2499,10 +2532,10 @@ def _build_radar_html(
           payload
           && payload.scanner
           && typeof payload.scanner === "object"
-          && typeof payload.scanner.scan_mode === "string"
+          && Array.isArray(payload.scanner.scan)
         ) {{
-          scanMode = payload.scanner.scan_mode;
-          syncScanModeSelect();
+          scanSelection = normalizeScanSelection(payload.scanner.scan);
+          syncScanIndicators();
         }}
         const loadedTargets = Array.isArray(payload.targets) ? payload.targets : [];
         targets = loadedTargets.filter(isDynamicTrackTarget);
@@ -2550,11 +2583,7 @@ def _build_radar_html(
     zoomInButton.addEventListener("click", decreaseRange);
     zoomOutButton.addEventListener("click", increaseRange);
     zoomResetButton.addEventListener("click", resetZoom);
-    if (scanModeSelect instanceof HTMLSelectElement) {{
-      scanModeSelect.addEventListener("change", () => {{
-        void setScanMode(scanModeSelect.value);
-      }});
-    }}
+    syncScanIndicators();
     rangeInput.addEventListener("change", applyRangeInput);
     rangeInput.addEventListener("blur", applyRangeInput);
     rangeInput.addEventListener("keydown", (event) => {{

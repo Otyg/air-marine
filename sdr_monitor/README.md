@@ -176,6 +176,8 @@ If you prefer manual setup, use the template unit file:
 - `GET /` (radar-like web UI)
 - `GET /ui/targets-latest`
 - `GET /ui/map-contours?bbox=min_lon,min_lat,max_lon,max_lat&range_km=...&source=hydro|elevation`
+- `GET /scanner/scan`
+- `POST /scanner/scan` with payload like `{ "scan": ["AIS", "ADS", "FLARM"] }`
 - `GET /health`
 - `GET /targets?kind=aircraft|vessel&fresh_only=true|false`
 - `GET /targets/{target_id}`

@@ -5,7 +5,6 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from enum import Enum
 from threading import Event, Lock
 from typing import Any, Callable, Protocol
 
@@ -32,14 +31,8 @@ class ScannerConfig:
     inter_scan_pause_seconds: float = 2.0
 
 
-class ScanMode(str, Enum):
-    HYBRID = "hybrid"
-    CONTINUOUS_AIS = "continuous_ais"
-    CONTINUOUS_ADSB = "continuous_adsb"
-    CONTINUOUS_OGN = "continuous_ogn"
-
-
-SCAN_MODE_VALUES = tuple(mode.value for mode in ScanMode)
+SCAN_VALUES = ("AIS", "ADS", "FLARM")
+SCAN_MODE_VALUES = ("hybrid", "continuous_ais", "continuous_adsb", "continuous_ogn")
 
 
 class HybridBandScanner:
@@ -75,7 +68,8 @@ class HybridBandScanner:
         self._last_scan_switch: datetime | None = None
         self._last_error: str | None = None
         self._cycle_count = 0
-        self._scan_mode = ScanMode.HYBRID
+        self._scan_mode = "hybrid"
+        self._scan_values = self._build_default_scan_values()
 
         if self._config.adsb_window_seconds <= 0:
             raise ValueError("adsb_window_seconds must be > 0")
@@ -90,18 +84,61 @@ class HybridBandScanner:
     def last_error(self) -> str | None:
         return self._last_error
 
-    def set_scan_mode(self, mode: str | ScanMode) -> None:
-        try:
-            resolved_mode = mode if isinstance(mode, ScanMode) else ScanMode(str(mode).strip().lower())
-        except ValueError as exc:
+    def set_scan_mode(self, mode: str) -> None:
+        resolved_mode = str(mode).strip().lower()
+        if resolved_mode not in SCAN_MODE_VALUES:
             valid_modes = ", ".join(SCAN_MODE_VALUES)
-            raise ValueError(f"Unsupported scan mode {mode!r}. Expected one of: {valid_modes}.") from exc
+            raise ValueError(f"Unsupported scan mode {mode!r}. Expected one of: {valid_modes}.")
+
+        scan_map = {
+            "hybrid": self._build_default_scan_values(),
+            "continuous_ais": ("AIS",),
+            "continuous_adsb": ("ADS",),
+            "continuous_ogn": ("FLARM",),
+        }
+        self.set_scan_targets(scan_map[resolved_mode])
         with self._mode_lock:
             self._scan_mode = resolved_mode
 
-    def get_scan_mode(self) -> ScanMode:
+    def get_scan_mode(self) -> str:
         with self._mode_lock:
+            if self._scan_values == ("AIS",):
+                return "continuous_ais"
+            if self._scan_values == ("ADS",):
+                return "continuous_adsb"
+            if self._scan_values == ("FLARM",):
+                return "continuous_ogn"
+            if self._scan_values == self._build_default_scan_values():
+                return "hybrid"
             return self._scan_mode
+
+    def set_scan_targets(self, scan_values: list[str] | tuple[str, ...]) -> None:
+        normalized_values: list[str] = []
+        seen: set[str] = set()
+        for value in scan_values:
+            normalized = str(value).strip().upper()
+            if not normalized:
+                continue
+            if normalized not in SCAN_VALUES:
+                valid = ", ".join(SCAN_VALUES)
+                raise ValueError(f"Unsupported scan value {value!r}. Expected one of: {valid}.")
+            if normalized in seen:
+                continue
+            normalized_values.append(normalized)
+            seen.add(normalized)
+
+        if not normalized_values:
+            raise ValueError("scan must contain at least one of AIS, ADS, FLARM.")
+        if "FLARM" in normalized_values and (self._ogn_reader is None or self._config.ogn_window_seconds <= 0):
+            raise ValueError("FLARM scanning is unavailable; configure OGN reader and window > 0.")
+
+        with self._mode_lock:
+            self._scan_values = tuple(normalized_values)
+            self._scan_mode = "custom"
+
+    def get_scan_targets(self) -> tuple[str, ...]:
+        with self._mode_lock:
+            return self._scan_values
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -115,70 +152,28 @@ class HybridBandScanner:
         """Run one full AIS + ADS-B cycle with pause between scans."""
 
         self._last_cycle_start = self._now_fn()
-        scan_mode = self.get_scan_mode()
+        scan_values = self.get_scan_targets()
+        if not scan_values:  # pragma: no cover - defensive branch
+            self._record_error("scan: no active scan targets")
+            return
 
-        if scan_mode == ScanMode.HYBRID:
+        keep_decoder_running = len(scan_values) == 1
+        for index, scan_value in enumerate(scan_values):
+            band, window_seconds, reader = self._resolve_scan_step(scan_value)
             self._run_band_window(
-                band=ScanBand.AIS,
-                window_seconds=self._config.ais_window_seconds,
-                reader=self._ais_reader,
-                timeout_seconds=self._config.ais_window_seconds,
-                keep_decoder_running=False,
+                band=band,
+                window_seconds=window_seconds,
+                reader=reader,
+                timeout_seconds=window_seconds,
+                keep_decoder_running=keep_decoder_running,
             )
             if self._stop_event.is_set():
                 return
+            if keep_decoder_running or index == len(scan_values) - 1:
+                continue
             self._pause_between_scans()
             if self._stop_event.is_set():
                 return
-            self._run_band_window(
-                band=ScanBand.ADSB,
-                window_seconds=self._config.adsb_window_seconds,
-                reader=self._adsb_reader,
-                timeout_seconds=self._config.adsb_window_seconds,
-                keep_decoder_running=False,
-            )
-            if self._stop_event.is_set():
-                return
-            self._pause_between_scans()
-            if self._stop_event.is_set():
-                return
-            if self._config.ogn_window_seconds > 0:
-                self._run_band_window(
-                    band=ScanBand.OGN,
-                    window_seconds=self._config.ogn_window_seconds,
-                    reader=self._ogn_reader,
-                    timeout_seconds=self._config.ogn_window_seconds,
-                    keep_decoder_running=False,
-                )
-                if self._stop_event.is_set():
-                    return
-                self._pause_between_scans()
-        elif scan_mode == ScanMode.CONTINUOUS_AIS:
-            self._run_band_window(
-                band=ScanBand.AIS,
-                window_seconds=self._config.ais_window_seconds,
-                reader=self._ais_reader,
-                timeout_seconds=self._config.ais_window_seconds,
-                keep_decoder_running=True,
-            )
-        elif scan_mode == ScanMode.CONTINUOUS_ADSB:
-            self._run_band_window(
-                band=ScanBand.ADSB,
-                window_seconds=self._config.adsb_window_seconds,
-                reader=self._adsb_reader,
-                timeout_seconds=self._config.adsb_window_seconds,
-                keep_decoder_running=True,
-            )
-        elif scan_mode == ScanMode.CONTINUOUS_OGN:
-            self._run_band_window(
-                band=ScanBand.OGN,
-                window_seconds=self._config.ogn_window_seconds,
-                reader=self._ogn_reader,
-                timeout_seconds=self._config.ogn_window_seconds,
-                keep_decoder_running=True,
-            )
-        else:  # pragma: no cover - defensive branch
-            self._record_error(f"unsupported scan mode: {scan_mode}")
         self._cycle_count += 1
 
     def run_forever(self, *, max_cycles: int | None = None) -> None:
@@ -203,7 +198,9 @@ class HybridBandScanner:
             "last_scan_switch": self._last_scan_switch,
             "last_error": self._last_error,
             "cycle_count": self._cycle_count,
-            "scan_mode": self.get_scan_mode().value,
+            "scan_mode": self.get_scan_mode(),
+            "scan": list(self.get_scan_targets()),
+            "supported_scan": list(SCAN_VALUES),
             "adsb_window_seconds": self._config.adsb_window_seconds,
             "ogn_window_seconds": self._config.ogn_window_seconds,
             "ais_window_seconds": self._config.ais_window_seconds,
@@ -265,6 +262,23 @@ class HybridBandScanner:
 
     def _record_error(self, message: str) -> None:
         self._last_error = message
+
+    def _build_default_scan_values(self) -> tuple[str, ...]:
+        default_values = ["AIS", "ADS"]
+        if self._ogn_reader is not None and self._config.ogn_window_seconds > 0:
+            default_values.append("FLARM")
+        return tuple(default_values)
+
+    def _resolve_scan_step(self, scan_value: str) -> tuple[ScanBand, float, ObservationReader]:
+        if scan_value == "AIS":
+            return ScanBand.AIS, self._config.ais_window_seconds, self._ais_reader
+        if scan_value == "ADS":
+            return ScanBand.ADSB, self._config.adsb_window_seconds, self._adsb_reader
+        if scan_value == "FLARM":
+            if self._ogn_reader is None or self._config.ogn_window_seconds <= 0:
+                raise ValueError("FLARM scanning is unavailable; configure OGN reader and window > 0.")
+            return ScanBand.OGN, self._config.ogn_window_seconds, self._ogn_reader
+        raise ValueError(f"Unsupported scan value: {scan_value!r}")
 
     def _pause_between_scans(self) -> None:
         pause_seconds = self._config.inter_scan_pause_seconds

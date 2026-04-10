@@ -22,6 +22,19 @@ class FakeScanner:
     def status(self) -> dict:
         return dict(self.payload)
 
+    def set_scan_targets(self, scan_values: list[str]) -> None:
+        allowed = {"AIS", "ADS", "FLARM"}
+        normalized: list[str] = []
+        for value in scan_values:
+            key = str(value).strip().upper()
+            if key not in allowed:
+                raise ValueError("unsupported scan value")
+            if key not in normalized:
+                normalized.append(key)
+        if not normalized:
+            raise ValueError("scan must contain at least one value")
+        self.payload["scan"] = normalized
+
     def set_scan_mode(self, mode: str) -> None:
         allowed = {"hybrid", "continuous_ais", "continuous_adsb", "continuous_ogn"}
         if mode not in allowed:
@@ -243,7 +256,9 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
     assert "id=\"zoomIn\"" in response.text
     assert "id=\"zoomOut\"" in response.text
     assert "id=\"rangeInput\"" in response.text
-    assert "id=\"scanModeSelect\"" in response.text
+    assert "id=\"scanStatusAIS\"" in response.text
+    assert "id=\"scanStatusADS\"" in response.text
+    assert "id=\"scanStatusFLARM\"" in response.text
     assert "id=\"showFixedNames\"" in response.text
     assert "id=\"showTargetLabels\"" in response.text
     assert "id=\"showMapContours\"" in response.text
@@ -260,7 +275,8 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
     assert "}, minAutoRefreshMs);" in response.text
     assert "function computeAdaptivePollMs()" in response.text
     assert "function computeBandAwarePollMs(scannerState)" in response.text
-    assert "function setScanMode(nextMode)" in response.text
+    assert "function syncScanIndicators()" in response.text
+    assert "function setScanSelection(nextSelection)" not in response.text
     assert "scheduleNextLoad(nextPollMs);" in response.text
     assert "void loadTargets();" in response.text
     assert "renderObjectsPanel" in response.text
@@ -776,6 +792,8 @@ def test_targets_latest_ui_endpoint_includes_scanner_timing_fields(tmp_path) -> 
             "last_error": None,
             "cycle_count": 17,
             "scan_mode": "continuous_ais",
+            "scan": ["AIS"],
+            "supported_scan": ["AIS", "ADS", "FLARM"],
             "adsb_window_seconds": 7.0,
             "ogn_window_seconds": 4.0,
             "ais_window_seconds": 9.0,
@@ -791,6 +809,8 @@ def test_targets_latest_ui_endpoint_includes_scanner_timing_fields(tmp_path) -> 
     assert payload["scanner"]["last_scan_switch"] == now.isoformat()
     assert payload["scanner"]["cycle_count"] == 17
     assert payload["scanner"]["scan_mode"] == "continuous_ais"
+    assert payload["scanner"]["scan"] == ["AIS"]
+    assert payload["scanner"]["supported_scan"] == ["AIS", "ADS", "FLARM"]
     assert payload["scanner"]["adsb_window_seconds"] == 7.0
     assert payload["scanner"]["ogn_window_seconds"] == 4.0
     assert payload["scanner"]["ais_window_seconds"] == 9.0
@@ -814,30 +834,29 @@ def test_history_targets_ui_endpoint_includes_reception_status(tmp_path) -> None
     assert payload["reception_status"]["ais_last_position_at"] is None
 
 
-def test_scanner_mode_endpoints_get_and_set() -> None:
+def test_scanner_scan_endpoints_get_and_set() -> None:
     now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
     state = LiveState(clock=lambda: now)
-    scanner = FakeScanner(payload={"scan_mode": "hybrid"})
+    scanner = FakeScanner(payload={"scan_mode": "hybrid", "scan": ["AIS", "ADS"]})
     app = create_api_app(APIRuntime(state=state, store=None, scanner=scanner))
 
-    mode_before = _request(app, "GET", "/scanner/mode")
+    mode_before = _request(app, "GET", "/scanner/scan")
     assert mode_before.status_code == 200
-    assert mode_before.json()["scan_mode"] == "hybrid"
-    assert "continuous_adsb" in mode_before.json()["supported_scan_modes"]
-    assert "continuous_ogn" in mode_before.json()["supported_scan_modes"]
+    assert mode_before.json()["scan"] == ["AIS", "ADS"]
+    assert "FLARM" in mode_before.json()["supported_scan"]
 
     updated = _request(
         app,
         "POST",
-        "/scanner/mode",
-        json={"scan_mode": "continuous_adsb"},
+        "/scanner/scan",
+        json={"scan": ["AIS", "FLARM"]},
     )
     assert updated.status_code == 200
-    assert updated.json()["scan_mode"] == "continuous_adsb"
+    assert updated.json()["scan"] == ["AIS", "FLARM"]
 
-    mode_after = _request(app, "GET", "/scanner/mode")
+    mode_after = _request(app, "GET", "/scanner/scan")
     assert mode_after.status_code == 200
-    assert mode_after.json()["scan_mode"] == "continuous_adsb"
+    assert mode_after.json()["scan"] == ["AIS", "FLARM"]
 
 
 def test_targets_latest_ui_endpoint_includes_recent_positions_when_radio_connected(tmp_path) -> None:

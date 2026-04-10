@@ -114,7 +114,7 @@ def test_run_cycle_switches_bands_and_persists_observations() -> None:
     assert adsb_reader.last_kwargs == {"timeout_seconds": 0.01}
     assert len(store.writes) == 2
     assert state.get_stats()["total_live_targets"] == 2
-    assert sleep_calls == [0.01, 2.0, 0.01, 2.0]
+    assert sleep_calls == [0.01, 2.0, 0.01]
     assert scanner.status()["active_scan_band"] is None
 
 
@@ -277,7 +277,7 @@ def test_run_cycle_includes_ogn_window_when_enabled() -> None:
     assert supervisor.switches == [ScanBand.AIS, ScanBand.ADSB, ScanBand.OGN]
     assert ogn_reader.call_count == 1
     assert ogn_reader.last_kwargs == {"timeout_seconds": 0.02}
-    assert sleep_calls == [0.01, 0.5, 0.01, 0.5, 0.02, 0.5]
+    assert sleep_calls == [0.01, 0.5, 0.01, 0.5, 0.02]
 
 
 def test_continuous_ogn_mode_uses_ogn_reader() -> None:
@@ -308,3 +308,59 @@ def test_continuous_ogn_mode_uses_ogn_reader() -> None:
     assert status["scan_mode"] == "continuous_ogn"
     assert status["supervisor"]["switches"] == ["ogn"]
     assert ogn_reader.call_count == 1
+
+
+def test_set_scan_targets_runs_only_selected_bands_in_order() -> None:
+    now = datetime(2026, 3, 31, 8, 0, tzinfo=timezone.utc)
+    adsb_reader = FakeReader([_obs("adsb:abc123", Source.ADSB)])
+    ogn_reader = FakeReader([_obs("ogn:flarm-abc123", Source.OGN)])
+    ais_reader = FakeReader([_obs("ais:265123456", Source.AIS)])
+    supervisor = FakeSupervisor(switches=[])
+
+    scanner = HybridBandScanner(
+        adsb_reader=adsb_reader,
+        ogn_reader=ogn_reader,
+        ais_reader=ais_reader,
+        state=LiveState(clock=lambda: now),
+        store=None,
+        supervisor=supervisor,  # type: ignore[arg-type]
+        config=ScannerConfig(
+            adsb_window_seconds=0.01,
+            ogn_window_seconds=0.02,
+            ais_window_seconds=0.03,
+            inter_scan_pause_seconds=0.5,
+        ),
+        sleep_fn=lambda seconds: None,
+        now_fn=lambda: now,
+    )
+
+    scanner.set_scan_targets(["ADS", "FLARM"])
+    scanner.run_cycle()
+
+    assert scanner.status()["scan"] == ["ADS", "FLARM"]
+    assert scanner.status()["scan_mode"] == "custom"
+    assert supervisor.switches == [ScanBand.ADSB, ScanBand.OGN]
+    assert ais_reader.call_count == 0
+    assert adsb_reader.call_count == 1
+    assert ogn_reader.call_count == 1
+
+
+def test_set_scan_targets_rejects_empty_selection() -> None:
+    scanner = HybridBandScanner(
+        adsb_reader=FakeReader([]),
+        ogn_reader=None,
+        ais_reader=FakeReader([]),
+        state=LiveState(clock=lambda: datetime(2026, 3, 31, 8, 0, tzinfo=timezone.utc)),
+        store=None,
+        supervisor=FakeSupervisor(switches=[]),  # type: ignore[arg-type]
+        config=ScannerConfig(
+            adsb_window_seconds=0.01,
+            ais_window_seconds=0.01,
+            inter_scan_pause_seconds=0.0,
+        ),
+        sleep_fn=lambda seconds: None,
+        now_fn=lambda: datetime(2026, 3, 31, 8, 0, tzinfo=timezone.utc),
+    )
+
+    with pytest.raises(ValueError, match="at least one"):
+        scanner.set_scan_targets([])
