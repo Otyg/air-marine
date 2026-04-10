@@ -52,6 +52,7 @@ Key runtime variables:
 
 - `SDR_MONITOR_SERVICE_NAME`: service name shown in health payload
 - `SDR_MONITOR_LOG_LEVEL`: `DEBUG|INFO|WARNING|ERROR|CRITICAL`
+- `SDR_MONITOR_STDOUT_LOG_PATH`: optional file path for process `stdout`; defaults to disabled
 - `SDR_MONITOR_STDERR_LOG_PATH`: file path for process `stderr`; defaults to `./data/errors.log`
 - `SDR_MONITOR_ADSB_WINDOW_SECONDS`: ADS-B scan window length
 - `SDR_MONITOR_OGN_WINDOW_SECONDS`: optional OGN/FLARM/ADS-L scan window length; `0` disables glider polling in the scanner loop

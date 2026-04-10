@@ -15,6 +15,7 @@ from app.main import (
     build_decoder_process_config,
     create_service_components,
     is_radio_connected,
+    main as run_main,
     recover_state_from_latest_targets,
     resolve_adsb_snapshot_path,
 )
@@ -259,3 +260,36 @@ def test_startup_prunes_targets_latest_older_than_ten_minutes_when_radio_connect
     assert "adsb:new" in latest_target_ids
     assert "adsb:old" not in latest_target_ids
     asyncio.run(components.app.router.shutdown())
+
+
+def test_main_passes_custom_log_config_to_uvicorn(monkeypatch) -> None:
+    class _FakeConfig:
+        api_host = "127.0.0.1"
+        api_port = 8123
+        log_level = "INFO"
+        service_name = "air-marine"
+
+    class _FakeComponents:
+        app = object()
+        config = _FakeConfig()
+
+    captured: dict[str, object] = {}
+
+    def _fake_create_service_components(**kwargs):  # noqa: ANN003, ARG001
+        return _FakeComponents()
+
+    def _fake_run(app, **kwargs):  # noqa: ANN001, ANN003
+        captured["app"] = app
+        captured.update(kwargs)
+
+    monkeypatch.setattr("app.main.create_service_components", _fake_create_service_components)
+    monkeypatch.setattr("app.main.uvicorn.run", _fake_run)
+
+    run_main()
+
+    assert captured["app"] is _FakeComponents.app
+    assert captured["host"] == "127.0.0.1"
+    assert captured["port"] == 8123
+    assert captured["log_level"] == "info"
+    assert isinstance(captured["log_config"], dict)
+    assert captured["log_config"]["handlers"]["console"]["class"] == "app.logging_setup.ResilientStreamHandler"

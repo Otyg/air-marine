@@ -81,6 +81,7 @@ class Config:
 
     service_name: str = "sdr-monitor"
     log_level: str = "INFO"
+    stdout_log_path: Path | None = None
     stderr_log_path: Path | None = None
     adsb_window_seconds: float = 8.0
     ogn_window_seconds: float = 0.0
@@ -124,6 +125,11 @@ class Config:
                 env_map, f"{ENV_PREFIX}SERVICE_NAME", defaults.service_name
             ),
             log_level=_read_str(env_map, f"{ENV_PREFIX}LOG_LEVEL", defaults.log_level).upper(),
+            stdout_log_path=_read_optional_path(
+                env_map,
+                f"{ENV_PREFIX}STDOUT_LOG_PATH",
+                default=defaults.stdout_log_path,
+            ),
             stderr_log_path=_read_optional_path(
                 env_map,
                 f"{ENV_PREFIX}STDERR_LOG_PATH",
@@ -289,6 +295,9 @@ class Config:
                 f"Invalid {ENV_PREFIX}LOG_LEVEL={self.log_level!r}. "
                 f"Expected one of: {valid_levels}."
             )
+        if self.stdout_log_path is not None and self.stdout_log_path.exists():
+            if self.stdout_log_path.is_dir():
+                raise ValueError(f"{ENV_PREFIX}STDOUT_LOG_PATH must be a file path, not a directory.")
         if self.stderr_log_path is not None and self.stderr_log_path.exists():
             if self.stderr_log_path.is_dir():
                 raise ValueError(f"{ENV_PREFIX}STDERR_LOG_PATH must be a file path, not a directory.")

@@ -19,7 +19,7 @@ from app.fixed_objects import load_fixed_radar_objects
 from app.ingest_adsb import ADSBAircraftJsonIngestor
 from app.ingest_ais import AISTCPIngestor
 from app.ingest_ogn import OGNTCPIngestor
-from app.logging_setup import configure_logging, get_logger
+from app.logging_setup import build_logging_config, configure_logging, get_logger
 from app.map_contours import build_map_contour_service
 from app.models import NormalizedObservation, Target
 from app.scanner import HybridBandScanner, ScannerConfig
@@ -356,6 +356,10 @@ def main() -> None:
         host=components.config.api_host,
         port=components.config.api_port,
         log_level=components.config.log_level.lower(),
+        log_config=build_logging_config(
+            log_level=components.config.log_level,
+            service_name=components.config.service_name,
+        ),
     )
 
 

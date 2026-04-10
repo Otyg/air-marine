@@ -9,6 +9,7 @@ def test_config_uses_defaults_when_env_not_set() -> None:
     config = Config.from_env({})
     assert config.service_name == "sdr-monitor"
     assert config.log_level == "INFO"
+    assert config.stdout_log_path is None
     assert str(config.stderr_log_path) == "data/errors.log"
     assert config.adsb_window_seconds == 8.0
     assert config.ogn_window_seconds == 0.0
@@ -42,6 +43,7 @@ def test_config_reads_environment_values() -> None:
         {
             "SDR_MONITOR_SERVICE_NAME": "air-marine",
             "SDR_MONITOR_LOG_LEVEL": "debug",
+            "SDR_MONITOR_STDOUT_LOG_PATH": "/tmp/sdr-monitor/stdout.log",
             "SDR_MONITOR_STDERR_LOG_PATH": "/tmp/sdr-monitor/stderr.log",
             "SDR_MONITOR_ADSB_WINDOW_SECONDS": "5.5",
             "SDR_MONITOR_OGN_WINDOW_SECONDS": "4",
@@ -74,6 +76,7 @@ def test_config_reads_environment_values() -> None:
     )
     assert config.service_name == "air-marine"
     assert config.log_level == "DEBUG"
+    assert str(config.stdout_log_path) == "/tmp/sdr-monitor/stdout.log"
     assert str(config.stderr_log_path) == "/tmp/sdr-monitor/stderr.log"
     assert config.adsb_window_seconds == 5.5
     assert config.ogn_window_seconds == 4.0
@@ -168,9 +171,22 @@ def test_config_rejects_stderr_log_path_when_directory(tmp_path) -> None:
         Config.from_env({"SDR_MONITOR_STDERR_LOG_PATH": str(logs_dir)})
 
 
+def test_config_rejects_stdout_log_path_when_directory(tmp_path) -> None:
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+
+    with pytest.raises(ValueError, match="STDOUT_LOG_PATH"):
+        Config.from_env({"SDR_MONITOR_STDOUT_LOG_PATH": str(logs_dir)})
+
+
 def test_config_uses_default_stderr_log_path_when_env_is_empty() -> None:
     config = Config.from_env({"SDR_MONITOR_STDERR_LOG_PATH": "   "})
     assert str(config.stderr_log_path) == "data/errors.log"
+
+
+def test_config_uses_default_stdout_log_path_when_env_is_empty() -> None:
+    config = Config.from_env({"SDR_MONITOR_STDOUT_LOG_PATH": "   "})
+    assert config.stdout_log_path is None
 
 
 def test_config_reads_legacy_radar_coordinate_names() -> None:
