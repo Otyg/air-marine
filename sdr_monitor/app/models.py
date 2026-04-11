@@ -262,18 +262,15 @@ class HistoricalTargetSummary:
 class LiveTargetState:
     target: Target
     positions: deque[PositionSample] = field(
-        default_factory=lambda: deque(maxlen=DEFAULT_POSITION_HISTORY_MAXLEN)
+        default_factory=deque
     )
     observation_count: int = 0
     last_source_message_ts: datetime | None = None
     stale_since: datetime | None = None
 
     def __post_init__(self) -> None:
-        if self.positions.maxlen is None:
-            self.positions = deque(
-                self.positions,
-                maxlen=DEFAULT_POSITION_HISTORY_MAXLEN,
-            )
+        if not isinstance(self.positions, deque):
+            self.positions = deque(self.positions)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -282,20 +279,17 @@ class LiveTargetState:
             "observation_count": self.observation_count,
             "last_source_message_ts": _serialize_dt(self.last_source_message_ts),
             "stale_since": _serialize_dt(self.stale_since),
-            "position_history_maxlen": self.positions.maxlen,
         }
 
     @classmethod
     def from_dict(
         cls, payload: dict[str, Any], max_positions: int = DEFAULT_POSITION_HISTORY_MAXLEN
     ) -> "LiveTargetState":
-        configured_max_positions = int(payload.get("position_history_maxlen", max_positions))
         samples = deque(
             (
                 PositionSample.from_dict(item)
                 for item in payload.get("positions", [])
             ),
-            maxlen=configured_max_positions,
         )
 
         return cls(

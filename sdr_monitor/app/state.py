@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from threading import RLock
 from typing import Callable
 
@@ -36,12 +36,9 @@ class LiveState:
             raise ValueError("fresh_seconds must be >= 0")
         if aging_seconds <= fresh_seconds:
             raise ValueError("aging_seconds must be > fresh_seconds")
-        if max_positions_per_target <= 0:
-            raise ValueError("max_positions_per_target must be > 0")
-
         self._fresh_seconds = fresh_seconds
         self._aging_seconds = aging_seconds
-        self._max_positions_per_target = max_positions_per_target
+        self._trail_window = timedelta(seconds=120)
         self._clock = clock or _utcnow
         self._targets: dict[str, LiveTargetState] = {}
         self._lock = RLock()
@@ -79,11 +76,12 @@ class LiveState:
 
                 state = LiveTargetState(
                     target=target,
-                    positions=deque(maxlen=self._max_positions_per_target),
+                    positions=deque(),
                     observation_count=1,
                     last_source_message_ts=observation.observed_at,
                 )
                 self._append_position_if_valid(state, observation)
+                self._prune_positions(state, observation.observed_at)
                 self._refresh_freshness(state, now)
                 self._targets[observation.target_id] = state
                 return self._snapshot(state)
@@ -139,6 +137,7 @@ class LiveState:
             existing.last_source_message_ts = observation.observed_at
 
             self._append_position_if_valid(existing, observation)
+            self._prune_positions(existing, observation.observed_at)
             self._refresh_freshness(existing, now)
             return self._snapshot(existing)
 
@@ -181,6 +180,7 @@ class LiveState:
             state = self._targets.get(target_id)
             if state is None:
                 return None
+            self._prune_positions(state, self._clock())
             self._refresh_freshness(state, self._clock())
             return self._snapshot(state)
 
@@ -264,6 +264,14 @@ class LiveState:
             return
 
         state.positions.append(sample)
+
+    def _prune_positions(self, state: LiveTargetState, reference_ts: datetime) -> None:
+        cutoff = _ensure_aware(reference_ts) - self._trail_window
+        while state.positions:
+            oldest = _ensure_aware(state.positions[0].ts)
+            if oldest >= cutoff:
+                break
+            state.positions.popleft()
 
     def _snapshot(self, state: LiveTargetState) -> LiveTargetState:
         return LiveTargetState(

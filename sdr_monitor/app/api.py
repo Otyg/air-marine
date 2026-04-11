@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 from typing import Any
 
@@ -121,15 +121,18 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
             ) from exc
 
         serialized: list[dict[str, Any]] = []
+        trail_cutoff = runtime.state.now() - timedelta(seconds=120)
         for target in targets:
             item = target.to_dict()
             item["recent_positions"] = []
-            if runtime.radio_connected:
+            speed = target.speed
+            if runtime.radio_connected and speed is not None and speed > 1:
                 state_snapshot = runtime.state.get_target_state(target.target_id)
                 if state_snapshot is not None:
                     item["recent_positions"] = [
                         sample.to_dict()
-                        for sample in list(state_snapshot.positions)[-5:]
+                        for sample in state_snapshot.positions
+                        if sample.ts >= trail_cutoff
                     ]
             serialized.append(item)
 
@@ -2501,12 +2504,19 @@ def _build_radar_html(
         const course = toOptionalNumber(target.course);
         drawRecentPositions(trackedTarget, cx, cy, pxPerKm, radius, x, y);
         const markerColor = isSelected ? selectedTargetColor : liveTargetColor;
-        drawCourseVector(x, y, course, speed, markerColor);
-        ctx.fillStyle = markerColor;
-        const symbol = target.kind === "vessel" ? "◆" : "●";
-        ctx.fillText(symbol, x, y);
-        if (showTargetLabels) {{
-          drawMapTargetLabel(targetDisplayLabel(target), x, y, markerColor);
+        const markerFadeProgress = getTrailFadeProgress(trackedTarget.last_seen || target.last_seen);
+        const markerOpacity = trailOpacityForAgeRank(0, markerFadeProgress);
+        if (markerOpacity > 0.02) {{
+          ctx.save();
+          ctx.globalAlpha = markerOpacity;
+          drawCourseVector(x, y, course, speed, markerColor);
+          ctx.fillStyle = markerColor;
+          const symbol = target.kind === "vessel" ? "◆" : "●";
+          ctx.fillText(symbol, x, y);
+          if (showTargetLabels) {{
+            drawMapTargetLabel(targetDisplayLabel(target), x, y, markerColor);
+          }}
+          ctx.restore();
         }}
         visibleTargets.push(target);
         visible += 1;
@@ -3085,6 +3095,30 @@ def _build_history_radar_html(
         <div id="historyTimeFilterSummary" class="side-panel-summary panel-filter-status">
           Tidsfilter: Alla spår
         </div>
+        <div id="historyReplayControls" class="side-panel-summary panel-filter-status">
+          <div class="panel-filter-row">
+            <button id="historyReplayButton" class="panel-action-button" type="button">
+              Start replay
+            </button>
+            <button id="historyReplayStopButton" class="panel-action-button" type="button" disabled>
+              Stop
+            </button>
+          </div>
+          <label class="panel-filter-control" for="historyReplayProgress">
+            Replay-position
+            <input
+              id="historyReplayProgress"
+              type="range"
+              min="0"
+              max="1000"
+              step="1"
+              value="0"
+              disabled
+              aria-label="Replay-position för historik"
+            />
+          </label>
+          <div id="historyReplayTime" class="dim">Replay: av</div>
+        </div>
         <div id="historyObjectsSummary" class="side-panel-summary">0 objekt med historik</div>
         <div id="historyObjectsList" class="objects-list">
           <div class="objects-empty">Inga historiska objekt.</div>
@@ -3160,6 +3194,10 @@ def _build_history_radar_html(
     const historyMinSpeedFilterInput = document.getElementById("historyMinSpeedFilter");
     const historyTimeFilterButton = document.getElementById("historyTimeFilterButton");
     const historyTimeFilterSummary = document.getElementById("historyTimeFilterSummary");
+    const historyReplayButton = document.getElementById("historyReplayButton");
+    const historyReplayStopButton = document.getElementById("historyReplayStopButton");
+    const historyReplayProgressInput = document.getElementById("historyReplayProgress");
+    const historyReplayTime = document.getElementById("historyReplayTime");
     const historyObjectsSummary = document.getElementById("historyObjectsSummary");
     const historyObjectsList = document.getElementById("historyObjectsList");
     const historyTimeFilterModal = document.getElementById("historyTimeFilterModal");
@@ -3210,6 +3248,18 @@ def _build_history_radar_html(
     let historyTracksInViewRequestInFlight = false;
     let historyTracksInViewRequestToken = 0;
     const historyTrackMaxGapMs = 20 * 60 * 1000;
+    const replayTrailPointWindowSeconds = 120;
+    const replayStaleStartSeconds = 30;
+    const replayStaleFadeSeconds = 270;
+    const replayTickMs = 100;
+    const replayDefaultSpeed = 20;
+    let replayActive = false;
+    let replayIsPlaying = false;
+    let replayStartMs = NaN;
+    let replayEndMs = NaN;
+    let replayCurrentMs = NaN;
+    let replaySpeed = replayDefaultSpeed;
+    let replayTickTimerId = null;
 
     function clampUnitInterval(value) {{
       if (!Number.isFinite(value)) return 0;
@@ -3253,7 +3303,7 @@ def _build_history_radar_html(
     }}
 
     function shouldDrawUnselectedHistoryTracks() {{
-      return !selectedTargetId && hasActiveHistoryTimeFilter();
+      return !replayActive && !selectedTargetId && hasActiveHistoryTimeFilter();
     }}
 
     function clampRangeKm(value) {{
@@ -3448,6 +3498,140 @@ def _build_history_radar_html(
         summary = `Till ${{observedBeforeLabel}}`;
       }}
       historyTimeFilterSummary.textContent = `Tidsfilter: ${{summary}}`;
+    }}
+
+    function trailOpacityForAgeRank(ageRank, fadeProgress) {{
+      if (fadeProgress <= 0) return 1;
+      const clampedRank = Math.max(0, Math.min(1, ageRank));
+      const fadeStart = (1 - clampedRank) * 0.65;
+      const localProgress = Math.max(0, Math.min(1, (fadeProgress - fadeStart) / (1 - fadeStart)));
+      return 1 - localProgress;
+    }}
+
+    function hasReplayTimeRange() {{
+      const startMs = parseTimestampMs(historyObservedAfterIso);
+      const endMs = parseTimestampMs(historyObservedBeforeIso);
+      return Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs;
+    }}
+
+    function formatReplayTimeLabel(tsMs) {{
+      if (!Number.isFinite(tsMs)) return "-";
+      return new Date(tsMs).toLocaleString("sv-SE", {{
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      }});
+    }}
+
+    function stopReplayClock() {{
+      if (replayTickTimerId === null) return;
+      window.clearInterval(replayTickTimerId);
+      replayTickTimerId = null;
+    }}
+
+    function updateReplayControls() {{
+      const hasRange = hasReplayTimeRange();
+      if (!hasRange) {{
+        stopReplayClock();
+        replayActive = false;
+        replayIsPlaying = false;
+        replayStartMs = NaN;
+        replayEndMs = NaN;
+        replayCurrentMs = NaN;
+      }}
+
+      if (historyReplayButton instanceof HTMLButtonElement) {{
+        historyReplayButton.disabled = !hasRange;
+        historyReplayButton.textContent = replayActive
+          ? (replayIsPlaying ? "Pausa replay" : "Fortsätt replay")
+          : "Start replay";
+      }}
+      if (historyReplayStopButton instanceof HTMLButtonElement) {{
+        historyReplayStopButton.disabled = !replayActive;
+      }}
+      if (historyReplayProgressInput instanceof HTMLInputElement) {{
+        const shouldEnableProgress = replayActive && Number.isFinite(replayStartMs) && Number.isFinite(replayEndMs);
+        historyReplayProgressInput.disabled = !shouldEnableProgress;
+        if (shouldEnableProgress) {{
+          const spanMs = Math.max(1, replayEndMs - replayStartMs);
+          const ratio = Math.max(0, Math.min(1, (replayCurrentMs - replayStartMs) / spanMs));
+          historyReplayProgressInput.value = String(Math.round(ratio * 1000));
+        }} else {{
+          historyReplayProgressInput.value = "0";
+        }}
+      }}
+
+      if (historyReplayTime instanceof HTMLElement) {{
+        if (!hasRange) {{
+          historyReplayTime.textContent = "Replay: välj både start och sluttid i tidsfilter.";
+        }} else if (!replayActive) {{
+          historyReplayTime.textContent = "Replay: redo";
+        }} else {{
+          historyReplayTime.textContent = `Replay: ${{formatReplayTimeLabel(replayCurrentMs)}}`;
+        }}
+      }}
+    }}
+
+    function deactivateReplay() {{
+      stopReplayClock();
+      replayActive = false;
+      replayIsPlaying = false;
+      replayStartMs = NaN;
+      replayEndMs = NaN;
+      replayCurrentMs = NaN;
+      updateReplayControls();
+    }}
+
+    function startReplayClock() {{
+      stopReplayClock();
+      replayTickTimerId = window.setInterval(() => {{
+        if (!replayActive || !replayIsPlaying) return;
+        const stepMs = replayTickMs * replaySpeed;
+        replayCurrentMs = Math.min(replayEndMs, replayCurrentMs + stepMs);
+        if (replayCurrentMs >= replayEndMs) {{
+          replayCurrentMs = replayEndMs;
+          replayIsPlaying = false;
+          stopReplayClock();
+        }}
+        updateReplayControls();
+        draw();
+      }}, replayTickMs);
+    }}
+
+    async function toggleReplay() {{
+      if (!hasReplayTimeRange()) {{
+        updateReplayControls();
+        draw();
+        return;
+      }}
+
+      if (!replayActive) {{
+        clearSelectedTargetState();
+        renderHistoryPanel();
+        replayStartMs = parseTimestampMs(historyObservedAfterIso);
+        replayEndMs = parseTimestampMs(historyObservedBeforeIso);
+        replayCurrentMs = replayStartMs;
+        replayActive = true;
+        replayIsPlaying = true;
+        const rangeKm = getViewMetrics().rangeKm;
+        await loadHistoryTracksInView(rangeKm, true);
+        updateReplayControls();
+        startReplayClock();
+        draw();
+        return;
+      }}
+
+      replayIsPlaying = !replayIsPlaying;
+      if (replayIsPlaying) {{
+        startReplayClock();
+      }} else {{
+        stopReplayClock();
+      }}
+      updateReplayControls();
+      draw();
     }}
 
     function setHistoryTimeFilterModalOpen(isOpen) {{
@@ -3854,8 +4038,8 @@ def _build_history_radar_html(
       void loadHistoryTargetsInView(rangeKm);
     }}
 
-    async function loadHistoryTracksInView(rangeKm) {{
-      if (!shouldDrawUnselectedHistoryTracks()) return;
+    async function loadHistoryTracksInView(rangeKm, forceLoad = false) {{
+      if (!forceLoad && !shouldDrawUnselectedHistoryTracks()) return;
       if (dragStart) return;
       if (historyTracksInViewRequestInFlight) return;
       const requestKey = historyTracksInViewRequestKeyForView(rangeKm);
@@ -4229,6 +4413,146 @@ def _build_history_radar_html(
       ctx.restore();
     }}
 
+    function replayTargetsMatchingActiveFilters() {{
+      return historyTargets
+        .filter((target) => matchesTargetTypeFilter(target, historyTargetTypeFilter))
+        .filter((target) => matchesHistorySpeedFilter(target, historyMinSpeedFilter))
+        .filter((target) => {{
+          const targetId = typeof target?.target_id === "string" ? target.target_id : "";
+          return targetId && historyTracksInViewByTargetId.has(targetId);
+        }});
+    }}
+
+    function computeReplayFadeProgress(lastPointTsMs, replayTsMs) {{
+      if (!Number.isFinite(lastPointTsMs) || !Number.isFinite(replayTsMs)) return 0;
+      const inactiveSeconds = Math.max(0, (replayTsMs - lastPointTsMs) / 1000);
+      if (inactiveSeconds <= replayStaleStartSeconds) return 0;
+      return Math.max(
+        0,
+        Math.min(1, (inactiveSeconds - replayStaleStartSeconds) / replayStaleFadeSeconds),
+      );
+    }}
+
+    function buildReplayTargetRenderState(historyPoints, replayTsMs) {{
+      if (!Array.isArray(historyPoints) || historyPoints.length === 0) return null;
+      if (!Number.isFinite(replayTsMs)) return null;
+      let latestIndex = -1;
+      for (let index = historyPoints.length - 1; index >= 0; index -= 1) {{
+        const pointTsMs = Number(historyPoints[index]?.ts_ms);
+        if (Number.isFinite(pointTsMs) && pointTsMs <= replayTsMs) {{
+          latestIndex = index;
+          break;
+        }}
+      }}
+      if (latestIndex < 0) return null;
+
+      const latestPoint = historyPoints[latestIndex];
+      const cutoffMs = replayTsMs - (replayTrailPointWindowSeconds * 1000);
+      const trailPoints = [];
+      for (let index = 0; index <= latestIndex; index += 1) {{
+        const point = historyPoints[index];
+        if (!point || !Number.isFinite(point.ts_ms)) continue;
+        if (point.ts_ms < cutoffMs) continue;
+        trailPoints.push(point);
+      }}
+      if (trailPoints.length === 0) {{
+        trailPoints.push(latestPoint);
+      }}
+
+      return {{
+        latestPoint,
+        trailPoints,
+        fadeProgress: computeReplayFadeProgress(Number(latestPoint.ts_ms), replayTsMs),
+      }};
+    }}
+
+    function drawReplayTargets(cx, cy, pxPerKm, radius) {{
+      if (!replayActive || !Number.isFinite(replayCurrentMs)) return;
+      const filteredTargets = replayTargetsMatchingActiveFilters();
+      if (filteredTargets.length === 0) return;
+
+      for (const target of filteredTargets) {{
+        const targetId = typeof target?.target_id === "string" ? target.target_id : "";
+        if (!targetId) continue;
+        const historyPoints = historyTracksInViewByTargetId.get(targetId);
+        const renderState = buildReplayTargetRenderState(historyPoints, replayCurrentMs);
+        if (!renderState) continue;
+
+        const canvasTrailPoints = [];
+        for (const point of renderState.trailPoints) {{
+          const offset = toOffsetKm(point.lat, point.lon, viewCenter);
+          const canvasPoint = {{
+            x: cx + (offset.dx * pxPerKm),
+            y: cy - (offset.dy * pxPerKm),
+          }};
+          if (!isInsideRadarCircle(canvasPoint.x, canvasPoint.y, cx, cy, radius)) continue;
+          canvasTrailPoints.push(canvasPoint);
+        }}
+        if (canvasTrailPoints.length > 0) {{
+          ctx.save();
+          ctx.lineWidth = 1.3;
+          ctx.setLineDash([4, 3]);
+          if (canvasTrailPoints.length > 1) {{
+            for (let index = 1; index < canvasTrailPoints.length; index += 1) {{
+              const ageRank = canvasTrailPoints.length <= 1
+                ? 1
+                : 1 - (index / (canvasTrailPoints.length - 1));
+              const opacity = trailOpacityForAgeRank(ageRank, renderState.fadeProgress);
+              if (opacity <= 0.02) continue;
+              const clippedSegment = clipSegmentToCircle(
+                canvasTrailPoints[index - 1],
+                canvasTrailPoints[index],
+                cx,
+                cy,
+                radius,
+              );
+              if (!clippedSegment) continue;
+              ctx.globalAlpha = opacity;
+              ctx.strokeStyle = trailColorForAge(ageRank, unselectedHistoryTargetColor);
+              ctx.beginPath();
+              ctx.moveTo(clippedSegment.start.x, clippedSegment.start.y);
+              ctx.lineTo(clippedSegment.end.x, clippedSegment.end.y);
+              ctx.stroke();
+            }}
+          }}
+          canvasTrailPoints.forEach((point, index) => {{
+            const ageRank = canvasTrailPoints.length <= 1
+              ? 0
+              : 1 - (index / (canvasTrailPoints.length - 1));
+            const opacity = trailOpacityForAgeRank(ageRank, renderState.fadeProgress);
+            if (opacity <= 0.02) return;
+            ctx.globalAlpha = opacity;
+            ctx.fillStyle = trailColorForAge(ageRank, unselectedHistoryTargetColor);
+            ctx.beginPath();
+            ctx.arc(point.x, point.y, 1.9, 0, Math.PI * 2);
+            ctx.fill();
+          }});
+          ctx.globalAlpha = 1;
+          ctx.restore();
+        }}
+
+        const latestOffset = toOffsetKm(renderState.latestPoint.lat, renderState.latestPoint.lon, viewCenter);
+        const markerX = cx + (latestOffset.dx * pxPerKm);
+        const markerY = cy - (latestOffset.dy * pxPerKm);
+        if (!isInsideRadarCircle(markerX, markerY, cx, cy, radius)) continue;
+        const markerOpacity = trailOpacityForAgeRank(0, renderState.fadeProgress);
+        if (markerOpacity <= 0.02) continue;
+
+        ctx.save();
+        ctx.globalAlpha = markerOpacity;
+        ctx.font = "bold 10px Courier New, monospace";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = unselectedHistoryTargetColor;
+        const symbol = target.kind === "vessel" ? "🞜" : "🞋";
+        ctx.fillText(symbol, markerX, markerY);
+        if (showTargetLabels) {{
+          drawMapTargetLabel(target.label || targetId || "", markerX, markerY, unselectedHistoryTargetColor);
+        }}
+        ctx.restore();
+      }}
+    }}
+
     function renderHistoryCards(items) {{
       if (items.length === 0) {{
         const emptyText = historyObservedBeforeIso
@@ -4324,6 +4648,7 @@ def _build_history_radar_html(
         error = err instanceof Error ? err.message : String(err);
       }} finally {{
         renderHistoryPanel();
+        updateReplayControls();
         draw();
       }}
     }}
@@ -4378,6 +4703,7 @@ def _build_history_radar_html(
     }}
 
     async function selectTarget(targetId) {{
+      if (replayActive) return;
       if (!targetId) return;
       if (selectedTargetId === targetId) {{
         clearSelectedTargetState();
@@ -4393,6 +4719,7 @@ def _build_history_radar_html(
     }}
 
     async function applyHistoryTimeFilter(nextObservedAfterIso, nextObservedBeforeIso) {{
+      deactivateReplay();
       const normalized = normalizeHistoryTimeFilterRange(
         nextObservedAfterIso,
         nextObservedBeforeIso,
@@ -4407,9 +4734,9 @@ def _build_history_radar_html(
       await loadHistoryTargets();
       if (selectedTargetId) {{
         await refreshSelectedTargetHistory();
-      }} else {{
-        draw();
       }}
+      updateReplayControls();
+      draw();
     }}
 
     function getTargetIdFromPanelEvent(event) {{
@@ -4422,12 +4749,14 @@ def _build_history_radar_html(
     }}
 
     function onHistoryPanelClick(event) {{
+      if (replayActive) return;
       const targetId = getTargetIdFromPanelEvent(event);
       if (!targetId) return;
       void selectTarget(targetId);
     }}
 
     function onHistoryPanelKeyDown(event) {{
+      if (replayActive) return;
       if (event.key !== "Enter" && event.key !== " ") return;
       const targetId = getTargetIdFromPanelEvent(event);
       if (!targetId) return;
@@ -4474,15 +4803,23 @@ def _build_history_radar_html(
 
       drawMapContours(cx, cy, pxPerKm, radius);
       drawFixedObjects(cx, cy, pxPerKm, radius, rangeKm);
-      drawUnselectedHistoryTracks(cx, cy, pxPerKm, radius);
-      drawUnselectedHistoryTargets(cx, cy, pxPerKm, radius);
-      drawSelectedHistoryPath(cx, cy, pxPerKm, radius);
-      drawSelectedTargetMarker(cx, cy, pxPerKm, radius);
+      if (replayActive) {{
+        drawReplayTargets(cx, cy, pxPerKm, radius);
+      }} else {{
+        drawUnselectedHistoryTracks(cx, cy, pxPerKm, radius);
+        drawUnselectedHistoryTargets(cx, cy, pxPerKm, radius);
+        drawSelectedHistoryPath(cx, cy, pxPerKm, radius);
+        drawSelectedTargetMarker(cx, cy, pxPerKm, radius);
+      }}
       drawSelectionBox();
       syncRangeInput(rangeKm);
       ensureMapContoursForView(rangeKm);
       ensureHistoryTargetsInView(rangeKm);
-      ensureHistoryTracksInView(rangeKm);
+      if (replayActive) {{
+        void loadHistoryTracksInView(rangeKm, true);
+      }} else {{
+        ensureHistoryTracksInView(rangeKm);
+      }}
       updateReceptionWarning();
 
       const contourErrorText = showMapContours && mapContourError ? ` | Konturer: ${{mapContourError}}` : "";
@@ -4490,8 +4827,11 @@ def _build_history_radar_html(
       const selectedText = selectedTargetId
         ? `Vald: ${{selectedTargetLabel || selectedTargetId}} | Positioner: ${{selectedPositionCount}} | Last seen: ${{selectedLastSeen || "-"}}`
         : "Vald: inget objekt";
+      const replayText = replayActive
+        ? ` | Replay: ${{replayIsPlaying ? "spelar" : "paus"}} @ ${{formatReplayTimeLabel(replayCurrentMs)}}`
+        : "";
       const errorText = error ? ` | Error: ${{error}}` : "";
-      meta.textContent = `View: ${{viewCenter.lat.toFixed(6)}}, ${{viewCenter.lon.toFixed(6)}} | Ringavstand: ${{ringSpacingKm.toFixed(2)}} km${{historyTimeFilterText}} | ${{selectedText}}${{contourErrorText}}${{errorText}}`;
+      meta.textContent = `View: ${{viewCenter.lat.toFixed(6)}}, ${{viewCenter.lon.toFixed(6)}} | Ringavstand: ${{ringSpacingKm.toFixed(2)}} km${{historyTimeFilterText}} | ${{selectedText}}${{replayText}}${{contourErrorText}}${{errorText}}`;
     }}
 
     window.addEventListener("resize", draw);
@@ -4511,6 +4851,29 @@ def _build_history_radar_html(
     historyTimeFilterButton.addEventListener("click", () => {{
       setHistoryTimeFilterModalOpen(true);
     }});
+    if (historyReplayButton instanceof HTMLButtonElement) {{
+      historyReplayButton.addEventListener("click", () => {{
+        void toggleReplay();
+      }});
+    }}
+    if (historyReplayStopButton instanceof HTMLButtonElement) {{
+      historyReplayStopButton.addEventListener("click", () => {{
+        deactivateReplay();
+        draw();
+      }});
+    }}
+    if (historyReplayProgressInput instanceof HTMLInputElement) {{
+      historyReplayProgressInput.addEventListener("input", () => {{
+        if (!replayActive || !Number.isFinite(replayStartMs) || !Number.isFinite(replayEndMs)) return;
+        const rawValue = Number(historyReplayProgressInput.value);
+        const ratio = Math.max(0, Math.min(1, rawValue / 1000));
+        replayCurrentMs = replayStartMs + ((replayEndMs - replayStartMs) * ratio);
+        replayIsPlaying = false;
+        stopReplayClock();
+        updateReplayControls();
+        draw();
+      }});
+    }}
     historyTimeFilterCancelButton.addEventListener("click", () => {{
       setHistoryTimeFilterModalOpen(false);
     }});
@@ -4613,6 +4976,7 @@ def _build_history_radar_html(
       }}
     }});
     updateHistoryTimeFilterSummary();
+    updateReplayControls();
     draw();
     void loadHistoryTargets();
   </script>

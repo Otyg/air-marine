@@ -76,6 +76,7 @@ def _obs(
     observed_at: datetime,
     lat: float | None,
     lon: float | None,
+    speed: float | None = 120.0,
 ) -> NormalizedObservation:
     is_aircraft = source in {Source.ADSB, Source.OGN}
     return NormalizedObservation(
@@ -86,7 +87,7 @@ def _obs(
         lat=lat,
         lon=lon,
         course=90.0,
-        speed=120.0,
+        speed=speed,
         altitude=1000.0 if is_aircraft else None,
         last_scan_band=(
             ScanBand.ADSB
@@ -367,6 +368,10 @@ def test_history_radar_ui_renders_html_with_history_panel() -> None:
     assert "id=\"historyTimeFilterModal\"" in response.text
     assert "id=\"historyObservedAfterInput\"" in response.text
     assert "id=\"historyObservedBeforeInput\"" in response.text
+    assert "id=\"historyReplayButton\"" in response.text
+    assert "id=\"historyReplayStopButton\"" in response.text
+    assert "id=\"historyReplayProgress\"" in response.text
+    assert "id=\"historyReplayTime\"" in response.text
     assert "id=\"historyReceptionWarning\"" in response.text
     assert ".modal-backdrop[hidden]" in response.text
     assert "position: fixed;" in response.text
@@ -395,6 +400,8 @@ def test_history_radar_ui_renders_html_with_history_panel() -> None:
     assert "function drawUnselectedHistoryTargets(cx, cy, pxPerKm, radius)" in response.text
     assert "const historyTrackMaxGapMs = 20 * 60 * 1000;" in response.text
     assert "function shouldConnectHistoryPoints(leftPoint, rightPoint)" in response.text
+    assert "async function toggleReplay()" in response.text
+    assert "function drawReplayTargets(cx, cy, pxPerKm, radius)" in response.text
     assert "fetch(`ui/history-tracks-in-view?${params.toString()}`" in response.text
     assert "#72E972" in response.text
     assert "#4AE34A" in response.text
@@ -894,3 +901,65 @@ def test_targets_latest_ui_endpoint_includes_recent_positions_when_radio_connect
     recent_positions = payload["targets"][0]["recent_positions"]
     assert len(recent_positions) == 2
     assert recent_positions[-1]["lat"] == 59.0002
+
+
+def test_targets_latest_ui_endpoint_returns_full_two_minute_trail_for_moving_target(tmp_path) -> None:
+    now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+    state = LiveState(clock=lambda: now)
+    store = SQLiteStore(tmp_path / "radar_positions_window.sqlite3")
+    store.initialize()
+
+    for idx in range(7):
+        obs = _obs(
+            target_id="adsb:window",
+            source=Source.ADSB,
+            observed_at=now - timedelta(seconds=(6 - idx) * 10),
+            lat=59.0 + (idx * 0.0001),
+            lon=18.0 + (idx * 0.0001),
+        )
+        snapshot = state.upsert_observation(obs)
+    store.upsert_latest_target(snapshot.target)
+
+    app = create_api_app(APIRuntime(state=state, store=store, radio_connected=True))
+    response = _request(app, "GET", "/ui/targets-latest")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 1
+    recent_positions = payload["targets"][0]["recent_positions"]
+    assert len(recent_positions) == 7
+    assert round(recent_positions[0]["lat"], 6) == 59.0
+    assert round(recent_positions[-1]["lat"], 6) == 59.0006
+
+
+def test_targets_latest_ui_endpoint_omits_recent_positions_when_target_not_moving(tmp_path) -> None:
+    now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+    state = LiveState(clock=lambda: now)
+    store = SQLiteStore(tmp_path / "radar_positions_stationary.sqlite3")
+    store.initialize()
+
+    moving = _obs(
+        target_id="adsb:slowdown",
+        source=Source.ADSB,
+        observed_at=now - timedelta(seconds=20),
+        lat=59.0,
+        lon=18.0,
+        speed=120.0,
+    )
+    stationary = _obs(
+        target_id="adsb:slowdown",
+        source=Source.ADSB,
+        observed_at=now,
+        lat=59.0001,
+        lon=18.0001,
+        speed=0.9,
+    )
+    state.upsert_observation(moving)
+    snapshot = state.upsert_observation(stationary)
+    store.upsert_latest_target(snapshot.target)
+
+    app = create_api_app(APIRuntime(state=state, store=store, radio_connected=True))
+    response = _request(app, "GET", "/ui/targets-latest")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 1
+    assert payload["targets"][0]["recent_positions"] == []

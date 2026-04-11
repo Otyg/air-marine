@@ -21,6 +21,7 @@ def _obs(
     lat: float | None = 59.0,
     lon: float | None = 18.0,
     callsign: str | None = None,
+    speed: float | None = 120.0,
 ) -> NormalizedObservation:
     return NormalizedObservation(
         target_id=target_id,
@@ -30,7 +31,7 @@ def _obs(
         lat=lat,
         lon=lon,
         course=90.0,
-        speed=120.0,
+        speed=speed,
         altitude=1000.0 if kind == TargetKind.AIRCRAFT else None,
         callsign=callsign,
     )
@@ -72,26 +73,28 @@ def test_metadata_update_without_position_does_not_append_position() -> None:
     assert updated.observation_count == 2
 
 
-def test_position_retention_and_duplicate_filter() -> None:
+def test_position_retention_uses_two_minute_window_and_duplicate_filter() -> None:
     now = datetime(2026, 3, 30, 12, 0, tzinfo=timezone.utc)
-    state = LiveState(max_positions_per_target=5, clock=FakeClock(now))
+    clock = FakeClock(now)
+    state = LiveState(max_positions_per_target=5, clock=clock)
 
-    for idx in range(6):
+    for idx in range(16):
+        seen_at = now - timedelta(seconds=(15 - idx) * 10)
         state.upsert_observation(
             _obs(
                 "ais:123",
                 TargetKind.VESSEL,
-                now - timedelta(seconds=idx),
-                lat=58.0 + idx,
-                lon=17.0 + idx,
+                seen_at,
+                lat=58.0 + (idx * 0.001),
+                lon=17.0 + (idx * 0.001),
             )
         )
 
     current = state.get_target_state("ais:123")
     assert current is not None
-    assert len(current.positions) == 5
-    assert current.positions[0].lat == 59.0
-    assert current.positions[-1].lat == 63.0
+    assert len(current.positions) == 13
+    assert current.positions[0].ts == now - timedelta(seconds=120)
+    assert current.positions[-1].ts == now
 
     before = len(current.positions)
     state.upsert_observation(
@@ -99,14 +102,13 @@ def test_position_retention_and_duplicate_filter() -> None:
             "ais:123",
             TargetKind.VESSEL,
             now + timedelta(seconds=1),
-            lat=63.0,
-            lon=22.0,
+            lat=58.0,
+            lon=17.0,
         )
     )
     after = state.get_target_state("ais:123")
     assert after is not None
     assert len(after.positions) == before
-
 
 def test_filters_and_stats_by_freshness() -> None:
     now = datetime(2026, 3, 30, 12, 0, tzinfo=timezone.utc)

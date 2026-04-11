@@ -7,7 +7,7 @@ Backend service for hybrid, single-RTL-SDR AIS/ADS-B monitoring.
 - Alternates one RTL-SDR between `readsb` (ADS-B) and `rtl_ais` (AIS)
 - Can ingest OGN/FLARM/ADS-L traffic from a local APRS/TCP decoder feed
 - Normalizes decoder output into a shared observation model
-- Maintains live in-memory targets with last five valid positions
+- Maintains live in-memory targets and a rolling 2-minute trail for moving objects (`speed > 1`)
 - Persists observations and latest target state to SQLite
 - Exposes HTTP endpoints for health, live targets, stats, and history
 
@@ -60,7 +60,7 @@ Key runtime variables:
 - `SDR_MONITOR_INTER_SCAN_PAUSE_SECONDS`: pause between AIS/ADS-B updates (default `2.0`)
 - `SDR_MONITOR_FRESH_SECONDS`: freshness threshold lower bound
 - `SDR_MONITOR_AGING_SECONDS`: freshness threshold upper bound
-- `SDR_MONITOR_MAX_POSITIONS_PER_TARGET`: in-memory position history size
+- Live recent-position trails are now time-windowed (2 minutes) and only sent for moving targets (`speed > 1`)
 - `SDR_MONITOR_READSB_AIRCRAFT_JSON`: path to `readsb` `aircraft.json`
 - `SDR_MONITOR_OGN_TCP_HOST`: host for decoded OGN/FLARM/ADS-L APRS traffic
 - `SDR_MONITOR_OGN_TCP_PORT`: TCP port for decoded OGN/FLARM/ADS-L APRS traffic (commonly `50001`)
