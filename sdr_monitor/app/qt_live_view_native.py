@@ -793,21 +793,19 @@ class LiveRadarWindow(QMainWindow):
         side_layout.setContentsMargins(8, 8, 8, 8)
         side_layout.setSpacing(8)
 
-        side_layout.addWidget(QLabel("Typ"))
-        target_filter_row = QHBoxLayout()
-        target_filter_row.setContentsMargins(0, 0, 0, 0)
-        target_filter_row.setSpacing(6)
-        for value in ("stopped", "aircraft", "vessel"):
-            target_filter_row.addWidget(self.target_type_filter_buttons[value])
-        side_layout.addLayout(target_filter_row)
-
-        side_layout.addWidget(QLabel("Visa"))
         overlay_toggle_row = QHBoxLayout()
         overlay_toggle_row.setContentsMargins(0, 0, 0, 0)
         overlay_toggle_row.setSpacing(6)
         for value in ("fixed_names", "target_labels", "map_contours"):
             overlay_toggle_row.addWidget(self.overlay_toggle_buttons[value])
         side_layout.addLayout(overlay_toggle_row)
+
+        target_filter_row = QHBoxLayout()
+        target_filter_row.setContentsMargins(0, 0, 0, 0)
+        target_filter_row.setSpacing(6)
+        for value in ("stopped", "aircraft", "vessel"):
+            target_filter_row.addWidget(self.target_type_filter_buttons[value])
+        side_layout.addLayout(target_filter_row)
 
         side_layout.addWidget(self.objects_summary_label)
         side_layout.addWidget(self.visible_objects_list, stretch=1)
