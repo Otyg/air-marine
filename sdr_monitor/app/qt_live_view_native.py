@@ -672,6 +672,8 @@ class LiveRadarWindow(QMainWindow):
         self.default_map_source = config.map_source
         self.current_targets: list[dict[str, Any]] = []
         self.current_scanner_scan: list[str] = ["AIS", "ADS"]
+        self.backend_reachable = False
+        self.radio_connected = False
         self.map_loaded_key: str | None = None
         self.map_pending_key: str | None = None
         self.map_in_flight = False
@@ -709,6 +711,18 @@ class LiveRadarWindow(QMainWindow):
             "AIS": QLabel("AIS"),
             "ADS": QLabel("ADS"),
         }
+        self.radio_status_label = QLabel("Radio")
+
+        self.zoom_out_button = QPushButton("-")
+        self.zoom_out_button.setFixedWidth(34)
+        self.zoom_out_button.clicked.connect(self.on_zoom_out)
+
+        self.zoom_in_button = QPushButton("+")
+        self.zoom_in_button.setFixedWidth(34)
+        self.zoom_in_button.clicked.connect(self.on_zoom_in)
+
+        self.zoom_reset_button = QPushButton("Hem")
+        self.zoom_reset_button.clicked.connect(self.on_zoom_reset)
 
         self.target_type_filter_buttons: dict[str, QPushButton] = {}
         for value, label in (("stopped", "Stoppade"), ("aircraft", "Flygplan"), ("vessel", "Batar")):
@@ -762,24 +776,6 @@ class LiveRadarWindow(QMainWindow):
         title_label.setObjectName("hudTitle")
         top_bar.addWidget(title_label)
 
-        zoom_out_btn = QPushButton("-")
-        zoom_out_btn.setFixedWidth(34)
-        zoom_out_btn.clicked.connect(self.on_zoom_out)
-        top_bar.addWidget(zoom_out_btn)
-
-        top_bar.addWidget(self.range_input)
-
-        zoom_in_btn = QPushButton("+")
-        zoom_in_btn.setFixedWidth(34)
-        zoom_in_btn.clicked.connect(self.on_zoom_in)
-        top_bar.addWidget(zoom_in_btn)
-
-        zoom_reset_btn = QPushButton("Hem")
-        zoom_reset_btn.clicked.connect(self.on_zoom_reset)
-        top_bar.addWidget(zoom_reset_btn)
-
-        for value in SCAN_ORDER:
-            top_bar.addWidget(self.scan_labels[value])
         top_bar.addStretch(1)
 
         root_layout.addLayout(top_bar)
@@ -792,6 +788,23 @@ class LiveRadarWindow(QMainWindow):
         side_layout = QVBoxLayout(side_panel)
         side_layout.setContentsMargins(8, 8, 8, 8)
         side_layout.setSpacing(8)
+
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.setSpacing(6)
+        for value in SCAN_ORDER:
+            status_row.addWidget(self.scan_labels[value])
+        status_row.addWidget(self.radio_status_label)
+        side_layout.addLayout(status_row)
+
+        zoom_row = QHBoxLayout()
+        zoom_row.setContentsMargins(0, 0, 0, 0)
+        zoom_row.setSpacing(6)
+        zoom_row.addWidget(self.zoom_out_button)
+        zoom_row.addWidget(self.range_input)
+        zoom_row.addWidget(self.zoom_in_button)
+        zoom_row.addWidget(self.zoom_reset_button)
+        side_layout.addLayout(zoom_row)
 
         overlay_toggle_row = QHBoxLayout()
         overlay_toggle_row.setContentsMargins(0, 0, 0, 0)
@@ -880,14 +893,20 @@ class LiveRadarWindow(QMainWindow):
         else:
             button.setStyleSheet("color: #5b9e5b; border: 1px solid #225522; padding: 2px 6px;")
 
+    def _style_status_label(self, label: QLabel, active: bool) -> None:
+        if active:
+            label.setStyleSheet("color: #9be89b; border: 1px solid #2f8b2f; padding: 2px 6px;")
+        else:
+            label.setStyleSheet("color: #5b9e5b; border: 1px solid #225522; padding: 2px 6px;")
+
     def _sync_scan_labels(self) -> None:
         for scan in SCAN_ORDER:
             label = self.scan_labels[scan]
             active = scan in self.current_scanner_scan
-            if active:
-                label.setStyleSheet("color: #9be89b; border: 1px solid #2f8b2f; padding: 2px 6px;")
-            else:
-                label.setStyleSheet("color: #5b9e5b; border: 1px solid #225522; padding: 2px 6px;")
+            self._style_status_label(label, active)
+        radio_active = self.backend_reachable and self.radio_connected
+        self.radio_status_label.setText("Radio")
+        self._style_status_label(self.radio_status_label, radio_active)
 
     def on_zoom_in(self) -> None:
         self.radar_widget.zoom_in()
@@ -1061,21 +1080,28 @@ class LiveRadarWindow(QMainWindow):
 
     def load_live_ui_config(self) -> None:
         def _on_success(payload: dict[str, Any]) -> None:
+            self.backend_reachable = True
             parsed = parse_live_ui_config(payload)
             self.service_name = parsed.service_name
             self.default_map_source = self.config.map_source or parsed.default_map_source
             self.setWindowTitle(f"{self.config.window_title} - {self.service_name}")
             self.radar_widget.set_home(parsed.center_lat, parsed.center_lon)
             self.radar_widget.set_fixed_objects(list(parsed.fixed_objects))
+            self._sync_scan_labels()
             self.schedule_map_contours()
 
         def _on_error(message: str) -> None:
+            self.backend_reachable = False
+            self.radio_connected = False
+            self._sync_scan_labels()
             self.statusBar().showMessage(f"/ui/live-config unavailable: {message}", 5000)
 
         self._request_json("/ui/live-config", params=None, on_success=_on_success, on_error=_on_error)
 
     def load_targets(self) -> None:
         def _on_success(payload: dict[str, Any]) -> None:
+            self.backend_reachable = True
+            self.radio_connected = bool(payload.get("radio_connected"))
             targets = payload.get("targets", [])
             self.current_targets = [item for item in targets if isinstance(item, dict)] if isinstance(targets, list) else []
             self.radar_widget.set_targets(self.current_targets)
@@ -1094,9 +1120,13 @@ class LiveRadarWindow(QMainWindow):
 
             self._update_reception_warning(payload.get("reception_status"))
             self._refresh_target_lists()
+            self._sync_scan_labels()
             self.schedule_map_contours()
 
         def _on_error(message: str) -> None:
+            self.backend_reachable = False
+            self.radio_connected = False
+            self._sync_scan_labels()
             self.statusBar().showMessage(f"Failed to load /ui/targets-latest: {message}", 3000)
 
         self._request_json("/ui/targets-latest", params=None, on_success=_on_success, on_error=_on_error)
