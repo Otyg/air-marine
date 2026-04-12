@@ -171,13 +171,18 @@ def create_service_components(
         ),
     )
     worker = ScannerWorker(scanner)
-    fixed_radar_objects = load_fixed_radar_objects(resolved.fixed_objects_path, logger=logger)
+    fixed_objects_path = resolved.fixed_objects_path.expanduser()
+    if not fixed_objects_path.is_absolute():
+        fixed_objects_path = (PROJECT_ROOT / fixed_objects_path).resolve()
+    fixed_radar_objects = load_fixed_radar_objects(fixed_objects_path, logger=logger)
     if fixed_radar_objects:
         logger.info(
             "Loaded %s fixed radar objects from %s.",
             len(fixed_radar_objects),
-            resolved.fixed_objects_path,
+            fixed_objects_path,
         )
+    else:
+        logger.warning("No fixed radar objects loaded from %s.", fixed_objects_path)
 
     api_runtime = APIRuntime(
         state=state,

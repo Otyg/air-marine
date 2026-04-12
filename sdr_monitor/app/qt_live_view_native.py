@@ -679,6 +679,10 @@ class LiveRadarWindow(QMainWindow):
         self.poll_timer.setInterval(config.poll_interval_ms)
         self.poll_timer.timeout.connect(self.load_targets)
 
+        self.live_config_timer = QTimer(self)
+        self.live_config_timer.setInterval(max(30_000, config.poll_interval_ms * 6))
+        self.live_config_timer.timeout.connect(self.load_live_ui_config)
+
         self.map_retry_timer = QTimer(self)
         self.map_retry_timer.setSingleShot(True)
         self.map_retry_timer.timeout.connect(self._on_map_retry_timeout)
@@ -1032,6 +1036,7 @@ class LiveRadarWindow(QMainWindow):
 
     def start(self) -> None:
         self.load_live_ui_config()
+        self.live_config_timer.start()
         self.poll_timer.start()
         self.load_targets()
 
