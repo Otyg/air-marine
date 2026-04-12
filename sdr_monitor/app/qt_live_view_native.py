@@ -465,6 +465,12 @@ class RadarWidget(QWidget):
             self.zoom_out()
         event.accept()
 
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        # Trigger a full view refresh when viewport geometry changes.
+        self.view_changed.emit(self.state.center_lat, self.state.center_lon, self.state.range_km)
+        self.update()
+
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() != Qt.MouseButton.LeftButton:
             return
@@ -1226,7 +1232,8 @@ class LiveRadarWindow(QMainWindow):
 
     def _map_request_key(self) -> str:
         bbox = self._current_bbox()
-        return f"{self.default_map_source}|{','.join(f'{value:.4f}' for value in bbox)}"
+        viewport_key = f"{self.radar_widget.width()}x{self.radar_widget.height()}"
+        return f"{self.default_map_source}|{','.join(f'{value:.4f}' for value in bbox)}|{viewport_key}"
 
     def _zoom_level_for_range_km(self, range_km: float) -> int:
         clamped_range = max(MIN_RANGE_KM, min(500.0, float(range_km)))
