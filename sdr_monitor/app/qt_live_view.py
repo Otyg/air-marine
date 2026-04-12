@@ -121,8 +121,8 @@ def _to_bool(payload: dict[str, Any], key: str, default: bool) -> bool:
 
 def _to_filter(payload: dict[str, Any], key: str, default: str) -> str:
     value = str(payload.get(key, default)).strip().lower()
-    if value not in {"all", "aircraft", "vessel"}:
-        raise ValueError(f"{key} must be one of: all, aircraft, vessel")
+    if value not in {"all", "aircraft", "vessel", "stopped"}:
+        raise ValueError(f"{key} must be one of: all, stopped, aircraft, vessel")
     return value
 
 

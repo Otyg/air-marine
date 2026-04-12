@@ -60,8 +60,7 @@ class RadarWidget(QWidget):
         self.show_target_labels = False
         self.show_fixed_names = True
         self.show_map_contours = True
-        self.show_low_speed = False
-        self.target_type_filter = "all"
+        self.target_type_filter = "stopped"
         self.selected_target_id: str | None = None
 
     def set_home(self, lat: float, lon: float) -> None:
@@ -141,7 +140,11 @@ class RadarWidget(QWidget):
                 speed = float(speed_value) if speed_value is not None else float("nan")
             except (TypeError, ValueError):
                 speed = float("nan")
-            if not self.show_low_speed and math.isfinite(speed) and speed < 1.0:
+
+            if self.target_type_filter == "stopped":
+                if not math.isfinite(speed) or speed >= 1.0:
+                    continue
+            elif math.isfinite(speed) and speed < 1.0:
                 continue
 
             if self._is_target_visible(target):
@@ -323,7 +326,6 @@ class LiveRadarWindow(QMainWindow):
         self.radar_widget.show_fixed_names = config.show_fixed_names
         self.radar_widget.show_target_labels = config.show_target_labels
         self.radar_widget.show_map_contours = config.show_map_contours
-        self.radar_widget.show_low_speed = config.show_low_speed
         self.radar_widget.target_type_filter = config.target_type_filter
         self.radar_widget.view_changed.connect(self.on_view_changed)
         self.radar_widget.target_selected.connect(self.on_target_selected)
@@ -350,14 +352,8 @@ class LiveRadarWindow(QMainWindow):
         self.show_map_contours_checkbox.setChecked(config.show_map_contours)
         self.show_map_contours_checkbox.toggled.connect(self.on_show_map_contours_changed)
 
-        self.show_low_speed_button = QPushButton("Speed <1")
-        self.show_low_speed_button.setCheckable(True)
-        self.show_low_speed_button.setChecked(config.show_low_speed)
-        self.show_low_speed_button.toggled.connect(self.on_show_low_speed_changed)
-        self._sync_show_low_speed_button(config.show_low_speed)
-
         self.target_type_filter_buttons: dict[str, QPushButton] = {}
-        for value, label in (("all", "Alla"), ("aircraft", "Flygplan"), ("vessel", "Batar")):
+        for value, label in (("stopped", "Stoppade"), ("aircraft", "Flygplan"), ("vessel", "Batar")):
             button = QPushButton(label)
             button.setCheckable(True)
             button.clicked.connect(lambda _checked, selected=value: self.on_target_type_filter_changed(selected))
@@ -428,13 +424,11 @@ class LiveRadarWindow(QMainWindow):
         side_layout.setContentsMargins(8, 8, 8, 8)
         side_layout.setSpacing(8)
 
-        side_layout.addWidget(self.show_low_speed_button)
-
         side_layout.addWidget(QLabel("Typ"))
         target_filter_row = QHBoxLayout()
         target_filter_row.setContentsMargins(0, 0, 0, 0)
         target_filter_row.setSpacing(6)
-        for value in ("all", "aircraft", "vessel"):
+        for value in ("stopped", "aircraft", "vessel"):
             target_filter_row.addWidget(self.target_type_filter_buttons[value])
         side_layout.addLayout(target_filter_row)
 
@@ -480,7 +474,10 @@ class LiveRadarWindow(QMainWindow):
         )
 
     def _set_target_type_filter(self, value: str) -> str:
-        selected = value if value in self.target_type_filter_buttons else "all"
+        aliases = {"all": "stopped"}
+        selected = aliases.get(value, value)
+        if selected not in self.target_type_filter_buttons:
+            selected = "stopped"
         self.radar_widget.target_type_filter = selected
         for option, button in self.target_type_filter_buttons.items():
             active = option == selected
@@ -499,16 +496,6 @@ class LiveRadarWindow(QMainWindow):
                 label.setStyleSheet("color: #9be89b; border: 1px solid #2f8b2f; padding: 2px 6px;")
             else:
                 label.setStyleSheet("color: #5b9e5b; border: 1px solid #225522; padding: 2px 6px;")
-
-    def _sync_show_low_speed_button(self, active: bool) -> None:
-        if active:
-            self.show_low_speed_button.setStyleSheet(
-                "color: #9be89b; border: 1px solid #2f8b2f; padding: 2px 6px;"
-            )
-        else:
-            self.show_low_speed_button.setStyleSheet(
-                "color: #5b9e5b; border: 1px solid #225522; padding: 2px 6px;"
-            )
 
     def on_zoom_in(self) -> None:
         self.radar_widget.zoom_in()
@@ -549,12 +536,6 @@ class LiveRadarWindow(QMainWindow):
         self.radar_widget.update()
         if checked:
             self.load_map_contours()
-
-    def on_show_low_speed_changed(self, checked: bool) -> None:
-        self.radar_widget.show_low_speed = checked
-        self._sync_show_low_speed_button(checked)
-        self.radar_widget.update()
-        self._refresh_target_lists()
 
     def on_target_type_filter_changed(self, selected: str) -> None:
         self._set_target_type_filter(selected)
