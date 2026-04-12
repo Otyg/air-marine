@@ -895,6 +895,7 @@ class LiveRadarWindow(QMainWindow):
 
         cached_features: list[dict[str, Any]] = []
         missing_tiles: list[tuple[int, int]] = []
+        cached_empty_tiles = 0
         for tile_x, tile_y in tile_keys:
             features = self.map_cache.get_tile_features(
                 source=self.default_map_source,
@@ -904,6 +905,8 @@ class LiveRadarWindow(QMainWindow):
             )
             if features is None:
                 missing_tiles.append((tile_x, tile_y))
+            elif not features:
+                cached_empty_tiles += 1
             else:
                 cached_features.extend(features)
         cached_features = self._dedupe_features(cached_features)
@@ -918,6 +921,10 @@ class LiveRadarWindow(QMainWindow):
             if self.map_refresh_pending:
                 self.map_refresh_pending = False
                 self.schedule_map_contours()
+
+        # If cache says "complete" but yields no usable geometry, refresh from backend.
+        if not missing_tiles and (not cached_features or cached_empty_tiles > 0):
+            missing_tiles = list(tile_keys)
 
         if not missing_tiles:
             _finalize(cached_features)
