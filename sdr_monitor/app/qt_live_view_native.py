@@ -712,6 +712,8 @@ class LiveRadarWindow(QMainWindow):
             "ADS": QLabel("ADS"),
         }
         self.radio_status_label = QLabel("Radio")
+        for label in list(self.scan_labels.values()) + [self.radio_status_label]:
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.zoom_out_button = QPushButton("-")
         self.zoom_out_button.setFixedWidth(34)
@@ -889,15 +891,23 @@ class LiveRadarWindow(QMainWindow):
 
     def _style_toggle_button(self, button: QPushButton, active: bool) -> None:
         if active:
-            button.setStyleSheet("color: #9be89b; border: 1px solid #2f8b2f; padding: 2px 6px;")
+            button.setStyleSheet(
+                "color: #9be89b; background: #051805; border: 1px solid #2f8b2f; padding: 2px 6px;"
+            )
         else:
-            button.setStyleSheet("color: #5b9e5b; border: 1px solid #225522; padding: 2px 6px;")
+            button.setStyleSheet(
+                "color: #5b9e5b; background: #000000; border: 1px solid #225522; padding: 2px 6px;"
+            )
 
     def _style_status_label(self, label: QLabel, active: bool) -> None:
         if active:
-            label.setStyleSheet("color: #9be89b; border: 1px solid #2f8b2f; padding: 2px 6px;")
+            label.setStyleSheet(
+                "color: #9be89b; background: #051805; border: 1px solid #2f8b2f; padding: 2px 6px;"
+            )
         else:
-            label.setStyleSheet("color: #5b9e5b; border: 1px solid #225522; padding: 2px 6px;")
+            label.setStyleSheet(
+                "color: #5b9e5b; background: #000000; border: 1px solid #225522; padding: 2px 6px;"
+            )
 
     def _sync_scan_labels(self) -> None:
         for scan in SCAN_ORDER:
