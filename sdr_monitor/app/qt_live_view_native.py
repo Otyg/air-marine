@@ -300,7 +300,7 @@ class RadarWidget(QWidget):
 
         if self.show_map_contours:
             contour_pen = QPen(QColor("#143314"))
-            contour_pen.setWidthF(0.6)
+            contour_pen.setWidthF(0.3)
             painter.setPen(contour_pen)
             for start, end in self.map_segments:
                 painter.drawLine(start, end)
