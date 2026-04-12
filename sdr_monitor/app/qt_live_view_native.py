@@ -980,12 +980,12 @@ class LiveRadarWindow(QMainWindow):
     def on_visible_item_clicked(self, item: QListWidgetItem) -> None:
         target_id = str(item.data(Qt.ItemDataRole.UserRole) or "")
         if target_id:
-            self._handle_list_item_clicked(target_id)
+            self._handle_list_item_clicked(target_id, source="visible")
 
     def on_outside_item_clicked(self, item: QListWidgetItem) -> None:
         target_id = str(item.data(Qt.ItemDataRole.UserRole) or "")
         if target_id:
-            self._handle_list_item_clicked(target_id)
+            self._handle_list_item_clicked(target_id, source="outside")
 
     def on_target_selected(self, target_id: str) -> None:
         self.select_target(target_id, fit=False)
@@ -995,6 +995,7 @@ class LiveRadarWindow(QMainWindow):
 
     def _show_target_details_dialog(self, target: dict[str, Any]) -> None:
         target_id = str(target.get("target_id") or "okant")
+        LOGGER.warning("QT dialog response: open target_id=%s", target_id)
         dialog = QDialog(self)
         dialog.setWindowTitle(f"Objektdetaljer - {target_id}")
         dialog.resize(640, 520)
@@ -1009,16 +1010,22 @@ class LiveRadarWindow(QMainWindow):
         close_button.clicked.connect(dialog.accept)
         layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignRight)
         dialog.exec()
+        LOGGER.warning("QT dialog response: closed target_id=%s", target_id)
 
-    def _handle_list_item_clicked(self, target_id: str) -> None:
+    def _handle_list_item_clicked(self, target_id: str, *, source: str) -> None:
+        LOGGER.warning("QT dialog request: source=%s target_id=%s", source, target_id)
         target = self._find_target_by_id(target_id)
         if target is None:
+            LOGGER.warning("QT dialog response: target_id=%s not found in current_targets", target_id)
             return
-        if self.radar_widget._is_target_visible(target):
-            self.select_target(target_id, fit=False)
-            self._show_target_details_dialog(target)
-            return
-        self.select_target(target_id, fit=True)
+        is_visible = self.radar_widget._is_target_visible(target)
+        LOGGER.warning(
+            "QT dialog response: target_id=%s found visible_in_active_view=%s",
+            target_id,
+            is_visible,
+        )
+        self.select_target(target_id, fit=False)
+        self._show_target_details_dialog(target)
 
     def on_view_changed(self, _lat: float, _lon: float, _range: float) -> None:
         self._refresh_target_lists()
