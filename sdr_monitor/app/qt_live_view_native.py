@@ -390,13 +390,14 @@ class LiveRadarWindow(QMainWindow):
 
         self.map_retry_timer = QTimer(self)
         self.map_retry_timer.setSingleShot(True)
-        self.map_retry_timer.timeout.connect(self.load_map_contours)
+        self.map_retry_timer.timeout.connect(self._on_map_retry_timeout)
 
         self.service_name = "sdr-monitor"
         self.default_map_source = config.map_source
         self.current_targets: list[dict[str, Any]] = []
         self.current_scanner_scan: list[str] = ["AIS", "ADS"]
         self.map_loaded_key: str | None = None
+        self.map_pending_key: str | None = None
         self.map_in_flight = False
         self.map_refresh_pending = False
         self.map_cache = MapContourTileCache(DEFAULT_MAP_CACHE_DB_PATH)
@@ -632,7 +633,9 @@ class LiveRadarWindow(QMainWindow):
         self.radar_widget.show_map_contours = checked
         self.radar_widget.update()
         if checked:
-            self.load_map_contours()
+            self.load_map_contours(force=True)
+        else:
+            self.map_retry_timer.stop()
 
     def on_target_type_filter_changed(self, selected: str, checked: bool) -> None:
         if selected == "stopped":
@@ -873,12 +876,20 @@ class LiveRadarWindow(QMainWindow):
             deduped.append(feature)
         return deduped
 
-    def schedule_map_contours(self) -> None:
+    def _schedule_map_contour_retry(self, delay_ms: int) -> None:
+        self.map_retry_timer.start(max(50, int(delay_ms)))
+
+    def _on_map_retry_timeout(self) -> None:
+        self.load_map_contours(force=True)
+
+    def schedule_map_contours(self, *, delay_ms: int = 200, force: bool = False) -> None:
         if not self.radar_widget.show_map_contours:
             return
-        self.map_retry_timer.start(200)
+        if not force and self.map_pending_key == self._map_request_key():
+            return
+        self._schedule_map_contour_retry(delay_ms)
 
-    def load_map_contours(self) -> None:
+    def load_map_contours(self, *, force: bool = False) -> None:
         if not self.radar_widget.show_map_contours:
             return
         if self.map_in_flight:
@@ -887,6 +898,8 @@ class LiveRadarWindow(QMainWindow):
 
         request_key = self._map_request_key()
         if request_key == self.map_loaded_key:
+            return
+        if not force and request_key == self.map_pending_key:
             return
 
         bbox = self._current_bbox()
@@ -911,23 +924,35 @@ class LiveRadarWindow(QMainWindow):
                 cached_features.extend(features)
         cached_features = self._dedupe_features(cached_features)
 
-        def _finalize(features: list[dict[str, Any]]) -> None:
+        def _finalize(features: list[dict[str, Any]], *, status: str, poll_after_seconds: float | None = None) -> None:
             self.map_in_flight = False
             if request_key != self._map_request_key():
                 self.map_refresh_pending = True
             else:
-                self.map_loaded_key = request_key
                 self.radar_widget.set_map_segments(self._extract_map_segments({"features": features}))
+                if status == "ok":
+                    self.map_loaded_key = request_key
+                    self.map_pending_key = None
+                elif status == "pending":
+                    self.map_loaded_key = None
+                    self.map_pending_key = request_key
+                    retry_delay_ms = 750
+                    if poll_after_seconds is not None:
+                        retry_delay_ms = int(max(0.05, poll_after_seconds) * 1000.0)
+                    self._schedule_map_contour_retry(retry_delay_ms)
+                else:
+                    self.map_loaded_key = None
+                    self.map_pending_key = None
             if self.map_refresh_pending:
                 self.map_refresh_pending = False
-                self.schedule_map_contours()
+                self.schedule_map_contours(force=True)
 
         # If cache says "complete" but yields no usable geometry, refresh from backend.
         if not missing_tiles and (not cached_features or cached_empty_tiles > 0):
             missing_tiles = list(tile_keys)
 
         if not missing_tiles:
-            _finalize(cached_features)
+            _finalize(cached_features, status="ok")
             return
 
         self.map_in_flight = True
@@ -938,20 +963,40 @@ class LiveRadarWindow(QMainWindow):
         }
 
         def _on_success(payload: dict[str, Any]) -> None:
+            status_raw = payload.get("status")
+            status = status_raw if isinstance(status_raw, str) else "ok"
             features = self._feature_list_from_payload(payload)
-            for tile_x, tile_y in missing_tiles:
-                self.map_cache.upsert_tile_features(
-                    source=self.default_map_source,
-                    zoom_level=zoom_level,
-                    tile_x=tile_x,
-                    tile_y=tile_y,
-                    features=features,
-                )
-            _finalize(features)
+            merged_features = self._dedupe_features(cached_features + features)
+
+            poll_after_seconds: float | None = None
+            details = payload.get("details")
+            if isinstance(details, dict):
+                poll_after = details.get("poll_after_seconds")
+                if isinstance(poll_after, (int, float)):
+                    poll_after_seconds = float(poll_after)
+
+            if status == "ok":
+                for tile_x, tile_y in missing_tiles:
+                    self.map_cache.upsert_tile_features(
+                        source=self.default_map_source,
+                        zoom_level=zoom_level,
+                        tile_x=tile_x,
+                        tile_y=tile_y,
+                        features=features,
+                    )
+                _finalize(merged_features, status="ok")
+                return
+
+            if status == "pending":
+                _finalize(merged_features, status="pending", poll_after_seconds=poll_after_seconds)
+                return
+
+            self.statusBar().showMessage(f"Map contours unavailable ({status}).", 3000)
+            _finalize(cached_features, status=status)
 
         def _on_error(message: str) -> None:
             self.statusBar().showMessage(f"Failed to load /ui/map-contours: {message}", 3000)
-            _finalize(cached_features)
+            _finalize(cached_features, status="error")
 
         self._request_json("/ui/map-contours", params=params, on_success=_on_success, on_error=_on_error)
 
