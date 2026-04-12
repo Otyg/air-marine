@@ -15,12 +15,14 @@ from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QPlainTextEdit,
     QPushButton,
     QSizePolicy,
     QSplitter,
@@ -978,15 +980,45 @@ class LiveRadarWindow(QMainWindow):
     def on_visible_item_clicked(self, item: QListWidgetItem) -> None:
         target_id = str(item.data(Qt.ItemDataRole.UserRole) or "")
         if target_id:
-            self.select_target(target_id, fit=True)
+            self._handle_list_item_clicked(target_id)
 
     def on_outside_item_clicked(self, item: QListWidgetItem) -> None:
         target_id = str(item.data(Qt.ItemDataRole.UserRole) or "")
         if target_id:
-            self.select_target(target_id, fit=True)
+            self._handle_list_item_clicked(target_id)
 
     def on_target_selected(self, target_id: str) -> None:
         self.select_target(target_id, fit=False)
+
+    def _find_target_by_id(self, target_id: str) -> dict[str, Any] | None:
+        return next((item for item in self.current_targets if str(item.get("target_id", "")) == target_id), None)
+
+    def _show_target_details_dialog(self, target: dict[str, Any]) -> None:
+        target_id = str(target.get("target_id") or "okant")
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Objektdetaljer - {target_id}")
+        dialog.resize(640, 520)
+
+        layout = QVBoxLayout(dialog)
+        text_view = QPlainTextEdit(dialog)
+        text_view.setReadOnly(True)
+        text_view.setPlainText(json.dumps(target, ensure_ascii=False, indent=2, sort_keys=True))
+        layout.addWidget(text_view, stretch=1)
+
+        close_button = QPushButton("Stang", dialog)
+        close_button.clicked.connect(dialog.accept)
+        layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignRight)
+        dialog.exec()
+
+    def _handle_list_item_clicked(self, target_id: str) -> None:
+        target = self._find_target_by_id(target_id)
+        if target is None:
+            return
+        if self.radar_widget._is_target_visible(target):
+            self.select_target(target_id, fit=False)
+            self._show_target_details_dialog(target)
+            return
+        self.select_target(target_id, fit=True)
 
     def on_view_changed(self, _lat: float, _lon: float, _range: float) -> None:
         self._refresh_target_lists()
