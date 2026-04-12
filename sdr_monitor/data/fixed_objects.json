@@ -77,6 +77,18 @@
     "max_visible_range_km": 60
   },
   {
+    "name": "KNA AngöringA",
+    "latitude": 56.051389,
+    "longitude": 15.516944,
+    "symbol": "★"
+  },
+  {
+    "name": "KNA AngöringB",
+    "latitude": 56.135,
+    "longitude": 15.601944,
+    "symbol": "★"
+  },
+  {
     "name": "Långe Jan",
     "latitude": 56.197983, 
     "longitude": 16.3988,
