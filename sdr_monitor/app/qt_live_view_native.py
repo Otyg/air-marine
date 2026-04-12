@@ -60,7 +60,9 @@ class RadarWidget(QWidget):
         self.show_target_labels = False
         self.show_fixed_names = True
         self.show_map_contours = True
-        self.target_type_filter = "stopped"
+        self.show_stopped = False
+        self.show_aircraft = True
+        self.show_vessel = True
         self.selected_target_id: str | None = None
 
     def set_home(self, lat: float, lon: float) -> None:
@@ -132,7 +134,9 @@ class RadarWidget(QWidget):
         outside: list[dict[str, Any]] = []
         for target in self.targets:
             kind = str(target.get("kind", "")).lower()
-            if self.target_type_filter in {"aircraft", "vessel"} and kind != self.target_type_filter:
+            if kind == "aircraft" and not self.show_aircraft:
+                continue
+            if kind == "vessel" and not self.show_vessel:
                 continue
 
             speed_value = target.get("speed")
@@ -141,10 +145,7 @@ class RadarWidget(QWidget):
             except (TypeError, ValueError):
                 speed = float("nan")
 
-            if self.target_type_filter == "stopped":
-                if not math.isfinite(speed) or speed >= 1.0:
-                    continue
-            elif math.isfinite(speed) and speed < 1.0:
+            if not self.show_stopped and math.isfinite(speed) and speed < 1.0:
                 continue
 
             if self._is_target_visible(target):
@@ -326,7 +327,16 @@ class LiveRadarWindow(QMainWindow):
         self.radar_widget.show_fixed_names = config.show_fixed_names
         self.radar_widget.show_target_labels = config.show_target_labels
         self.radar_widget.show_map_contours = config.show_map_contours
-        self.radar_widget.target_type_filter = config.target_type_filter
+        self.radar_widget.show_stopped = bool(config.show_low_speed)
+        if config.target_type_filter == "aircraft":
+            self.radar_widget.show_aircraft = True
+            self.radar_widget.show_vessel = False
+        elif config.target_type_filter == "vessel":
+            self.radar_widget.show_aircraft = False
+            self.radar_widget.show_vessel = True
+        else:
+            self.radar_widget.show_aircraft = True
+            self.radar_widget.show_vessel = True
         self.radar_widget.view_changed.connect(self.on_view_changed)
         self.radar_widget.target_selected.connect(self.on_target_selected)
 
@@ -356,9 +366,11 @@ class LiveRadarWindow(QMainWindow):
         for value, label in (("stopped", "Stoppade"), ("aircraft", "Flygplan"), ("vessel", "Batar")):
             button = QPushButton(label)
             button.setCheckable(True)
-            button.clicked.connect(lambda _checked, selected=value: self.on_target_type_filter_changed(selected))
+            button.toggled.connect(
+                lambda checked, selected=value: self.on_target_type_filter_changed(selected, checked)
+            )
             self.target_type_filter_buttons[value] = button
-        self._set_target_type_filter(config.target_type_filter)
+        self._sync_target_type_filter_buttons()
 
         self.objects_summary_label = QLabel("0 synliga objekt")
         self.visible_objects_list = QListWidget()
@@ -473,20 +485,21 @@ class LiveRadarWindow(QMainWindow):
             """
         )
 
-    def _set_target_type_filter(self, value: str) -> str:
-        aliases = {"all": "stopped"}
-        selected = aliases.get(value, value)
-        if selected not in self.target_type_filter_buttons:
-            selected = "stopped"
-        self.radar_widget.target_type_filter = selected
+    def _sync_target_type_filter_buttons(self) -> None:
+        button_states = {
+            "stopped": self.radar_widget.show_stopped,
+            "aircraft": self.radar_widget.show_aircraft,
+            "vessel": self.radar_widget.show_vessel,
+        }
         for option, button in self.target_type_filter_buttons.items():
-            active = option == selected
+            active = bool(button_states.get(option, False))
+            button.blockSignals(True)
             button.setChecked(active)
+            button.blockSignals(False)
             if active:
                 button.setStyleSheet("color: #9be89b; border: 1px solid #2f8b2f; padding: 2px 6px;")
             else:
                 button.setStyleSheet("color: #5b9e5b; border: 1px solid #225522; padding: 2px 6px;")
-        return selected
 
     def _sync_scan_labels(self) -> None:
         for scan in SCAN_ORDER:
@@ -537,8 +550,14 @@ class LiveRadarWindow(QMainWindow):
         if checked:
             self.load_map_contours()
 
-    def on_target_type_filter_changed(self, selected: str) -> None:
-        self._set_target_type_filter(selected)
+    def on_target_type_filter_changed(self, selected: str, checked: bool) -> None:
+        if selected == "stopped":
+            self.radar_widget.show_stopped = checked
+        elif selected == "aircraft":
+            self.radar_widget.show_aircraft = checked
+        elif selected == "vessel":
+            self.radar_widget.show_vessel = checked
+        self._sync_target_type_filter_buttons()
         self.radar_widget.update()
         self._refresh_target_lists()
 
