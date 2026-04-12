@@ -9,7 +9,7 @@ from pathlib import Path
 import sqlite3
 from typing import Any
 
-from PySide6.QtCore import QPointF, QTimer, Qt, QUrl, Signal
+from PySide6.QtCore import QPointF, QRectF, QTimer, Qt, QUrl, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
@@ -40,6 +40,21 @@ from app.qt_live_view import (
 SCAN_ORDER = ("AIS", "ADS", "FLARM")
 RADAR_RING_COUNT = 5
 DEFAULT_MAP_CACHE_DB_PATH = Path("./data/qt_map_contours.sqlite")
+TRAIL_POINT_WINDOW_SECONDS = 120.0
+TRAIL_STALE_START_SECONDS = 30.0
+TRAIL_STALE_FADE_SECONDS = 270.0
+LIVE_TRAIL_AGE_COLORS = (
+    "#C1F5C1",
+    "#90EE90",
+    "#72E972",
+    "#4AE34A",
+    "#22DD22",
+    "#1CB51C",
+    "#168D16",
+    "#106510",
+    "#0A3E0A",
+    "#031603",
+)
 
 
 class MapContourTileCache:
@@ -146,6 +161,7 @@ class RadarWidget(QWidget):
         self.show_aircraft = True
         self.show_vessel = True
         self.selected_target_id: str | None = None
+        self.local_trails: dict[str, list[tuple[float, float, float]]] = {}
 
     def set_home(self, lat: float, lon: float) -> None:
         self.home_lat = lat
@@ -157,6 +173,7 @@ class RadarWidget(QWidget):
 
     def set_targets(self, targets: list[dict[str, Any]]) -> None:
         self.targets = targets
+        self._update_local_trails(targets)
         self.update()
 
     def set_fixed_objects(self, fixed_objects: list[dict[str, Any]]) -> None:
@@ -196,6 +213,185 @@ class RadarWidget(QWidget):
     def _target_color(self, target: dict[str, Any]) -> QColor:
         _kind = str(target.get("kind", "")).lower()
         return QColor("#c1f5c1")
+
+    def _now_ms(self) -> float:
+        return datetime.now(timezone.utc).timestamp() * 1000.0
+
+    def _parse_timestamp_ms(self, value: Any) -> float | None:
+        if not isinstance(value, str):
+            return None
+        raw = value.strip()
+        if not raw:
+            return None
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp() * 1000.0
+
+    def _trail_fade_progress(self, last_seen_ms: float | None) -> float:
+        if last_seen_ms is None:
+            return 0.0
+        inactive_seconds = (self._now_ms() - last_seen_ms) / 1000.0
+        if not math.isfinite(inactive_seconds) or inactive_seconds <= TRAIL_STALE_START_SECONDS:
+            return 0.0
+        return max(
+            0.0,
+            min(1.0, (inactive_seconds - TRAIL_STALE_START_SECONDS) / TRAIL_STALE_FADE_SECONDS),
+        )
+
+    def _update_local_trails(self, targets: list[dict[str, Any]]) -> None:
+        now_ms = self._now_ms()
+        active_target_ids: set[str] = set()
+
+        for target in targets:
+            if not isinstance(target, dict):
+                continue
+            target_id = str(target.get("target_id") or "").strip()
+            if not target_id:
+                continue
+            lat_value = target.get("lat")
+            lon_value = target.get("lon")
+            try:
+                lat = float(lat_value)
+                lon = float(lon_value)
+            except (TypeError, ValueError):
+                continue
+
+            sample_ts_ms = self._parse_timestamp_ms(target.get("last_seen"))
+            if sample_ts_ms is None or not math.isfinite(sample_ts_ms):
+                sample_ts_ms = now_ms
+
+            active_target_ids.add(target_id)
+            trail = self.local_trails.setdefault(target_id, [])
+            if trail:
+                prev_ts_ms, prev_lat, prev_lon = trail[-1]
+                same_position = (abs(prev_lat - lat) < 1e-7) and (abs(prev_lon - lon) < 1e-7)
+                if sample_ts_ms <= prev_ts_ms and same_position:
+                    continue
+                if same_position:
+                    trail[-1] = (max(prev_ts_ms, sample_ts_ms), prev_lat, prev_lon)
+                    continue
+            trail.append((sample_ts_ms, lat, lon))
+            if len(trail) > 256:
+                del trail[:-256]
+
+        max_trail_age_seconds = TRAIL_POINT_WINDOW_SECONDS + TRAIL_STALE_START_SECONDS + TRAIL_STALE_FADE_SECONDS
+        purge_before_ms = now_ms - (max_trail_age_seconds * 1000.0)
+        stale_target_ids: list[str] = []
+        for target_id, trail in self.local_trails.items():
+            retained = [sample for sample in trail if sample[0] >= purge_before_ms]
+            if retained:
+                self.local_trails[target_id] = retained
+            elif target_id in active_target_ids:
+                self.local_trails[target_id] = []
+            else:
+                stale_target_ids.append(target_id)
+        for target_id in stale_target_ids:
+            self.local_trails.pop(target_id, None)
+
+    def _trail_opacity_for_age_rank(self, age_rank: float, fade_progress: float) -> float:
+        if fade_progress <= 0.0:
+            return 1.0
+        clamped_rank = max(0.0, min(1.0, float(age_rank)))
+        fade_start = (1.0 - clamped_rank) * 0.65
+        if fade_start >= 1.0:
+            return 1.0
+        local_progress = max(0.0, min(1.0, (fade_progress - fade_start) / (1.0 - fade_start)))
+        return 1.0 - local_progress
+
+    def _live_trail_color_for_age(self, age_rank: float) -> QColor:
+        clamped_rank = max(0.0, min(1.0, float(age_rank)))
+        palette_index = min(
+            len(LIVE_TRAIL_AGE_COLORS) - 1,
+            int(math.floor(clamped_rank * len(LIVE_TRAIL_AGE_COLORS))),
+        )
+        return QColor(LIVE_TRAIL_AGE_COLORS[palette_index])
+
+    def _draw_recent_positions(
+        self,
+        painter: QPainter,
+        *,
+        target_id: str,
+        last_seen: Any,
+        cx: float,
+        cy: float,
+        px_per_km: float,
+        radius: float,
+        current_point: QPointF | None = None,
+    ) -> None:
+        raw_trail = self.local_trails.get(target_id)
+        if not raw_trail:
+            return
+
+        cutoff_ms = self._now_ms() - (TRAIL_POINT_WINDOW_SECONDS * 1000.0)
+        ordered = [sample for sample in raw_trail if sample[0] >= cutoff_ms]
+
+        if not ordered:
+            return
+
+        ordered.sort(key=lambda item: item[0], reverse=True)
+        points: list[QPointF] = []
+        for _ts_ms, lat, lon in ordered:
+            point = self._latlon_to_xy(lat, lon, cx, cy, px_per_km)
+            if math.hypot(point.x() - cx, point.y() - cy) > radius:
+                continue
+            if current_point is not None:
+                same_as_current = (
+                    ((point.x() - current_point.x()) ** 2) + ((point.y() - current_point.y()) ** 2)
+                ) < 1.0
+                if same_as_current:
+                    continue
+            points.append(point)
+
+        if not points:
+            return
+
+        last_seen_ms = self._parse_timestamp_ms(last_seen)
+        if last_seen_ms is None and ordered:
+            last_seen_ms = ordered[0][0]
+        fade_progress = self._trail_fade_progress(last_seen_ms)
+        painter.save()
+        dashed_pen = QPen(QColor("#2c7a2c"), 1)
+        dashed_pen.setDashPattern([4.0, 3.0])
+        painter.setPen(dashed_pen)
+
+        if current_point is not None:
+            newest_opacity = self._trail_opacity_for_age_rank(0.0, fade_progress)
+            if newest_opacity > 0.02:
+                painter.setOpacity(newest_opacity)
+                head_pen = QPen(self._live_trail_color_for_age(0.0), 1)
+                head_pen.setDashPattern([4.0, 3.0])
+                painter.setPen(head_pen)
+                painter.drawLine(current_point, points[0])
+
+        for index in range(0, len(points) - 1):
+            age_rank = 1.0 if len(points) <= 1 else (index + 1) / (len(points) - 1)
+            segment_opacity = self._trail_opacity_for_age_rank(age_rank, fade_progress)
+            if segment_opacity <= 0.02:
+                continue
+            painter.setOpacity(segment_opacity)
+            segment_pen = QPen(self._live_trail_color_for_age(age_rank), 1)
+            segment_pen.setDashPattern([4.0, 3.0])
+            painter.setPen(segment_pen)
+            painter.drawLine(points[index], points[index + 1])
+
+        for index, point in enumerate(points):
+            age_rank = 1.0 if len(points) <= 1 else index / (len(points) - 1)
+            point_opacity = self._trail_opacity_for_age_rank(age_rank, fade_progress)
+            if point_opacity <= 0.02:
+                continue
+            painter.setOpacity(point_opacity)
+            dot_color = self._live_trail_color_for_age(age_rank)
+            painter.setPen(QPen(dot_color, 1))
+            painter.setBrush(dot_color)
+            painter.drawEllipse(point, 1.6, 1.6)
+
+        painter.restore()
 
     def _is_target_visible(self, target: dict[str, Any]) -> bool:
         lat = target.get("lat")
@@ -326,7 +522,41 @@ class RadarWidget(QWidget):
             if self.show_fixed_names:
                 painter.drawText(point + QPointF(6, -4), str(fixed.get("name", "")))
 
-        visible_targets, _outside_targets = self.filtered_targets()
+        visible_targets, outside_targets = self.filtered_targets()
+        for target in visible_targets:
+            lat = target.get("lat")
+            lon = target.get("lon")
+            target_id = str(target.get("target_id") or "")
+            if lat is None or lon is None:
+                continue
+            if not target_id:
+                continue
+            point = self._latlon_to_xy(float(lat), float(lon), cx, cy, px_per_km)
+            self._draw_recent_positions(
+                painter,
+                target_id=target_id,
+                last_seen=target.get("last_seen"),
+                cx=cx,
+                cy=cy,
+                px_per_km=px_per_km,
+                radius=radius,
+                current_point=point,
+            )
+        for target in outside_targets:
+            target_id = str(target.get("target_id") or "")
+            if not target_id:
+                continue
+            self._draw_recent_positions(
+                painter,
+                target_id=target_id,
+                last_seen=target.get("last_seen"),
+                cx=cx,
+                cy=cy,
+                px_per_km=px_per_km,
+                radius=radius,
+                current_point=None,
+            )
+
         for target in visible_targets:
             lat = target.get("lat")
             lon = target.get("lon")
@@ -340,8 +570,6 @@ class RadarWidget(QWidget):
                 color = QColor("#ff4d4d")
 
             painter.setPen(QPen(color, 1))
-            painter.setBrush(color)
-            painter.drawEllipse(point, 3.5, 3.5)
 
             course_value = target.get("course")
             speed_value = target.get("speed")
@@ -360,6 +588,10 @@ class RadarWidget(QWidget):
                     point.y() - (math.cos(radians) * length),
                 )
                 painter.drawLine(point, end_point)
+
+            symbol = "◆" if str(target.get("kind", "")).lower() == "vessel" else "●"
+            symbol_rect = QRectF(point.x() - 7.0, point.y() - 7.0, 14.0, 14.0)
+            painter.drawText(symbol_rect, int(Qt.AlignmentFlag.AlignCenter), symbol)
 
             if self.show_target_labels:
                 label = str(target.get("label") or target_id)
