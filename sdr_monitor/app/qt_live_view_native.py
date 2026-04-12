@@ -214,6 +214,19 @@ class RadarWidget(QWidget):
         _kind = str(target.get("kind", "")).lower()
         return QColor("#c1f5c1")
 
+    def _fixed_symbol_text(self, raw_symbol: str) -> str:
+        symbol = (raw_symbol or "").strip()
+        if not symbol:
+            return "O"
+        mapped = {
+            "◬": "^",
+            "▲": "^",
+            "△": "^",
+            "★": "*",
+            "✈": "A",
+        }.get(symbol, symbol)
+        return mapped[:1] or "O"
+
     def _now_ms(self) -> float:
         return datetime.now(timezone.utc).timestamp() * 1000.0
 
@@ -518,7 +531,10 @@ class RadarWidget(QWidget):
             if math.hypot(point.x() - cx, point.y() - cy) > radius:
                 continue
             raw_symbol = str(fixed.get("symbol", "")).strip()
-            symbol = (raw_symbol[:1] if raw_symbol else "O")
+            symbol = self._fixed_symbol_text(raw_symbol)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(point, 3.2, 3.2)
+            painter.drawPoint(point)
             symbol_rect = QRectF(point.x() - 7.0, point.y() - 7.0, 14.0, 14.0)
             painter.drawText(symbol_rect, int(Qt.AlignmentFlag.AlignCenter), symbol)
             if self.show_fixed_names:
