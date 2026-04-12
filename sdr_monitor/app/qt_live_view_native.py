@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 import math
+from pathlib import Path
+import sqlite3
 from typing import Any
 
 from PySide6.QtCore import QPointF, QTimer, Qt, QUrl, Signal
@@ -36,6 +39,85 @@ from app.qt_live_view import (
 
 SCAN_ORDER = ("AIS", "ADS", "FLARM")
 RADAR_RING_COUNT = 5
+DEFAULT_MAP_CACHE_DB_PATH = Path("./data/qt_map_contours.sqlite")
+
+
+class MapContourTileCache:
+    """SQLite-backed cache of map contour features per source/zoom/tile."""
+
+    def __init__(self, db_path: Path) -> None:
+        self.db_path = db_path
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.conn = sqlite3.connect(str(self.db_path))
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS contour_tiles (
+                source TEXT NOT NULL,
+                zoom_level INTEGER NOT NULL,
+                tile_x INTEGER NOT NULL,
+                tile_y INTEGER NOT NULL,
+                fetched_at TEXT NOT NULL,
+                features_json TEXT NOT NULL,
+                PRIMARY KEY (source, zoom_level, tile_x, tile_y)
+            )
+            """
+        )
+        self.conn.commit()
+
+    def get_tile_features(
+        self,
+        *,
+        source: str,
+        zoom_level: int,
+        tile_x: int,
+        tile_y: int,
+    ) -> list[dict[str, Any]] | None:
+        row = self.conn.execute(
+            """
+            SELECT features_json
+            FROM contour_tiles
+            WHERE source = ? AND zoom_level = ? AND tile_x = ? AND tile_y = ?
+            """,
+            (source, zoom_level, tile_x, tile_y),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            payload = json.loads(str(row[0]))
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, list):
+            return None
+        return [item for item in payload if isinstance(item, dict)]
+
+    def upsert_tile_features(
+        self,
+        *,
+        source: str,
+        zoom_level: int,
+        tile_x: int,
+        tile_y: int,
+        features: list[dict[str, Any]],
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO contour_tiles (source, zoom_level, tile_x, tile_y, fetched_at, features_json)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source, zoom_level, tile_x, tile_y)
+            DO UPDATE SET
+                fetched_at = excluded.fetched_at,
+                features_json = excluded.features_json
+            """,
+            (
+                source,
+                zoom_level,
+                tile_x,
+                tile_y,
+                datetime.now(timezone.utc).isoformat(),
+                json.dumps(features, separators=(",", ":"), ensure_ascii=True),
+            ),
+        )
+        self.conn.commit()
 
 
 class RadarWidget(QWidget):
@@ -316,6 +398,8 @@ class LiveRadarWindow(QMainWindow):
         self.current_scanner_scan: list[str] = ["AIS", "ADS"]
         self.map_loaded_key: str | None = None
         self.map_in_flight = False
+        self.map_refresh_pending = False
+        self.map_cache = MapContourTileCache(DEFAULT_MAP_CACHE_DB_PATH)
 
         self.view_state = ViewState(
             center_lat=config.fallback_center_lat,
@@ -734,13 +818,57 @@ class LiveRadarWindow(QMainWindow):
         bbox = self._current_bbox()
         return f"{self.default_map_source}|{','.join(f'{value:.4f}' for value in bbox)}"
 
+    def _zoom_level_for_range_km(self, range_km: float) -> int:
+        clamped_range = max(MIN_RANGE_KM, min(500.0, float(range_km)))
+        # Approximate slippy-map style zoom where tile width tracks current range.
+        raw_zoom = math.log2(40075.0 / (max(0.1, clamped_range) * 2.0))
+        return max(4, min(14, int(round(raw_zoom))))
+
+    def _tile_size_degrees(self, zoom_level: int) -> tuple[float, float]:
+        scale = float(2**zoom_level)
+        return (360.0 / scale, 180.0 / scale)
+
+    def _tile_bbox(self, zoom_level: int, tile_x: int, tile_y: int) -> tuple[float, float, float, float]:
+        lon_step, lat_step = self._tile_size_degrees(zoom_level)
+        min_lon = -180.0 + (tile_x * lon_step)
+        min_lat = -90.0 + (tile_y * lat_step)
+        max_lon = min_lon + lon_step
+        max_lat = min_lat + lat_step
+        return (min_lon, min_lat, max_lon, max_lat)
+
+    def _tiles_for_bbox(self, bbox: tuple[float, float, float, float], zoom_level: int) -> list[tuple[int, int]]:
+        min_lon, min_lat, max_lon, max_lat = bbox
+        lon_step, lat_step = self._tile_size_degrees(zoom_level)
+        x_count = int(round(360.0 / lon_step))
+        y_count = int(round(180.0 / lat_step))
+
+        min_x = max(0, min(x_count - 1, int(math.floor((min_lon + 180.0) / lon_step))))
+        max_x = max(0, min(x_count - 1, int(math.floor((max_lon + 180.0) / lon_step))))
+        min_y = max(0, min(y_count - 1, int(math.floor((min_lat + 90.0) / lat_step))))
+        max_y = max(0, min(y_count - 1, int(math.floor((max_lat + 90.0) / lat_step))))
+
+        keys: list[tuple[int, int]] = []
+        for tile_x in range(min_x, max_x + 1):
+            for tile_y in range(min_y, max_y + 1):
+                keys.append((tile_x, tile_y))
+        return keys
+
+    def _feature_list_from_payload(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        raw_features = payload.get("features", [])
+        if not isinstance(raw_features, list):
+            return []
+        return [feature for feature in raw_features if isinstance(feature, dict)]
+
     def schedule_map_contours(self) -> None:
         if not self.radar_widget.show_map_contours:
             return
         self.map_retry_timer.start(200)
 
     def load_map_contours(self) -> None:
-        if not self.radar_widget.show_map_contours or self.map_in_flight:
+        if not self.radar_widget.show_map_contours:
+            return
+        if self.map_in_flight:
+            self.map_refresh_pending = True
             return
 
         request_key = self._map_request_key()
@@ -748,23 +876,73 @@ class LiveRadarWindow(QMainWindow):
             return
 
         bbox = self._current_bbox()
-        params = {
-            "bbox": ",".join(f"{value:.6f}" for value in bbox),
-            "range_km": f"{self.radar_widget.state.range_km:.4f}",
-            "source": self.default_map_source,
-        }
+        zoom_level = self._zoom_level_for_range_km(self.radar_widget.state.range_km)
+        tile_keys = self._tiles_for_bbox(bbox, zoom_level)
+
+        cached_features: list[dict[str, Any]] = []
+        missing_tiles: list[tuple[int, int]] = []
+        for tile_x, tile_y in tile_keys:
+            features = self.map_cache.get_tile_features(
+                source=self.default_map_source,
+                zoom_level=zoom_level,
+                tile_x=tile_x,
+                tile_y=tile_y,
+            )
+            if features is None:
+                missing_tiles.append((tile_x, tile_y))
+            else:
+                cached_features.extend(features)
+
+        def _finalize(features: list[dict[str, Any]]) -> None:
+            self.map_in_flight = False
+            if request_key != self._map_request_key():
+                self.map_refresh_pending = True
+            else:
+                self.map_loaded_key = request_key
+                self.radar_widget.set_map_segments(self._extract_map_segments({"features": features}))
+            if self.map_refresh_pending:
+                self.map_refresh_pending = False
+                self.schedule_map_contours()
+
+        if not missing_tiles:
+            _finalize(cached_features)
+            return
+
         self.map_in_flight = True
+        fetched_features = list(cached_features)
 
-        def _on_success(payload: dict[str, Any]) -> None:
-            self.map_in_flight = False
-            self.map_loaded_key = request_key
-            self.radar_widget.set_map_segments(self._extract_map_segments(payload))
+        def _fetch_missing(index: int) -> None:
+            if index >= len(missing_tiles):
+                _finalize(fetched_features)
+                return
 
-        def _on_error(message: str) -> None:
-            self.map_in_flight = False
-            self.statusBar().showMessage(f"Failed to load /ui/map-contours: {message}", 3000)
+            tile_x, tile_y = missing_tiles[index]
+            tile_bbox = self._tile_bbox(zoom_level, tile_x, tile_y)
+            params = {
+                "bbox": ",".join(f"{value:.6f}" for value in tile_bbox),
+                "range_km": f"{self.radar_widget.state.range_km:.4f}",
+                "source": self.default_map_source,
+            }
 
-        self._request_json("/ui/map-contours", params=params, on_success=_on_success, on_error=_on_error)
+            def _on_success(payload: dict[str, Any]) -> None:
+                features = self._feature_list_from_payload(payload)
+                self.map_cache.upsert_tile_features(
+                    source=self.default_map_source,
+                    zoom_level=zoom_level,
+                    tile_x=tile_x,
+                    tile_y=tile_y,
+                    features=features,
+                )
+                fetched_features.extend(features)
+                _fetch_missing(index + 1)
+
+            def _on_error(message: str) -> None:
+                self.statusBar().showMessage(f"Failed to load /ui/map-contours: {message}", 3000)
+                _fetch_missing(index + 1)
+
+            self._request_json("/ui/map-contours", params=params, on_success=_on_success, on_error=_on_error)
+
+        _fetch_missing(0)
 
     def _extract_map_segments(self, payload: dict[str, Any]) -> list[tuple[QPointF, QPointF]]:
         features = payload.get("features", [])
