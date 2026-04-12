@@ -12,8 +12,6 @@ from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequ
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
-    QComboBox,
-    QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -352,16 +350,19 @@ class LiveRadarWindow(QMainWindow):
         self.show_map_contours_checkbox.setChecked(config.show_map_contours)
         self.show_map_contours_checkbox.toggled.connect(self.on_show_map_contours_changed)
 
-        self.show_low_speed_checkbox = QCheckBox("Visa last_speed<1")
-        self.show_low_speed_checkbox.setChecked(config.show_low_speed)
-        self.show_low_speed_checkbox.toggled.connect(self.on_show_low_speed_changed)
+        self.show_low_speed_button = QPushButton("Speed <1")
+        self.show_low_speed_button.setCheckable(True)
+        self.show_low_speed_button.setChecked(config.show_low_speed)
+        self.show_low_speed_button.toggled.connect(self.on_show_low_speed_changed)
+        self._sync_show_low_speed_button(config.show_low_speed)
 
-        self.target_type_filter = QComboBox()
-        self.target_type_filter.addItem("Alla", "all")
-        self.target_type_filter.addItem("Flygplan", "aircraft")
-        self.target_type_filter.addItem("Batar", "vessel")
-        self._set_combo_value(config.target_type_filter)
-        self.target_type_filter.currentIndexChanged.connect(self.on_target_type_filter_changed)
+        self.target_type_filter_buttons: dict[str, QPushButton] = {}
+        for value, label in (("all", "Alla"), ("aircraft", "Flygplan"), ("vessel", "Batar")):
+            button = QPushButton(label)
+            button.setCheckable(True)
+            button.clicked.connect(lambda _checked, selected=value: self.on_target_type_filter_changed(selected))
+            self.target_type_filter_buttons[value] = button
+        self._set_target_type_filter(config.target_type_filter)
 
         self.objects_summary_label = QLabel("0 synliga objekt")
         self.visible_objects_list = QListWidget()
@@ -427,12 +428,15 @@ class LiveRadarWindow(QMainWindow):
         side_layout.setContentsMargins(8, 8, 8, 8)
         side_layout.setSpacing(8)
 
-        side_layout.addWidget(self.show_low_speed_checkbox)
+        side_layout.addWidget(self.show_low_speed_button)
 
-        form = QFormLayout()
-        form.setContentsMargins(0, 0, 0, 0)
-        form.addRow("Typ", self.target_type_filter)
-        side_layout.addLayout(form)
+        side_layout.addWidget(QLabel("Typ"))
+        target_filter_row = QHBoxLayout()
+        target_filter_row.setContentsMargins(0, 0, 0, 0)
+        target_filter_row.setSpacing(6)
+        for value in ("all", "aircraft", "vessel"):
+            target_filter_row.addWidget(self.target_type_filter_buttons[value])
+        side_layout.addLayout(target_filter_row)
 
         side_layout.addWidget(self.objects_summary_label)
         side_layout.addWidget(self.visible_objects_list, stretch=1)
@@ -454,7 +458,7 @@ class LiveRadarWindow(QMainWindow):
               color: #9be89b;
               font-family: Courier New, monospace;
             }
-            QLineEdit, QComboBox, QListWidget {
+            QLineEdit, QListWidget {
               background: #041104;
               border: 1px solid #226322;
               color: #c1f5c1;
@@ -475,11 +479,17 @@ class LiveRadarWindow(QMainWindow):
             """
         )
 
-    def _set_combo_value(self, value: str) -> None:
-        for index in range(self.target_type_filter.count()):
-            if self.target_type_filter.itemData(index) == value:
-                self.target_type_filter.setCurrentIndex(index)
-                return
+    def _set_target_type_filter(self, value: str) -> str:
+        selected = value if value in self.target_type_filter_buttons else "all"
+        self.radar_widget.target_type_filter = selected
+        for option, button in self.target_type_filter_buttons.items():
+            active = option == selected
+            button.setChecked(active)
+            if active:
+                button.setStyleSheet("color: #9be89b; border: 1px solid #2f8b2f; padding: 2px 6px;")
+            else:
+                button.setStyleSheet("color: #5b9e5b; border: 1px solid #225522; padding: 2px 6px;")
+        return selected
 
     def _sync_scan_labels(self) -> None:
         for scan in SCAN_ORDER:
@@ -489,6 +499,16 @@ class LiveRadarWindow(QMainWindow):
                 label.setStyleSheet("color: #9be89b; border: 1px solid #2f8b2f; padding: 2px 6px;")
             else:
                 label.setStyleSheet("color: #5b9e5b; border: 1px solid #225522; padding: 2px 6px;")
+
+    def _sync_show_low_speed_button(self, active: bool) -> None:
+        if active:
+            self.show_low_speed_button.setStyleSheet(
+                "color: #9be89b; border: 1px solid #2f8b2f; padding: 2px 6px;"
+            )
+        else:
+            self.show_low_speed_button.setStyleSheet(
+                "color: #5b9e5b; border: 1px solid #225522; padding: 2px 6px;"
+            )
 
     def on_zoom_in(self) -> None:
         self.radar_widget.zoom_in()
@@ -532,12 +552,12 @@ class LiveRadarWindow(QMainWindow):
 
     def on_show_low_speed_changed(self, checked: bool) -> None:
         self.radar_widget.show_low_speed = checked
+        self._sync_show_low_speed_button(checked)
         self.radar_widget.update()
         self._refresh_target_lists()
 
-    def on_target_type_filter_changed(self) -> None:
-        selected = str(self.target_type_filter.currentData())
-        self.radar_widget.target_type_filter = selected
+    def on_target_type_filter_changed(self, selected: str) -> None:
+        self._set_target_type_filter(selected)
         self.radar_widget.update()
         self._refresh_target_lists()
 
@@ -574,19 +594,25 @@ class LiveRadarWindow(QMainWindow):
 
     def _target_label(self, target: dict[str, Any]) -> str:
         label = str(target.get("label") or target.get("target_id") or "okant")
-        speed_text = "-"
-        altitude_text = "-"
+        parts = [label]
+
         if target.get("speed") is not None:
             try:
-                speed_text = f"{float(target['speed']):.1f}"
+                speed_value = float(target["speed"])
+                if math.isfinite(speed_value):
+                    parts.append(f"speed {speed_value:.1f}")
             except (TypeError, ValueError):
                 pass
+
         if target.get("altitude") is not None:
             try:
-                altitude_text = f"{float(target['altitude']):.0f}"
+                altitude_value = float(target["altitude"])
+                if math.isfinite(altitude_value):
+                    parts.append(f"alt {altitude_value:.0f}")
             except (TypeError, ValueError):
                 pass
-        return f"{label} | speed {speed_text} | alt {altitude_text}"
+
+        return " | ".join(parts)
 
     def _refresh_target_lists(self) -> None:
         visible, outside = self.radar_widget.filtered_targets()
