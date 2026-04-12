@@ -725,6 +725,7 @@ class LiveRadarWindow(QMainWindow):
 
         self.zoom_reset_button = QPushButton("Hem")
         self.zoom_reset_button.clicked.connect(self.on_zoom_reset)
+        self.range_input.setFixedHeight(self.zoom_in_button.sizeHint().height())
 
         self.target_type_filter_buttons: dict[str, QPushButton] = {}
         for value, label in (("stopped", "Stoppade"), ("aircraft", "Flygplan"), ("vessel", "Batar")):
@@ -840,7 +841,7 @@ class LiveRadarWindow(QMainWindow):
             QWidget {
               background: #000000;
               color: #9be89b;
-              font-family: Courier New, monospace;
+              font-family: LCD, "DS-Digital", "Digital-7", "Courier New", monospace;
             }
             QLineEdit, QListWidget {
               background: #041104;
