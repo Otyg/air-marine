@@ -15,7 +15,6 @@ from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
     QApplication,
-    QCheckBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -40,7 +39,7 @@ from app.qt_live_view import (
 
 LOGGER = logging.getLogger(__name__)
 
-SCAN_ORDER = ("AIS", "ADS", "FLARM")
+SCAN_ORDER = ("AIS", "ADS")
 RADAR_RING_COUNT = 5
 DEFAULT_MAP_CACHE_DB_PATH = Path("./data/qt_map_contours.sqlite")
 TRAIL_POINT_WINDOW_SECONDS = 120.0
@@ -709,20 +708,7 @@ class LiveRadarWindow(QMainWindow):
         self.scan_labels = {
             "AIS": QLabel("AIS"),
             "ADS": QLabel("ADS"),
-            "FLARM": QLabel("FLARM"),
         }
-
-        self.show_fixed_names_checkbox = QCheckBox("Visa namn fasta punkter")
-        self.show_fixed_names_checkbox.setChecked(config.show_fixed_names)
-        self.show_fixed_names_checkbox.toggled.connect(self.on_show_fixed_names_changed)
-
-        self.show_target_labels_checkbox = QCheckBox("Visa labels objekt")
-        self.show_target_labels_checkbox.setChecked(config.show_target_labels)
-        self.show_target_labels_checkbox.toggled.connect(self.on_show_target_labels_changed)
-
-        self.show_map_contours_checkbox = QCheckBox("Visa kust/sjo-konturer")
-        self.show_map_contours_checkbox.setChecked(config.show_map_contours)
-        self.show_map_contours_checkbox.toggled.connect(self.on_show_map_contours_changed)
 
         self.target_type_filter_buttons: dict[str, QPushButton] = {}
         for value, label in (("stopped", "Stoppade"), ("aircraft", "Flygplan"), ("vessel", "Batar")):
@@ -733,6 +719,19 @@ class LiveRadarWindow(QMainWindow):
             )
             self.target_type_filter_buttons[value] = button
         self._sync_target_type_filter_buttons()
+
+        self.overlay_toggle_buttons: dict[str, QPushButton] = {}
+        for value, label, checked, handler in (
+            ("fixed_names", "Fasta namn", config.show_fixed_names, self.on_show_fixed_names_changed),
+            ("target_labels", "Objektlabels", config.show_target_labels, self.on_show_target_labels_changed),
+            ("map_contours", "Kartkonturer", config.show_map_contours, self.on_show_map_contours_changed),
+        ):
+            button = QPushButton(label)
+            button.setCheckable(True)
+            button.setChecked(checked)
+            button.toggled.connect(handler)
+            self.overlay_toggle_buttons[value] = button
+        self._sync_overlay_toggle_buttons()
 
         self.objects_summary_label = QLabel("0 synliga objekt")
         self.visible_objects_list = QListWidget()
@@ -781,10 +780,6 @@ class LiveRadarWindow(QMainWindow):
 
         for value in SCAN_ORDER:
             top_bar.addWidget(self.scan_labels[value])
-
-        top_bar.addWidget(self.show_fixed_names_checkbox)
-        top_bar.addWidget(self.show_target_labels_checkbox)
-        top_bar.addWidget(self.show_map_contours_checkbox)
         top_bar.addStretch(1)
 
         root_layout.addLayout(top_bar)
@@ -805,6 +800,14 @@ class LiveRadarWindow(QMainWindow):
         for value in ("stopped", "aircraft", "vessel"):
             target_filter_row.addWidget(self.target_type_filter_buttons[value])
         side_layout.addLayout(target_filter_row)
+
+        side_layout.addWidget(QLabel("Visa"))
+        overlay_toggle_row = QHBoxLayout()
+        overlay_toggle_row.setContentsMargins(0, 0, 0, 0)
+        overlay_toggle_row.setSpacing(6)
+        for value in ("fixed_names", "target_labels", "map_contours"):
+            overlay_toggle_row.addWidget(self.overlay_toggle_buttons[value])
+        side_layout.addLayout(overlay_toggle_row)
 
         side_layout.addWidget(self.objects_summary_label)
         side_layout.addWidget(self.visible_objects_list, stretch=1)
@@ -858,10 +861,26 @@ class LiveRadarWindow(QMainWindow):
             button.blockSignals(True)
             button.setChecked(active)
             button.blockSignals(False)
-            if active:
-                button.setStyleSheet("color: #9be89b; border: 1px solid #2f8b2f; padding: 2px 6px;")
-            else:
-                button.setStyleSheet("color: #5b9e5b; border: 1px solid #225522; padding: 2px 6px;")
+            self._style_toggle_button(button, active)
+
+    def _sync_overlay_toggle_buttons(self) -> None:
+        states = {
+            "fixed_names": self.radar_widget.show_fixed_names,
+            "target_labels": self.radar_widget.show_target_labels,
+            "map_contours": self.radar_widget.show_map_contours,
+        }
+        for option, button in self.overlay_toggle_buttons.items():
+            active = bool(states.get(option, False))
+            button.blockSignals(True)
+            button.setChecked(active)
+            button.blockSignals(False)
+            self._style_toggle_button(button, active)
+
+    def _style_toggle_button(self, button: QPushButton, active: bool) -> None:
+        if active:
+            button.setStyleSheet("color: #9be89b; border: 1px solid #2f8b2f; padding: 2px 6px;")
+        else:
+            button.setStyleSheet("color: #5b9e5b; border: 1px solid #225522; padding: 2px 6px;")
 
     def _sync_scan_labels(self) -> None:
         for scan in SCAN_ORDER:
@@ -900,14 +919,17 @@ class LiveRadarWindow(QMainWindow):
 
     def on_show_fixed_names_changed(self, checked: bool) -> None:
         self.radar_widget.show_fixed_names = checked
+        self._sync_overlay_toggle_buttons()
         self.radar_widget.update()
 
     def on_show_target_labels_changed(self, checked: bool) -> None:
         self.radar_widget.show_target_labels = checked
+        self._sync_overlay_toggle_buttons()
         self.radar_widget.update()
 
     def on_show_map_contours_changed(self, checked: bool) -> None:
         self.radar_widget.show_map_contours = checked
+        self._sync_overlay_toggle_buttons()
         self.radar_widget.update()
         if checked:
             self.load_map_contours(force=True)
