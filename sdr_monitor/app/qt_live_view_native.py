@@ -162,6 +162,7 @@ class RadarWidget(QWidget):
         self.show_vessel = True
         self.selected_target_id: str | None = None
         self.local_trails: dict[str, list[tuple[float, float, float]]] = {}
+        self.fixed_objects_debug_text = "Fixed dbg: total=0 valid=0 visible=0"
 
     def set_home(self, lat: float, lon: float) -> None:
         self.home_lat = lat
@@ -177,7 +178,28 @@ class RadarWidget(QWidget):
         self.update()
 
     def set_fixed_objects(self, fixed_objects: list[dict[str, Any]]) -> None:
-        self.fixed_objects = fixed_objects
+        normalized: list[dict[str, Any]] = []
+        for item in fixed_objects:
+            if not isinstance(item, dict):
+                continue
+            normalized_item = dict(item)
+            if normalized_item.get("lat") is None and normalized_item.get("latitude") is not None:
+                normalized_item["lat"] = normalized_item.get("latitude")
+            if normalized_item.get("lon") is None and normalized_item.get("longitude") is not None:
+                normalized_item["lon"] = normalized_item.get("longitude")
+            normalized.append(normalized_item)
+        self.fixed_objects = normalized
+        first_name = "-"
+        first_lat = "-"
+        first_lon = "-"
+        if normalized:
+            first = normalized[0]
+            first_name = str(first.get("name") or "-")
+            first_lat = str(first.get("lat") if first.get("lat") is not None else first.get("latitude", "-"))
+            first_lon = str(first.get("lon") if first.get("lon") is not None else first.get("longitude", "-"))
+        self.fixed_objects_debug_text = (
+            f"Fixed dbg: total={len(normalized)} valid=0 visible=0 first={first_name} ({first_lat}, {first_lon})"
+        )
         self.update()
 
     def set_map_segments(self, segments: list[tuple[QPointF, QPointF]]) -> None:
@@ -514,12 +536,15 @@ class RadarWidget(QWidget):
             for start, end in self.map_segments:
                 painter.drawLine(start, end)
 
+        fixed_valid_count = 0
+        fixed_visible_count = 0
         painter.setPen(QPen(QColor("#2c7a2c"), 1))
         for fixed in self.fixed_objects:
             lat = fixed.get("lat")
             lon = fixed.get("lon")
             if lat is None or lon is None:
                 continue
+            fixed_valid_count += 1
             max_range = fixed.get("max_visible_range_km")
             if max_range is not None:
                 try:
@@ -530,6 +555,7 @@ class RadarWidget(QWidget):
             point = self._latlon_to_xy(float(lat), float(lon), cx, cy, px_per_km)
             if math.hypot(point.x() - cx, point.y() - cy) > radius:
                 continue
+            fixed_visible_count += 1
             raw_symbol = str(fixed.get("symbol", "")).strip()
             symbol = self._fixed_symbol_text(raw_symbol)
             painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -631,6 +657,11 @@ class RadarWidget(QWidget):
         painter.setPen(QPen(QColor("#9be89b"), 1))
         painter.drawText(12, 20, f"Center: {self.state.center_lat:.6f}, {self.state.center_lon:.6f}")
         painter.drawText(12, 40, f"Range: {self.state.range_km:.2f} km")
+        painter.drawText(
+            12,
+            60,
+            self.fixed_objects_debug_text.replace("valid=0 visible=0", f"valid={fixed_valid_count} visible={fixed_visible_count}"),
+        )
 
 
 class LiveRadarWindow(QMainWindow):
