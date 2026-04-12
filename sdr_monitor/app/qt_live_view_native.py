@@ -194,9 +194,7 @@ class RadarWidget(QWidget):
         return QPointF(cx + (dx_km * px_per_km), cy - (dy_km * px_per_km))
 
     def _target_color(self, target: dict[str, Any]) -> QColor:
-        kind = str(target.get("kind", "")).lower()
-        if kind == "vessel":
-            return QColor("#8fd3ff")
+        _kind = str(target.get("kind", "")).lower()
         return QColor("#c1f5c1")
 
     def _is_target_visible(self, target: dict[str, Any]) -> bool:
@@ -301,7 +299,9 @@ class RadarWidget(QWidget):
         painter.drawLine(QPointF(cx, cy - radius), QPointF(cx, cy + radius))
 
         if self.show_map_contours:
-            painter.setPen(QPen(QColor("#1b5e8b"), 1))
+            contour_pen = QPen(QColor("#143314"))
+            contour_pen.setWidthF(0.6)
+            painter.setPen(contour_pen)
             for start, end in self.map_segments:
                 painter.drawLine(start, end)
 
