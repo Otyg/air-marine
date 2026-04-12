@@ -1315,7 +1315,6 @@ class LiveRadarWindow(QMainWindow):
 
         cached_features: list[dict[str, Any]] = []
         missing_tiles: list[tuple[int, int]] = []
-        cached_empty_tiles = 0
         for tile_x, tile_y in tile_keys:
             features = self.map_cache.get_tile_features(
                 source=self.default_map_source,
@@ -1325,8 +1324,6 @@ class LiveRadarWindow(QMainWindow):
             )
             if features is None:
                 missing_tiles.append((tile_x, tile_y))
-            elif not features:
-                cached_empty_tiles += 1
             else:
                 cached_features.extend(features)
         cached_features = self._dedupe_features(cached_features)
@@ -1354,17 +1351,19 @@ class LiveRadarWindow(QMainWindow):
                 self.map_refresh_pending = False
                 self.schedule_map_contours(force=True)
 
-        # If cache says "complete" but yields no usable geometry, refresh from backend.
-        if not missing_tiles and (not cached_features or cached_empty_tiles > 0):
-            missing_tiles = list(tile_keys)
-
         if not missing_tiles:
             _finalize(cached_features, status="ok")
             return
 
         self.map_in_flight = True
+        requested_tile: tuple[int, int] | None = None
+        request_bbox = bbox
+        if missing_tiles:
+            requested_tile = missing_tiles[0]
+            request_bbox = self._tile_bbox(zoom_level, requested_tile[0], requested_tile[1])
+
         params = {
-            "bbox": ",".join(f"{value:.6f}" for value in bbox),
+            "bbox": ",".join(f"{value:.6f}" for value in request_bbox),
             "range_km": f"{self.radar_widget.state.range_km:.4f}",
             "source": self.default_map_source,
         }
@@ -1383,15 +1382,20 @@ class LiveRadarWindow(QMainWindow):
                     poll_after_seconds = float(poll_after)
 
             if status == "ok":
-                for tile_x, tile_y in missing_tiles:
+                if requested_tile is not None:
                     self.map_cache.upsert_tile_features(
                         source=self.default_map_source,
                         zoom_level=zoom_level,
-                        tile_x=tile_x,
-                        tile_y=tile_y,
+                        tile_x=requested_tile[0],
+                        tile_y=requested_tile[1],
                         features=features,
                     )
-                _finalize(merged_features, status="ok")
+                # Progressively render tile-by-tile: keep polling quickly
+                # until all tiles are filled for this view request.
+                if len(missing_tiles) > 1:
+                    _finalize(merged_features, status="pending", poll_after_seconds=0.05)
+                else:
+                    _finalize(merged_features, status="ok")
                 return
 
             if status == "pending":
