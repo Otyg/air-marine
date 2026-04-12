@@ -41,7 +41,7 @@ SCAN_ORDER = ("AIS", "ADS", "FLARM")
 RADAR_RING_COUNT = 5
 DEFAULT_MAP_CACHE_DB_PATH = Path("./data/qt_map_contours.sqlite")
 TRAIL_POINT_WINDOW_SECONDS = 120.0
-TRAIL_STALE_START_SECONDS = 30.0
+TRAIL_STALE_START_SECONDS = 120.0
 TRAIL_STALE_FADE_SECONDS = 270.0
 LIVE_TRAIL_AGE_COLORS = (
     "#C1F5C1",
@@ -501,7 +501,7 @@ class RadarWidget(QWidget):
             for start, end in self.map_segments:
                 painter.drawLine(start, end)
 
-        painter.setPen(QPen(QColor("#8fd3ff"), 1))
+        painter.setPen(QPen(QColor("#2c7a2c"), 1))
         for fixed in self.fixed_objects:
             lat = fixed.get("lat")
             lon = fixed.get("lon")
@@ -517,10 +517,22 @@ class RadarWidget(QWidget):
             point = self._latlon_to_xy(float(lat), float(lon), cx, cy, px_per_km)
             if math.hypot(point.x() - cx, point.y() - cy) > radius:
                 continue
-            symbol = str(fixed.get("symbol", "O"))[:1] or "O"
-            painter.drawText(point, symbol)
+            raw_symbol = str(fixed.get("symbol", "")).strip()
+            symbol = (raw_symbol[:1] if raw_symbol else "O")
+            symbol_rect = QRectF(point.x() - 7.0, point.y() - 7.0, 14.0, 14.0)
+            painter.drawText(symbol_rect, int(Qt.AlignmentFlag.AlignCenter), symbol)
             if self.show_fixed_names:
-                painter.drawText(point + QPointF(6, -4), str(fixed.get("name", "")))
+                raw_name = str(fixed.get("name", "")).strip()
+                if raw_name:
+                    name_lines = [segment for segment in raw_name.split() if segment]
+                    if name_lines:
+                        line_height = 12.0
+                        start_y = point.y() - (((len(name_lines) - 1) * line_height) * 0.5)
+                        painter.setPen(QPen(QColor("#9be89b"), 1))
+                        for index, line in enumerate(name_lines):
+                            text_point = QPointF(point.x() + 7.0, start_y + (index * line_height))
+                            painter.drawText(text_point, line)
+                        painter.setPen(QPen(QColor("#2c7a2c"), 1))
 
         visible_targets, outside_targets = self.filtered_targets()
         for target in visible_targets:
