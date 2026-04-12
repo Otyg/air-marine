@@ -859,6 +859,20 @@ class LiveRadarWindow(QMainWindow):
             return []
         return [feature for feature in raw_features if isinstance(feature, dict)]
 
+    def _dedupe_features(self, features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        deduped: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for feature in features:
+            try:
+                key = json.dumps(feature, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+            except (TypeError, ValueError):
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(feature)
+        return deduped
+
     def schedule_map_contours(self) -> None:
         if not self.radar_widget.show_map_contours:
             return
@@ -892,6 +906,7 @@ class LiveRadarWindow(QMainWindow):
                 missing_tiles.append((tile_x, tile_y))
             else:
                 cached_features.extend(features)
+        cached_features = self._dedupe_features(cached_features)
 
         def _finalize(features: list[dict[str, Any]]) -> None:
             self.map_in_flight = False
@@ -909,23 +924,15 @@ class LiveRadarWindow(QMainWindow):
             return
 
         self.map_in_flight = True
-        fetched_features = list(cached_features)
+        params = {
+            "bbox": ",".join(f"{value:.6f}" for value in bbox),
+            "range_km": f"{self.radar_widget.state.range_km:.4f}",
+            "source": self.default_map_source,
+        }
 
-        def _fetch_missing(index: int) -> None:
-            if index >= len(missing_tiles):
-                _finalize(fetched_features)
-                return
-
-            tile_x, tile_y = missing_tiles[index]
-            tile_bbox = self._tile_bbox(zoom_level, tile_x, tile_y)
-            params = {
-                "bbox": ",".join(f"{value:.6f}" for value in tile_bbox),
-                "range_km": f"{self.radar_widget.state.range_km:.4f}",
-                "source": self.default_map_source,
-            }
-
-            def _on_success(payload: dict[str, Any]) -> None:
-                features = self._feature_list_from_payload(payload)
+        def _on_success(payload: dict[str, Any]) -> None:
+            features = self._feature_list_from_payload(payload)
+            for tile_x, tile_y in missing_tiles:
                 self.map_cache.upsert_tile_features(
                     source=self.default_map_source,
                     zoom_level=zoom_level,
@@ -933,16 +940,13 @@ class LiveRadarWindow(QMainWindow):
                     tile_y=tile_y,
                     features=features,
                 )
-                fetched_features.extend(features)
-                _fetch_missing(index + 1)
+            _finalize(features)
 
-            def _on_error(message: str) -> None:
-                self.statusBar().showMessage(f"Failed to load /ui/map-contours: {message}", 3000)
-                _fetch_missing(index + 1)
+        def _on_error(message: str) -> None:
+            self.statusBar().showMessage(f"Failed to load /ui/map-contours: {message}", 3000)
+            _finalize(cached_features)
 
-            self._request_json("/ui/map-contours", params=params, on_success=_on_success, on_error=_on_error)
-
-        _fetch_missing(0)
+        self._request_json("/ui/map-contours", params=params, on_success=_on_success, on_error=_on_error)
 
     def _extract_map_segments(self, payload: dict[str, Any]) -> list[tuple[QPointF, QPointF]]:
         features = payload.get("features", [])
