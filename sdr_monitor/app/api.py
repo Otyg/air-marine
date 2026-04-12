@@ -87,6 +87,16 @@ def create_api_app(runtime: APIRuntime) -> FastAPI:
             default_map_source=runtime.default_map_source,
         )
 
+    @app.get("/ui/live-config")
+    async def get_live_ui_config() -> dict[str, Any]:
+        return {
+            "service_name": runtime.service_name,
+            "center_lat": runtime.radar_center_lat,
+            "center_lon": runtime.radar_center_lon,
+            "fixed_objects": [item.to_dict() for item in runtime.fixed_objects],
+            "default_map_source": runtime.default_map_source,
+        }
+
     @app.get("/ui/targets-latest")
     async def get_targets_latest() -> dict[str, Any]:
         scanner_status = runtime.scanner.status() if runtime.scanner else {}

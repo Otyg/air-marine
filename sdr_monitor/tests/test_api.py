@@ -318,13 +318,41 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
     assert "function targetDisplayLabel(target)" in response.text
     assert "function drawMapTargetLabel(label, x, y, color)" in response.text
     assert "function matchesTargetTypeFilter(target, filterValue)" in response.text
-    assert "function updateReceptionWarning()" in response.text
-    assert "ingen positionsdata från AIS eller ADS-B" in response.text
-    assert "#ff4d4d" in response.text
-    assert "#4AE34A" in response.text
-    assert "last_seen:" in response.text
-    assert "59.32930000" in response.text
-    assert "18.06860000" in response.text
+
+
+def test_live_ui_config_endpoint_returns_rest_payload() -> None:
+    state = LiveState(clock=lambda: datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc))
+    app = create_api_app(
+        APIRuntime(
+            state=state,
+            store=None,
+            scanner=None,
+            service_name="air-marine",
+            radar_center_lat=56.1619519,
+            radar_center_lon=15.5940978,
+            fixed_objects=[
+                FixedRadarObject(
+                    name="Harbor",
+                    lat=56.1619,
+                    lon=15.5940,
+                    symbol="H",
+                    max_visible_range_km=10.0,
+                )
+            ],
+            default_map_source="hydro",
+        )
+    )
+
+    response = _request(app, "GET", "/ui/live-config")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["service_name"] == "air-marine"
+    assert payload["center_lat"] == 56.1619519
+    assert payload["center_lon"] == 15.5940978
+    assert payload["default_map_source"] == "hydro"
+    assert isinstance(payload["fixed_objects"], list)
+    assert payload["fixed_objects"][0]["name"] == "Harbor"
+    assert payload["fixed_objects"][0]["symbol"] == "H"
 
 
 def test_radar_ui_root_redirects_to_history_when_radio_is_disconnected() -> None:

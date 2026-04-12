@@ -139,6 +139,22 @@ The service starts:
 4. Background scanner loop
 5. FastAPI server
 
+Run native Qt desktop live view (REST-only, no web UI dependency):
+
+```bash
+cd sdr_monitor
+pip install -r requirements-qt.txt
+cp qt_client/config.example.json qt_client/config.json
+python3 scripts/run_qt_live_view.py --config qt_client/config.json
+```
+
+Optional launch flags:
+
+- `--base-url http://backend-host:8000`
+- `--title "Air-Marine Live Radar"`
+
+The Qt client reads all client-side settings from `qt_client/config.json`, so it can run on a separate machine and point to any reachable backend base URL.
+
 ## Run in background (systemd, survives logout)
 
 Use a user-level `systemd` service so the app keeps running even when you are not logged in.
@@ -174,6 +190,7 @@ If you prefer manual setup, use the template unit file:
 ## API endpoints
 
 - `GET /` (radar-like web UI)
+- `GET /ui/live-config`
 - `GET /ui/targets-latest`
 - `GET /ui/map-contours?bbox=min_lon,min_lat,max_lon,max_lat&range_km=...&source=hydro|elevation`
 - `GET /scanner/scan`
