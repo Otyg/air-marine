@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import logging
 import math
 from pathlib import Path
 import sqlite3
@@ -36,6 +37,8 @@ from app.qt_live_view import (
     build_api_url,
     parse_live_ui_config,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 SCAN_ORDER = ("AIS", "ADS", "FLARM")
 RADAR_RING_COUNT = 5
@@ -1015,6 +1018,7 @@ class LiveRadarWindow(QMainWindow):
 
     def _request_json(self, path: str, *, params: dict[str, Any] | None, on_success, on_error) -> None:
         url = build_api_url(self.config.backend_base_url, path, params=params)
+        LOGGER.info("QT REST request: GET %s", url)
         request = QNetworkRequest(QUrl(url))
         request.setRawHeader(b"Accept", b"application/json")
         request.setTransferTimeout(self.config.request_timeout_ms)
@@ -1022,14 +1026,30 @@ class LiveRadarWindow(QMainWindow):
 
         def _finished() -> None:
             if reply.error() != QNetworkReply.NetworkError.NoError:
+                LOGGER.error(
+                    "QT REST error: GET %s failed: %s",
+                    url,
+                    reply.errorString(),
+                )
                 on_error(reply.errorString())
                 reply.deleteLater()
                 return
             raw = bytes(reply.readAll())
+            status_code = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+            raw_text = raw.decode("utf-8", errors="replace")
+            if len(raw_text) > 4000:
+                raw_text = f"{raw_text[:4000]}...<truncated>"
+            LOGGER.info(
+                "QT REST response: GET %s status=%s body=%s",
+                url,
+                status_code,
+                raw_text,
+            )
             reply.deleteLater()
             try:
                 on_success(json.loads(raw.decode("utf-8")))
             except Exception as exc:
+                LOGGER.exception("QT REST parse error for %s", url)
                 on_error(f"Invalid JSON response: {exc}")
 
         reply.finished.connect(_finished)
