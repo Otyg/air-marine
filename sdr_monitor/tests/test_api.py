@@ -270,15 +270,13 @@ def test_radar_ui_root_renders_html_with_center_coordinates() -> None:
     assert "href=\"history-radar\"" in response.text
     assert "id=\"showLowSpeed\"" in response.text
     assert "drawCourseVector" in response.text
-    assert "const minAutoRefreshMs = 2000;" in response.text
-    assert "const defaultPollMs = minAutoRefreshMs;" in response.text
-    assert "const minPollMs = minAutoRefreshMs;" in response.text
-    assert "}, minAutoRefreshMs);" in response.text
-    assert "function computeAdaptivePollMs()" in response.text
-    assert "function computeBandAwarePollMs(scannerState)" in response.text
+    assert "const fixedPollMs = 5000;" in response.text
+    assert "}, fixedPollMs);" in response.text
+    assert "function computeAdaptivePollMs()" not in response.text
+    assert "function computeBandAwarePollMs(scannerState)" not in response.text
     assert "function syncScanIndicators()" in response.text
     assert "function setScanSelection(nextSelection)" not in response.text
-    assert "scheduleNextLoad(nextPollMs);" in response.text
+    assert "scheduleNextLoad();" in response.text
     assert "void loadTargets();" in response.text
     assert "renderObjectsPanel" in response.text
     assert "Objekt utanför aktivt område" in response.text

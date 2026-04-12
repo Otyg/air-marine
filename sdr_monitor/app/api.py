@@ -981,12 +981,7 @@ def _build_radar_html(
   <script>
     const homeCenter = {{ lat: {center_lat:.8f}, lon: {center_lon:.8f} }};
     const kmPerDegLat = 110.574;
-    const minAutoRefreshMs = 2000;
-    const defaultPollMs = minAutoRefreshMs;
-    const minPollMs = minAutoRefreshMs;
-    const maxPollMs = 5000;
-    const pollBackoffFactor = 1.25;
-    const observedIntervalLimit = 12;
+    const fixedPollMs = 5000;
     const defaultRangeKm = 10.0;
     const radarRingCount = 5;
     const minRangeKm = 0.2;
@@ -1051,12 +1046,7 @@ def _build_radar_html(
     const selectedHistoryRequestLimit = selectedHistoryPositionCount + 1;
     const selectedTargetColor = "#ff4d4d";
     let pollTimerId = null;
-    let nextPollMs = defaultPollMs;
     let requestInFlight = false;
-    let lastSeenWatermarkMs = Number.NaN;
-    let lastDataChangeAtMs = Date.now();
-    const observedUpdateIntervalsMs = [];
-    let lastScannerState = null;
     let receptionStatus = null;
     const scanOrder = ["AIS", "ADS", "FLARM"];
     const scanIndicatorsByValue = {{
@@ -1121,114 +1111,6 @@ def _build_radar_html(
       return liveTrailAgeColors[paletteIndex];
     }}
 
-    function clampPollMs(value) {{
-      if (!Number.isFinite(value)) return defaultPollMs;
-      return Math.max(minPollMs, Math.min(maxPollMs, Math.round(value)));
-    }}
-
-    function pushObservedUpdateInterval(intervalMs) {{
-      if (!Number.isFinite(intervalMs)) return;
-      if (intervalMs <= 0 || intervalMs > 15 * 60 * 1000) return;
-      observedUpdateIntervalsMs.push(intervalMs);
-      if (observedUpdateIntervalsMs.length > observedIntervalLimit) {{
-        observedUpdateIntervalsMs.shift();
-      }}
-    }}
-
-    function median(values) {{
-      if (!Array.isArray(values) || values.length === 0) return Number.NaN;
-      const sorted = [...values].sort((a, b) => a - b);
-      const middle = Math.floor(sorted.length / 2);
-      if ((sorted.length % 2) === 0) {{
-        return (sorted[middle - 1] + sorted[middle]) / 2;
-      }}
-      return sorted[middle];
-    }}
-
-    function deriveLatestLastSeenMs(items) {{
-      let latest = Number.NaN;
-      for (const item of items) {{
-        if (!item || typeof item !== "object") continue;
-        const tsMs = parseTimestampMs(item.last_seen);
-        if (!Number.isFinite(tsMs)) continue;
-        if (!Number.isFinite(latest) || tsMs > latest) {{
-          latest = tsMs;
-        }}
-      }}
-      return latest;
-    }}
-
-    function computeAdaptivePollMs() {{
-      const medianObservedIntervalMs = median(observedUpdateIntervalsMs);
-      if (!Number.isFinite(medianObservedIntervalMs)) {{
-        return clampPollMs(defaultPollMs);
-      }}
-      return clampPollMs(medianObservedIntervalMs * 0.55);
-    }}
-
-    function toPositiveMs(secondsValue) {{
-      const seconds = Number(secondsValue);
-      if (!Number.isFinite(seconds) || seconds <= 0) return Number.NaN;
-      return seconds * 1000;
-    }}
-
-    function normalizeScannerState(rawScanner) {{
-      if (!rawScanner || typeof rawScanner !== "object") return null;
-      const activeScanBand = typeof rawScanner.active_scan_band === "string"
-        ? rawScanner.active_scan_band
-        : null;
-      const lastScanSwitchMs = parseTimestampMs(rawScanner.last_scan_switch);
-      const adsbWindowMs = toPositiveMs(rawScanner.adsb_window_seconds);
-      const ognWindowMs = toPositiveMs(rawScanner.ogn_window_seconds);
-      const aisWindowMs = toPositiveMs(rawScanner.ais_window_seconds);
-      const pauseMs = toPositiveMs(rawScanner.inter_scan_pause_seconds);
-      return {{
-        active_scan_band: activeScanBand,
-        last_scan_switch_ms: lastScanSwitchMs,
-        adsb_window_ms: adsbWindowMs,
-        ogn_window_ms: ognWindowMs,
-        ais_window_ms: aisWindowMs,
-        inter_scan_pause_ms: Number.isFinite(pauseMs) ? pauseMs : 0,
-      }};
-    }}
-
-    function computeBandAwarePollMs(scannerState) {{
-      if (!scannerState || typeof scannerState !== "object") return Number.NaN;
-      const activeBand = scannerState.active_scan_band;
-      if (activeBand !== "adsb" && activeBand !== "ais" && activeBand !== "ogn") return Number.NaN;
-
-      const lastSwitchMs = scannerState.last_scan_switch_ms;
-      if (!Number.isFinite(lastSwitchMs)) return Number.NaN;
-
-      const adsbWindowMs = scannerState.adsb_window_ms;
-      const ognWindowMs = scannerState.ogn_window_ms;
-      const aisWindowMs = scannerState.ais_window_ms;
-      const pauseMs = Number.isFinite(scannerState.inter_scan_pause_ms)
-        ? scannerState.inter_scan_pause_ms
-        : 0;
-
-      const currentWindowMs = activeBand === "adsb"
-        ? adsbWindowMs
-        : activeBand === "ogn"
-          ? ognWindowMs
-          : aisWindowMs;
-      if (!Number.isFinite(currentWindowMs) || currentWindowMs <= 0) return Number.NaN;
-
-      const elapsedMs = Math.max(0, Date.now() - lastSwitchMs);
-      const remainingInBandMs = Math.max(0, currentWindowMs - elapsedMs);
-
-      // Poll around the next likely band handover where fresh rows usually arrive.
-      const handoverSafetyMs = 180;
-      const targetMs = remainingInBandMs + Math.max(0, pauseMs) + handoverSafetyMs;
-      return clampPollMs(targetMs);
-    }}
-
-    function blendPollMsWithBandTiming(baseMs, bandAwareMs) {{
-      if (!Number.isFinite(baseMs)) return clampPollMs(bandAwareMs);
-      if (!Number.isFinite(bandAwareMs)) return clampPollMs(baseMs);
-      return clampPollMs((baseMs * 0.65) + (bandAwareMs * 0.35));
-    }}
-
     function normalizeScanSelection(rawValues) {{
       if (!Array.isArray(rawValues)) return [];
       const normalized = new Set();
@@ -1252,11 +1134,11 @@ def _build_radar_html(
       }}
     }}
 
-    function scheduleNextLoad(delayMs = nextPollMs) {{
+    function scheduleNextLoad(delayMs = fixedPollMs) {{
       if (pollTimerId !== null) {{
         clearTimeout(pollTimerId);
       }}
-      const safeDelayMs = clampPollMs(delayMs);
+      const safeDelayMs = Number.isFinite(delayMs) && delayMs > 0 ? Math.round(delayMs) : fixedPollMs;
       pollTimerId = window.setTimeout(() => {{
         void loadTargets();
       }}, safeDelayMs);
@@ -1679,11 +1561,12 @@ def _build_radar_html(
       const maxInactiveSeconds = trailStaleStartSeconds + trailStaleFadeSeconds;
       retainedTrailTargets = [];
       for (const [targetId, cached] of trailCache.entries()) {{
+        const isSelectedTarget = selectedTargetId !== null && targetId === selectedTargetId;
         const lastSeenMs = Date.parse(String(cached.last_seen || ""));
         const inactiveSeconds = Number.isFinite(lastSeenMs)
           ? (nowMs - lastSeenMs) / 1000
           : Number.POSITIVE_INFINITY;
-        if (inactiveSeconds > maxInactiveSeconds) {{
+        if (!isSelectedTarget && inactiveSeconds > maxInactiveSeconds) {{
           trailCache.delete(targetId);
           continue;
         }}
@@ -1847,8 +1730,16 @@ def _build_radar_html(
     async function selectTarget(targetId, shouldFitOnSelect = false) {{
       if (!targetId) return;
       if (selectedTargetId === targetId) {{
+        const deselectedTargetId = selectedTargetId;
         selectedTargetId = null;
         pendingFitTargetId = null;
+        if (deselectedTargetId) {{
+          selectedHistoryByTargetId.delete(deselectedTargetId);
+          trailCache.delete(deselectedTargetId);
+          retainedTrailTargets = retainedTrailTargets.filter(
+            (target) => target && target.target_id !== deselectedTargetId,
+          );
+        }}
         draw();
         return;
       }}
@@ -1858,15 +1749,6 @@ def _build_radar_html(
         pendingFitTargetId = targetId;
         fitSelectionToView(targetId, {{ includeHistory: false }});
       }} else {{
-        pendingFitTargetId = null;
-      }}
-      draw();
-
-      const activeSelection = targetId;
-      await loadSelectedHistory(targetId);
-      if (selectedTargetId !== activeSelection) return;
-      if (pendingFitTargetId === activeSelection) {{
-        fitSelectionToView(activeSelection, {{ includeHistory: true }});
         pendingFitTargetId = null;
       }}
       draw();
@@ -2068,8 +1950,8 @@ def _build_radar_html(
       ctx.setLineDash([4, 3]);
       if (canvasPoints.length > 1) {{
         for (let i = 1; i < canvasPoints.length; i += 1) {{
-          const previousHistoryPoint = selectedHistoryPoints[i - 1];
-          const currentHistoryPoint = selectedHistoryPoints[i];
+          const previousHistoryPoint = historyPoints[i - 1];
+          const currentHistoryPoint = historyPoints[i];
           if (!shouldConnectHistoryPoints(previousHistoryPoint, currentHistoryPoint)) {{
             continue;
           }}
@@ -2365,7 +2247,7 @@ def _build_radar_html(
         mapContourRetryTimer = null;
         mapContourPendingKey = null;
         void loadMapContoursForView(getViewMetrics().rangeKm);
-      }}, minAutoRefreshMs);
+      }}, fixedPollMs);
     }}
 
     async function loadMapContoursForView(rangeKm) {{
@@ -2476,7 +2358,6 @@ def _build_radar_html(
 
       drawMapContours(cx, cy, pxPerKm, radius);
       drawFixedObjects(cx, cy, pxPerKm, radius, rangeKm);
-      drawSelectedHistoryPath(selectedTargetId, cx, cy, pxPerKm, radius);
 
       ctx.font = "bold 10px Courier New, monospace";
       ctx.textAlign = "center";
@@ -2542,7 +2423,6 @@ def _build_radar_html(
         const response = await fetch("ui/targets-latest", {{ cache: "no-store" }});
         if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
         const payload = await response.json();
-        lastScannerState = normalizeScannerState(payload.scanner);
         if (
           payload
           && payload.scanner
@@ -2557,40 +2437,15 @@ def _build_radar_html(
         updateTrailCacheFromTargets(targets);
         radioConnected = Boolean(payload.radio_connected);
         receptionStatus = normalizeReceptionStatus(payload.reception_status);
-        const latestLastSeenMs = deriveLatestLastSeenMs(targets);
-        if (Number.isFinite(latestLastSeenMs)) {{
-          if (Number.isFinite(lastSeenWatermarkMs) && latestLastSeenMs > lastSeenWatermarkMs) {{
-            pushObservedUpdateInterval(latestLastSeenMs - lastSeenWatermarkMs);
-            nextPollMs = computeAdaptivePollMs();
-            lastDataChangeAtMs = Date.now();
-          }} else if (!Number.isFinite(lastSeenWatermarkMs)) {{
-            lastDataChangeAtMs = Date.now();
-          }}
-          lastSeenWatermarkMs = Number.isFinite(lastSeenWatermarkMs)
-            ? Math.max(lastSeenWatermarkMs, latestLastSeenMs)
-            : latestLastSeenMs;
-        }} else if (targets.length === 0) {{
-          nextPollMs = clampPollMs(Math.max(nextPollMs, defaultPollMs * 1.5));
-        }}
-        nextPollMs = blendPollMsWithBandTiming(nextPollMs, computeBandAwarePollMs(lastScannerState));
         error = null;
       }} catch (err) {{
         error = err instanceof Error ? err.message : String(err);
         radioConnected = false;
         receptionStatus = normalizeReceptionStatus(null);
-        nextPollMs = clampPollMs(nextPollMs * pollBackoffFactor);
       }} finally {{
         requestInFlight = false;
-        const idleMs = Date.now() - lastDataChangeAtMs;
-        if (idleMs >= nextPollMs * 2) {{
-          nextPollMs = clampPollMs(nextPollMs * pollBackoffFactor);
-        }}
-        const bandAwareAfterIdleMs = computeBandAwarePollMs(lastScannerState);
-        if (Number.isFinite(bandAwareAfterIdleMs)) {{
-          nextPollMs = Math.min(nextPollMs, bandAwareAfterIdleMs);
-        }}
         draw();
-        scheduleNextLoad(nextPollMs);
+        scheduleNextLoad();
       }}
     }}
 
@@ -2671,8 +2526,7 @@ def _build_radar_html(
     window.addEventListener("mouseup", endSelection);
     document.addEventListener("visibilitychange", () => {{
       if (document.visibilityState === "visible") {{
-        nextPollMs = Math.min(nextPollMs, defaultPollMs);
-        scheduleNextLoad(minPollMs);
+        scheduleNextLoad();
       }}
     }});
     draw();
