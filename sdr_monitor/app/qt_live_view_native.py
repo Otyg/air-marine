@@ -676,6 +676,7 @@ class LiveRadarWindow(QMainWindow):
         self.current_scanner_scan: list[str] = ["AIS", "ADS"]
         self.backend_reachable = False
         self.radio_connected = False
+        self._last_view_range_km = float(config.default_range_km)
         self.map_loaded_key: str | None = None
         self.map_pending_key: str | None = None
         self.map_in_flight = False
@@ -1028,6 +1029,17 @@ class LiveRadarWindow(QMainWindow):
         self._show_target_details_dialog(target)
 
     def on_view_changed(self, _lat: float, _lon: float, _range: float) -> None:
+        if abs(float(_range) - self._last_view_range_km) > 1e-6:
+            self._last_view_range_km = float(_range)
+            # Clear current contour render immediately when zoom changes,
+            # then force a full re-render of all layers for the new view scale.
+            self.map_loaded_key = None
+            self.map_pending_key = None
+            self.map_retry_timer.stop()
+            self.radar_widget.set_map_segments([])
+            self.radar_widget.set_fixed_objects(list(self.radar_widget.fixed_objects))
+            self.radar_widget.set_targets(list(self.current_targets))
+            self.schedule_map_contours(force=True)
         self._refresh_target_lists()
         self.schedule_map_contours()
 
