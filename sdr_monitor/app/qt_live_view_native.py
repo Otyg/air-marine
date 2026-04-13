@@ -381,6 +381,49 @@ class RadarWidget(QWidget):
         blue = int(round(near.blue() + ((far.blue() - near.blue()) * clamped_ratio)))
         return QColor(red, green, blue)
 
+    def _clip_segment_to_circle(
+        self,
+        start: QPointF,
+        end: QPointF,
+        *,
+        cx: float,
+        cy: float,
+        radius: float,
+    ) -> tuple[QPointF, QPointF] | None:
+        dx = end.x() - start.x()
+        dy = end.y() - start.y()
+        a = (dx * dx) + (dy * dy)
+        if a <= 1e-6:
+            inside = (((start.x() - cx) ** 2) + ((start.y() - cy) ** 2)) <= (radius * radius)
+            return (start, end) if inside else None
+
+        start_inside = (((start.x() - cx) ** 2) + ((start.y() - cy) ** 2)) <= (radius * radius)
+        end_inside = (((end.x() - cx) ** 2) + ((end.y() - cy) ** 2)) <= (radius * radius)
+        if start_inside and end_inside:
+            return (start, end)
+
+        fx = start.x() - cx
+        fy = start.y() - cy
+        b = 2.0 * ((fx * dx) + (fy * dy))
+        c = (fx * fx) + (fy * fy) - (radius * radius)
+        discriminant = (b * b) - (4.0 * a * c)
+        if discriminant < 0:
+            return None
+
+        sqrt_discriminant = math.sqrt(discriminant)
+        t1 = (-b - sqrt_discriminant) / (2.0 * a)
+        t2 = (-b + sqrt_discriminant) / (2.0 * a)
+        enter_t = max(0.0, min(t1, t2))
+        exit_t = min(1.0, max(t1, t2))
+        if enter_t > exit_t:
+            return None
+
+        clipped_start_t = 0.0 if start_inside else enter_t
+        clipped_end_t = 1.0 if end_inside else exit_t
+        clipped_start = QPointF(start.x() + (dx * clipped_start_t), start.y() + (dy * clipped_start_t))
+        clipped_end = QPointF(start.x() + (dx * clipped_end_t), start.y() + (dy * clipped_end_t))
+        return (clipped_start, clipped_end)
+
     def _draw_recent_positions(
         self,
         painter: QPainter,
@@ -455,7 +498,15 @@ class RadarWidget(QWidget):
                 head_pen = QPen(self._live_trail_color_for_distance_ratio(head_mid_ratio), 1)
                 head_pen.setDashPattern([4.0, 3.0])
                 painter.setPen(head_pen)
-                painter.drawLine(current_point, points[0])
+                clipped_head = self._clip_segment_to_circle(
+                    current_point,
+                    points[0],
+                    cx=cx,
+                    cy=cy,
+                    radius=radius,
+                )
+                if clipped_head is not None:
+                    painter.drawLine(clipped_head[0], clipped_head[1])
 
         for index in range(0, len(points) - 1):
             start_anchor_index = index + (1 if current_point is not None else 0)
@@ -696,8 +747,16 @@ class RadarWidget(QWidget):
             )
         for target in outside_targets:
             target_id = str(target.get("target_id") or "")
+            lat = target.get("lat")
+            lon = target.get("lon")
             if not target_id:
                 continue
+            if lat is None or lon is None:
+                continue
+            try:
+                current_outside_point = self._latlon_to_xy(float(lat), float(lon), cx, cy, px_per_km)
+            except (TypeError, ValueError):
+                current_outside_point = None
             self._draw_recent_positions(
                 painter,
                 target_id=target_id,
@@ -706,7 +765,7 @@ class RadarWidget(QWidget):
                 cy=cy,
                 px_per_km=px_per_km,
                 radius=radius,
-                current_point=None,
+                current_point=current_outside_point,
             )
 
         for target in visible_targets:
@@ -778,12 +837,12 @@ class RadarWidget(QWidget):
             if self.show_target_labels:
                 label = str(target.get("label") or target_id)
                 painter.setFont(label_font)
+                label_metrics = painter.fontMetrics()
+                label_anchor_x = point.x() + (target_symbol_box * 0.55)
+                # drawText(x, y, text) uses baseline; compensate with ascent
+                label_anchor_y = point.y() - (target_symbol_box * 0.20) + (label_metrics.ascent() * 0.35)
                 painter.drawText(
-                    point
-                    + QPointF(
-                        RADAR_TARGET_LABEL_OFFSET_X,
-                        RADAR_TARGET_LABEL_OFFSET_Y,
-                    ),
+                    QPointF(label_anchor_x, label_anchor_y),
                     label,
                 )
 
