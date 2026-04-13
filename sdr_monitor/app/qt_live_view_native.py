@@ -175,6 +175,7 @@ class RadarWidget(QWidget):
         self.show_vessel = True
         self.selected_target_id: str | None = None
         self.local_trails: dict[str, list[tuple[float, float, float]]] = {}
+        self.tracking_enabled_target_ids: set[str] = set()
         self.trail_point_window_seconds = TRAIL_POINT_WINDOW_SECONDS
         self.marker_size_scale = 1.0
         self.fixed_marker_size_scale = 1.0
@@ -214,6 +215,31 @@ class RadarWidget(QWidget):
 
     def set_selected_target(self, target_id: str | None) -> None:
         self.selected_target_id = target_id
+        self.update()
+
+    def is_tracking_enabled(self, target_id: str) -> bool:
+        return bool(target_id) and target_id in self.tracking_enabled_target_ids
+
+    def set_tracking_enabled(self, target_id: str, enabled: bool) -> None:
+        normalized_id = str(target_id).strip()
+        if not normalized_id:
+            return
+        if enabled:
+            self.tracking_enabled_target_ids.add(normalized_id)
+        else:
+            self.tracking_enabled_target_ids.discard(normalized_id)
+            now_ms = self._now_ms()
+            max_trail_age_seconds = (
+                self.trail_point_window_seconds + TRAIL_STALE_START_SECONDS + TRAIL_STALE_FADE_SECONDS
+            )
+            cutoff_ms = now_ms - (max_trail_age_seconds * 1000.0)
+            trail = self.local_trails.get(normalized_id)
+            if trail is not None:
+                retained = [sample for sample in trail if sample[0] >= cutoff_ms]
+                if retained:
+                    self.local_trails[normalized_id] = retained
+                else:
+                    self.local_trails.pop(normalized_id, None)
         self.update()
 
     def set_trail_point_window_seconds(self, value: float) -> None:
@@ -343,8 +369,9 @@ class RadarWidget(QWidget):
                     trail[-1] = (max(prev_ts_ms, sample_ts_ms), prev_lat, prev_lon)
                     continue
             trail.append((sample_ts_ms, lat, lon))
-            if len(trail) > 256:
-                del trail[:-256]
+            limit = 5000 if target_id in self.tracking_enabled_target_ids else 256
+            if len(trail) > limit:
+                del trail[:-limit]
 
         max_trail_age_seconds = (
             self.trail_point_window_seconds + TRAIL_STALE_START_SECONDS + TRAIL_STALE_FADE_SECONDS
@@ -352,6 +379,8 @@ class RadarWidget(QWidget):
         purge_before_ms = now_ms - (max_trail_age_seconds * 1000.0)
         stale_target_ids: list[str] = []
         for target_id, trail in self.local_trails.items():
+            if target_id in self.tracking_enabled_target_ids:
+                continue
             retained = [sample for sample in trail if sample[0] >= purge_before_ms]
             if retained:
                 self.local_trails[target_id] = retained
@@ -439,9 +468,13 @@ class RadarWidget(QWidget):
         raw_trail = self.local_trails.get(target_id)
         if not raw_trail:
             return
+        tracking_enabled = target_id in self.tracking_enabled_target_ids
 
-        cutoff_ms = self._now_ms() - (self.trail_point_window_seconds * 1000.0)
-        ordered = [sample for sample in raw_trail if sample[0] >= cutoff_ms]
+        if tracking_enabled:
+            ordered = list(raw_trail)
+        else:
+            cutoff_ms = self._now_ms() - (self.trail_point_window_seconds * 1000.0)
+            ordered = [sample for sample in raw_trail if sample[0] >= cutoff_ms]
 
         if not ordered:
             return
@@ -466,7 +499,7 @@ class RadarWidget(QWidget):
         last_seen_ms = self._parse_timestamp_ms(last_seen)
         if last_seen_ms is None and ordered:
             last_seen_ms = ordered[0][0]
-        fade_progress = self._trail_fade_progress(last_seen_ms)
+        fade_progress = 0.0 if tracking_enabled else self._trail_fade_progress(last_seen_ms)
 
         anchor_points = [current_point] + points if current_point is not None else list(points)
         if not anchor_points:
@@ -1469,13 +1502,44 @@ class LiveRadarWindow(QMainWindow):
         return next((item for item in self.current_targets if str(item.get("target_id", "")) == target_id), None)
 
     def _show_target_details_dialog(self, target: dict[str, Any]) -> None:
-        target_id = str(target.get("target_id") or "okant")
+        target_id_raw = str(target.get("target_id") or "").strip()
+        target_id = target_id_raw or "okant"
         LOGGER.warning("QT dialog response: open target_id=%s", target_id)
         dialog = QDialog(self)
         dialog.setWindowTitle(f"Objektdetaljer - {target_id}")
-        dialog.resize(640, 520)
+        dialog.resize(640, 560)
 
         layout = QVBoxLayout(dialog)
+        tracking_status_label = QLabel(dialog)
+        tracking_toggle_button = QPushButton(dialog)
+
+        def _refresh_tracking_controls() -> None:
+            if not target_id_raw:
+                tracking_status_label.setText("Sparning: ej tillganglig (saknar target_id)")
+                tracking_toggle_button.setText("Starta sparning")
+                tracking_toggle_button.setEnabled(False)
+                return
+            tracking_enabled = self.radar_widget.is_tracking_enabled(target_id)
+            if tracking_enabled:
+                tracking_status_label.setText("Sparning: AKTIV (ingen fade/livslangdsklippning)")
+                tracking_toggle_button.setText("Stoppa sparning")
+            else:
+                tracking_status_label.setText("Sparning: Av (normal fade och livslangd)")
+                tracking_toggle_button.setText("Starta sparning")
+            tracking_toggle_button.setEnabled(True)
+
+        def _toggle_tracking() -> None:
+            if not target_id_raw:
+                return
+            currently_enabled = self.radar_widget.is_tracking_enabled(target_id)
+            self.radar_widget.set_tracking_enabled(target_id, not currently_enabled)
+            _refresh_tracking_controls()
+
+        _refresh_tracking_controls()
+        tracking_toggle_button.clicked.connect(_toggle_tracking)
+        layout.addWidget(tracking_status_label)
+        layout.addWidget(tracking_toggle_button)
+
         text_view = QPlainTextEdit(dialog)
         text_view.setReadOnly(True)
         text_view.setPlainText(json.dumps(target, ensure_ascii=False, indent=2, sort_keys=True))
