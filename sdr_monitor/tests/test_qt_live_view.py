@@ -46,15 +46,13 @@ def test_load_qt_live_view_config_from_json(tmp_path: Path) -> None:
                 "request_timeout_ms": 7000,
                 "default_range_km": 12,
                 "trail_point_window_seconds": 240,
-                "marker_size_scale": 1.3,
-                "fixed_marker_size_scale": 1.6,
+                "aircraft_symbol_font_px": 13,
+                "vessel_symbol_font_px": 12,
+                "fixed_symbol_font_px": 16,
                 "aircraft_symbol": "✈",
                 "vessel_symbol": "⛵",
-                "aircraft_symbol_size_scale": 1.3,
-                "vessel_symbol_size_scale": 1.1,
                 "fixed_default_symbol": "H",
-                "vessel_symbol_box_factor": 0.78,
-                "zoom_visual_exponent": 0.22,
+                "zoom_font_scale_factor": 0.22,
                 "show_target_labels": True,
                 "show_fixed_names": False,
                 "show_map_contours": True,
@@ -83,15 +81,13 @@ def test_load_qt_live_view_config_from_json(tmp_path: Path) -> None:
     assert config.request_timeout_ms == 7000
     assert config.default_range_km == 12.0
     assert config.trail_point_window_seconds == 240.0
-    assert config.marker_size_scale == 1.3
-    assert config.fixed_marker_size_scale == 1.6
+    assert config.aircraft_symbol_font_px == 13
+    assert config.vessel_symbol_font_px == 12
+    assert config.fixed_symbol_font_px == 16
     assert config.aircraft_symbol == "✈"
     assert config.vessel_symbol == "⛵"
-    assert config.aircraft_symbol_size_scale == 1.3
-    assert config.vessel_symbol_size_scale == 1.1
     assert config.fixed_default_symbol == "H"
-    assert config.vessel_symbol_box_factor == 0.78
-    assert config.zoom_visual_exponent == 0.22
+    assert config.zoom_font_scale_factor == 0.22
     assert config.show_target_labels is True
     assert config.show_fixed_names is False
     assert config.show_map_contours is True
@@ -156,19 +152,41 @@ def test_load_qt_live_view_config_defaults_to_local_live_config(tmp_path: Path) 
     assert config.use_backend_live_config is False
 
 
-def test_load_qt_live_view_config_supports_fixed_marker_scale_alias(tmp_path: Path) -> None:
+def test_load_qt_live_view_config_supports_font_px_fields(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text(
         json.dumps(
             {
                 "backend_base_url": "http://127.0.0.1:8000",
-                "fixed_marker_scale": 1.9,
+                "fixed_symbol_font_px": 19,
             }
         ),
         encoding="utf-8",
     )
     config = load_qt_live_view_config(config_path)
-    assert config.fixed_marker_size_scale == 1.9
+    assert config.fixed_symbol_font_px == 19
+
+
+def test_load_qt_live_view_config_migrates_legacy_size_fields(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "backend_base_url": "http://127.0.0.1:8000",
+                "marker_size_scale": 1.2,
+                "aircraft_symbol_size_scale": 1.1,
+                "vessel_symbol_size_scale": 0.9,
+                "fixed_marker_scale": 1.5,
+                "zoom_visual_exponent": 0.2,
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = load_qt_live_view_config(config_path)
+    assert config.aircraft_symbol_font_px == 13
+    assert config.vessel_symbol_font_px == 11
+    assert config.fixed_symbol_font_px == 16
+    assert config.zoom_font_scale_factor == 0.2
 
 
 def test_save_qt_live_view_config_round_trip(tmp_path: Path) -> None:
@@ -179,15 +197,13 @@ def test_save_qt_live_view_config_round_trip(tmp_path: Path) -> None:
                 "backend_base_url": "http://127.0.0.1:8000",
                 "window_title": "Radar",
                 "trail_point_window_seconds": 180,
-                "marker_size_scale": 1.15,
-                "fixed_marker_size_scale": 1.25,
+                "aircraft_symbol_font_px": 11,
+                "vessel_symbol_font_px": 12,
+                "fixed_symbol_font_px": 14,
                 "aircraft_symbol": "✈",
                 "vessel_symbol": "⛵",
-                "aircraft_symbol_size_scale": 1.22,
-                "vessel_symbol_size_scale": 1.05,
                 "fixed_default_symbol": "H",
-                "vessel_symbol_box_factor": 0.9,
-                "zoom_visual_exponent": 0.2,
+                "zoom_font_scale_factor": 0.2,
                 "fixed_objects": [{"name": "Harbor", "lat": 56.16, "lon": 15.59}],
             }
         ),
@@ -197,13 +213,11 @@ def test_save_qt_live_view_config_round_trip(tmp_path: Path) -> None:
     save_qt_live_view_config(config)
     reloaded = load_qt_live_view_config(config_path)
     assert reloaded.trail_point_window_seconds == 180.0
-    assert reloaded.marker_size_scale == 1.15
-    assert reloaded.fixed_marker_size_scale == 1.25
+    assert reloaded.aircraft_symbol_font_px == 11
+    assert reloaded.vessel_symbol_font_px == 12
+    assert reloaded.fixed_symbol_font_px == 14
     assert reloaded.aircraft_symbol == "✈"
     assert reloaded.vessel_symbol == "⛵"
-    assert reloaded.aircraft_symbol_size_scale == 1.22
-    assert reloaded.vessel_symbol_size_scale == 1.05
     assert reloaded.fixed_default_symbol == "H"
-    assert reloaded.vessel_symbol_box_factor == 0.9
-    assert reloaded.zoom_visual_exponent == 0.2
+    assert reloaded.zoom_font_scale_factor == 0.2
     assert len(reloaded.fixed_objects) == 1

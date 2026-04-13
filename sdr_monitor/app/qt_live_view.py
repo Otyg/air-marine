@@ -19,9 +19,10 @@ DEFAULT_WINDOW_TITLE = "SDR Monitor Live Radar"
 DEFAULT_CONFIG_PATH = Path("./qt_client/config.json")
 DEFAULT_CONFIG_TEMPLATE = Path("./qt_client/config.example.json")
 DEFAULT_TRAIL_POINT_WINDOW_SECONDS = 120.0
-DEFAULT_MARKER_SIZE_SCALE = 1.0
-DEFAULT_FIXED_MARKER_SIZE_SCALE = 1.5625
-DEFAULT_ZOOM_VISUAL_EXPONENT = 0.18
+DEFAULT_AIRCRAFT_SYMBOL_FONT_PX = 10
+DEFAULT_VESSEL_SYMBOL_FONT_PX = 10
+DEFAULT_FIXED_SYMBOL_FONT_PX = 11
+DEFAULT_ZOOM_FONT_SCALE_FACTOR = 0.18
 DEFAULT_AIRCRAFT_SYMBOL = "●"
 DEFAULT_VESSEL_SYMBOL = "◆"
 DEFAULT_FIXED_DEFAULT_SYMBOL = "O"
@@ -47,15 +48,13 @@ class QtLiveViewConfig:
     fallback_center_lat: float = 0.0
     fallback_center_lon: float = 0.0
     trail_point_window_seconds: float = DEFAULT_TRAIL_POINT_WINDOW_SECONDS
-    marker_size_scale: float = DEFAULT_MARKER_SIZE_SCALE
-    fixed_marker_size_scale: float = DEFAULT_FIXED_MARKER_SIZE_SCALE
+    aircraft_symbol_font_px: int = DEFAULT_AIRCRAFT_SYMBOL_FONT_PX
+    vessel_symbol_font_px: int = DEFAULT_VESSEL_SYMBOL_FONT_PX
+    fixed_symbol_font_px: int = DEFAULT_FIXED_SYMBOL_FONT_PX
     aircraft_symbol: str = DEFAULT_AIRCRAFT_SYMBOL
     vessel_symbol: str = DEFAULT_VESSEL_SYMBOL
-    aircraft_symbol_size_scale: float = 1.0
-    vessel_symbol_size_scale: float = 1.0
     fixed_default_symbol: str = DEFAULT_FIXED_DEFAULT_SYMBOL
-    vessel_symbol_box_factor: float = 0.82
-    zoom_visual_exponent: float = DEFAULT_ZOOM_VISUAL_EXPONENT
+    zoom_font_scale_factor: float = DEFAULT_ZOOM_FONT_SCALE_FACTOR
     fixed_objects: tuple[dict[str, Any], ...] = ()
     use_backend_live_config: bool = False
 
@@ -138,6 +137,56 @@ def _to_float_alias(
     return default
 
 
+def _resolve_symbol_font_px(
+    payload: dict[str, Any],
+    *,
+    font_px_key: str,
+    default_font_px: int,
+    legacy_base_px: int,
+    legacy_marker_scale_key: str | None = None,
+    legacy_symbol_scale_key: str | None = None,
+) -> int:
+    if font_px_key in payload:
+        return _to_int(payload, font_px_key, default_font_px, minimum=6)
+
+    has_legacy_marker_scale = bool(legacy_marker_scale_key and legacy_marker_scale_key in payload)
+    has_legacy_symbol_scale = bool(legacy_symbol_scale_key and legacy_symbol_scale_key in payload)
+    if not has_legacy_marker_scale and not has_legacy_symbol_scale:
+        return default_font_px
+
+    marker_scale = 1.0
+    if has_legacy_marker_scale and legacy_marker_scale_key is not None:
+        marker_scale = _to_float(payload, legacy_marker_scale_key, 1.0)
+    symbol_scale = 1.0
+    if has_legacy_symbol_scale and legacy_symbol_scale_key is not None:
+        symbol_scale = _to_float(payload, legacy_symbol_scale_key, 1.0)
+
+    resolved_px = int(round(float(legacy_base_px) * marker_scale * symbol_scale))
+    return max(6, resolved_px)
+
+
+def _resolve_fixed_symbol_font_px(payload: dict[str, Any]) -> int:
+    if "fixed_symbol_font_px" in payload:
+        return _to_int(payload, "fixed_symbol_font_px", DEFAULT_FIXED_SYMBOL_FONT_PX, minimum=6)
+    if "fixed_marker_size_scale" in payload or "fixed_marker_scale" in payload:
+        fixed_scale = _to_float_alias(
+            payload,
+            "fixed_marker_size_scale",
+            "fixed_marker_scale",
+            1.0,
+        )
+        return max(6, int(round(float(DEFAULT_FIXED_SYMBOL_FONT_PX) * fixed_scale)))
+    return DEFAULT_FIXED_SYMBOL_FONT_PX
+
+
+def _resolve_zoom_font_scale_factor(payload: dict[str, Any]) -> float:
+    if "zoom_font_scale_factor" in payload:
+        return _to_float(payload, "zoom_font_scale_factor", DEFAULT_ZOOM_FONT_SCALE_FACTOR)
+    if "zoom_visual_exponent" in payload:
+        return _to_float(payload, "zoom_visual_exponent", DEFAULT_ZOOM_FONT_SCALE_FACTOR)
+    return DEFAULT_ZOOM_FONT_SCALE_FACTOR
+
+
 def _to_bool(payload: dict[str, Any], key: str, default: bool) -> bool:
     value = payload.get(key, default)
     if isinstance(value, bool):
@@ -213,36 +262,27 @@ def load_qt_live_view_config(config_path: Path) -> QtLiveViewConfig:
             "trail_point_window_seconds",
             DEFAULT_TRAIL_POINT_WINDOW_SECONDS,
         ),
-        marker_size_scale=_to_float(
+        aircraft_symbol_font_px=_resolve_symbol_font_px(
             payload,
-            "marker_size_scale",
-            DEFAULT_MARKER_SIZE_SCALE,
+            font_px_key="aircraft_symbol_font_px",
+            default_font_px=DEFAULT_AIRCRAFT_SYMBOL_FONT_PX,
+            legacy_base_px=DEFAULT_AIRCRAFT_SYMBOL_FONT_PX,
+            legacy_marker_scale_key="marker_size_scale",
+            legacy_symbol_scale_key="aircraft_symbol_size_scale",
         ),
-        fixed_marker_size_scale=_to_float_alias(
+        vessel_symbol_font_px=_resolve_symbol_font_px(
             payload,
-            "fixed_marker_size_scale",
-            "fixed_marker_scale",
-            DEFAULT_FIXED_MARKER_SIZE_SCALE,
+            font_px_key="vessel_symbol_font_px",
+            default_font_px=DEFAULT_VESSEL_SYMBOL_FONT_PX,
+            legacy_base_px=DEFAULT_VESSEL_SYMBOL_FONT_PX,
+            legacy_marker_scale_key="marker_size_scale",
+            legacy_symbol_scale_key="vessel_symbol_size_scale",
         ),
+        fixed_symbol_font_px=_resolve_fixed_symbol_font_px(payload),
         aircraft_symbol=_to_symbol(payload, "aircraft_symbol", DEFAULT_AIRCRAFT_SYMBOL),
         vessel_symbol=_to_symbol(payload, "vessel_symbol", DEFAULT_VESSEL_SYMBOL),
-        aircraft_symbol_size_scale=_to_float(
-            payload,
-            "aircraft_symbol_size_scale",
-            1.0,
-        ),
-        vessel_symbol_size_scale=_to_float(
-            payload,
-            "vessel_symbol_size_scale",
-            1.0,
-        ),
         fixed_default_symbol=_to_symbol(payload, "fixed_default_symbol", DEFAULT_FIXED_DEFAULT_SYMBOL),
-        vessel_symbol_box_factor=_to_float(payload, "vessel_symbol_box_factor", 0.82),
-        zoom_visual_exponent=_to_float(
-            payload,
-            "zoom_visual_exponent",
-            DEFAULT_ZOOM_VISUAL_EXPONENT,
-        ),
+        zoom_font_scale_factor=_resolve_zoom_font_scale_factor(payload),
         fixed_objects=tuple(item for item in fixed_objects_payload if isinstance(item, dict)),
         use_backend_live_config=_to_bool(payload, "use_backend_live_config", False),
     )
@@ -255,18 +295,14 @@ def load_qt_live_view_config(config_path: Path) -> QtLiveViewConfig:
         raise ValueError("fallback_center_lon must be within -180..180")
     if not (5.0 <= config.trail_point_window_seconds <= 3600.0):
         raise ValueError("trail_point_window_seconds must be within 5..3600")
-    if not (0.4 <= config.marker_size_scale <= 4.0):
-        raise ValueError("marker_size_scale must be within 0.4..4.0")
-    if not (0.4 <= config.fixed_marker_size_scale <= 4.0):
-        raise ValueError("fixed_marker_size_scale must be within 0.4..4.0")
-    if not (0.4 <= config.aircraft_symbol_size_scale <= 4.0):
-        raise ValueError("aircraft_symbol_size_scale must be within 0.4..4.0")
-    if not (0.4 <= config.vessel_symbol_size_scale <= 4.0):
-        raise ValueError("vessel_symbol_size_scale must be within 0.4..4.0")
-    if not (0.5 <= config.vessel_symbol_box_factor <= 1.5):
-        raise ValueError("vessel_symbol_box_factor must be within 0.5..1.5")
-    if not (0.0 <= config.zoom_visual_exponent <= 0.6):
-        raise ValueError("zoom_visual_exponent must be within 0.0..0.6")
+    if config.aircraft_symbol_font_px > 120:
+        raise ValueError("aircraft_symbol_font_px must be <= 120")
+    if config.vessel_symbol_font_px > 120:
+        raise ValueError("vessel_symbol_font_px must be <= 120")
+    if config.fixed_symbol_font_px > 120:
+        raise ValueError("fixed_symbol_font_px must be <= 120")
+    if not (0.0 <= config.zoom_font_scale_factor <= 1.0):
+        raise ValueError("zoom_font_scale_factor must be within 0.0..1.0")
 
     return config
 
