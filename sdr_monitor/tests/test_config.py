@@ -15,6 +15,9 @@ def test_config_uses_defaults_when_env_not_set() -> None:
     assert config.ogn_window_seconds == 0.0
     assert config.ais_window_seconds == 12.0
     assert config.inter_scan_pause_seconds == 2.0
+    assert config.radio_no_data_reset_timeout_seconds == 1800.0
+    assert config.radio_usbreset_command == "usbreset"
+    assert config.radio_usbreset_device == "RTL2838UHIDIR"
     assert config.max_positions_per_target == 5
     assert config.radar_center_lat == 0.0
     assert config.radar_center_lon == 0.0
@@ -49,6 +52,9 @@ def test_config_reads_environment_values() -> None:
             "SDR_MONITOR_OGN_WINDOW_SECONDS": "4",
             "SDR_MONITOR_AIS_WINDOW_SECONDS": "9",
             "SDR_MONITOR_INTER_SCAN_PAUSE_SECONDS": "2.5",
+            "SDR_MONITOR_RADIO_NO_DATA_RESET_TIMEOUT_SECONDS": "1200",
+            "SDR_MONITOR_RADIO_USBRESET_COMMAND": "/usr/local/bin/usbreset",
+            "SDR_MONITOR_RADIO_USBRESET_DEVICE": "rtl-radio-0",
             "SDR_MONITOR_FRESH_SECONDS": "15",
             "SDR_MONITOR_AGING_SECONDS": "60",
             "SDR_MONITOR_MAX_POSITIONS_PER_TARGET": "7",
@@ -82,6 +88,9 @@ def test_config_reads_environment_values() -> None:
     assert config.ogn_window_seconds == 4.0
     assert config.ais_window_seconds == 9.0
     assert config.inter_scan_pause_seconds == 2.5
+    assert config.radio_no_data_reset_timeout_seconds == 1200.0
+    assert config.radio_usbreset_command == "/usr/local/bin/usbreset"
+    assert config.radio_usbreset_device == "rtl-radio-0"
     assert config.fresh_seconds == 15
     assert config.aging_seconds == 60
     assert config.max_positions_per_target == 7
@@ -139,6 +148,20 @@ def test_config_rejects_invalid_radar_center_coordinates() -> None:
 def test_config_rejects_negative_inter_scan_pause() -> None:
     with pytest.raises(ValueError, match="INTER_SCAN_PAUSE_SECONDS"):
         Config.from_env({"SDR_MONITOR_INTER_SCAN_PAUSE_SECONDS": "-0.1"})
+
+
+def test_config_rejects_invalid_radio_watchdog_settings() -> None:
+    with pytest.raises(ValueError, match="RADIO_NO_DATA_RESET_TIMEOUT_SECONDS"):
+        Config.from_env({"SDR_MONITOR_RADIO_NO_DATA_RESET_TIMEOUT_SECONDS": "-1"})
+
+    config = Config.from_env(
+        {
+            "SDR_MONITOR_RADIO_USBRESET_COMMAND": "  ",
+            "SDR_MONITOR_RADIO_USBRESET_DEVICE": "  ",
+        }
+    )
+    assert config.radio_usbreset_command == "usbreset"
+    assert config.radio_usbreset_device == "RTL2838UHIDIR"
 
 
 def test_config_rejects_negative_ogn_window() -> None:

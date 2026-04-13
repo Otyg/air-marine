@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import subprocess
 
 import pytest
 
@@ -55,6 +56,22 @@ class FakeSupervisor:
 
     def status(self):
         return {"switches": [band.value for band in self.switches], "stop_calls": self.stop_calls}
+
+
+@dataclass
+class FakeCommandRunner:
+    calls: list[list[str]]
+    returncode: int = 0
+    stderr: str = ""
+
+    def __call__(self, command, **kwargs):  # noqa: ANN001
+        self.calls.append(list(command))
+        return subprocess.CompletedProcess(
+            args=list(command),
+            returncode=self.returncode,
+            stdout="",
+            stderr=self.stderr,
+        )
 
 
 def _obs(target_id: str, source: Source) -> NormalizedObservation:
@@ -364,3 +381,35 @@ def test_set_scan_targets_rejects_empty_selection() -> None:
 
     with pytest.raises(ValueError, match="at least one"):
         scanner.set_scan_targets([])
+
+
+def test_run_forever_triggers_usbreset_after_long_no_data_gap() -> None:
+    now = datetime(2026, 4, 13, 9, 0, tzinfo=timezone.utc)
+    command_runner = FakeCommandRunner(calls=[])
+    supervisor = FakeSupervisor(switches=[])
+    scanner = HybridBandScanner(
+        adsb_reader=FakeReader([]),
+        ogn_reader=None,
+        ais_reader=FakeReader([]),
+        state=LiveState(clock=lambda: now),
+        store=None,
+        supervisor=supervisor,  # type: ignore[arg-type]
+        config=ScannerConfig(
+            adsb_window_seconds=0.01,
+            ais_window_seconds=0.01,
+            inter_scan_pause_seconds=0.0,
+            radio_no_data_reset_timeout_seconds=1800.0,
+            radio_usbreset_command="usbreset",
+            radio_usbreset_device="RTL2838UHIDIR",
+        ),
+        sleep_fn=lambda seconds: None,
+        now_fn=lambda: now,
+        run_command=command_runner,
+    )
+    scanner._last_ais_or_ads_data_received_at = now - timedelta(seconds=1801)
+
+    scanner.run_forever(max_cycles=1)
+
+    assert command_runner.calls == [["usbreset", "RTL2838UHIDIR"]]
+    assert scanner.status()["cycle_count"] == 1
+    assert supervisor.switches == [ScanBand.AIS, ScanBand.ADSB]

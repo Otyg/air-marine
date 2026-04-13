@@ -168,6 +168,9 @@ def create_service_components(
             ogn_window_seconds=resolved.ogn_window_seconds,
             ais_window_seconds=resolved.ais_window_seconds,
             inter_scan_pause_seconds=resolved.inter_scan_pause_seconds,
+            radio_no_data_reset_timeout_seconds=resolved.radio_no_data_reset_timeout_seconds,
+            radio_usbreset_command=resolved.radio_usbreset_command,
+            radio_usbreset_device=resolved.radio_usbreset_device,
         ),
     )
     worker = ScannerWorker(scanner)

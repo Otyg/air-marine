@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from threading import Event, Lock
 from typing import Any, Callable, Protocol
 
-from app.models import NormalizedObservation, ScanBand
+from app.models import NormalizedObservation, ScanBand, Source
 from app.state import LiveState
 from app.store import SQLiteStore
 from app.supervisor import DecoderSupervisor
@@ -29,6 +31,9 @@ class ScannerConfig:
     ogn_window_seconds: float = 0.0
     ais_window_seconds: float = 12.0
     inter_scan_pause_seconds: float = 2.0
+    radio_no_data_reset_timeout_seconds: float = 1800.0
+    radio_usbreset_command: str = "usbreset"
+    radio_usbreset_device: str = "RTL2838UHIDIR"
 
 
 SCAN_VALUES = ("AIS", "ADS", "FLARM")
@@ -50,6 +55,8 @@ class HybridBandScanner:
         config: ScannerConfig | None = None,
         sleep_fn: Callable[[float], None] | None = None,
         now_fn: Callable[[], datetime] | None = None,
+        run_command: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+        logger: logging.Logger | None = None,
     ) -> None:
         self._adsb_reader = adsb_reader
         self._ogn_reader = ogn_reader
@@ -60,6 +67,8 @@ class HybridBandScanner:
         self._config = config or ScannerConfig()
         self._sleep_fn = sleep_fn or time.sleep
         self._now_fn = now_fn or _utcnow
+        self._run_command = run_command or subprocess.run
+        self._logger = logger or logging.getLogger(__name__)
         self._stop_event = Event()
         self._mode_lock = Lock()
 
@@ -70,6 +79,7 @@ class HybridBandScanner:
         self._cycle_count = 0
         self._scan_mode = "hybrid"
         self._scan_values = self._build_default_scan_values()
+        self._last_ais_or_ads_data_received_at = self._now_fn()
 
         if self._config.adsb_window_seconds <= 0:
             raise ValueError("adsb_window_seconds must be > 0")
@@ -79,6 +89,12 @@ class HybridBandScanner:
             raise ValueError("ais_window_seconds must be > 0")
         if self._config.inter_scan_pause_seconds < 0:
             raise ValueError("inter_scan_pause_seconds must be >= 0")
+        if self._config.radio_no_data_reset_timeout_seconds < 0:
+            raise ValueError("radio_no_data_reset_timeout_seconds must be >= 0")
+        if not self._config.radio_usbreset_command.strip():
+            raise ValueError("radio_usbreset_command must not be empty")
+        if not self._config.radio_usbreset_device.strip():
+            raise ValueError("radio_usbreset_device must not be empty")
 
     @property
     def last_error(self) -> str | None:
@@ -182,6 +198,10 @@ class HybridBandScanner:
         while not self._stop_event.is_set():
             if max_cycles is not None and self._cycle_count >= max_cycles:
                 break
+            if self._should_reset_radio():
+                self._reset_radio_device()
+                if self._stop_event.is_set():
+                    break
             self.run_cycle()
             self._prune_stale_latest_targets()
 
@@ -252,6 +272,8 @@ class HybridBandScanner:
 
     def _ingest_observations(self, observations: list[NormalizedObservation]) -> None:
         for observation in observations:
+            if observation.source in {Source.AIS, Source.ADSB}:
+                self._last_ais_or_ads_data_received_at = self._now_fn()
             state_snapshot = self._state.upsert_observation(observation)
             if self._store is None:
                 continue
@@ -262,6 +284,7 @@ class HybridBandScanner:
 
     def _record_error(self, message: str) -> None:
         self._last_error = message
+        self._logger.error(message)
 
     def _build_default_scan_values(self) -> tuple[str, ...]:
         default_values = ["AIS", "ADS"]
@@ -294,3 +317,49 @@ class HybridBandScanner:
             self._store.delete_latest_targets_older_than(cutoff)
         except Exception as exc:
             self._record_error(f"store prune: {exc}")
+
+    def _should_reset_radio(self) -> bool:
+        timeout_seconds = self._config.radio_no_data_reset_timeout_seconds
+        if timeout_seconds <= 0:
+            return False
+        elapsed = (self._now_fn() - self._last_ais_or_ads_data_received_at).total_seconds()
+        return elapsed >= timeout_seconds
+
+    def _reset_radio_device(self) -> None:
+        self._record_error(
+            "radio watchdog: no AIS/ADS data for "
+            f"{int(self._config.radio_no_data_reset_timeout_seconds)}s; "
+            f"running {self._config.radio_usbreset_command} {self._config.radio_usbreset_device}."
+        )
+        command = [
+            self._config.radio_usbreset_command.strip(),
+            self._config.radio_usbreset_device.strip(),
+        ]
+        try:
+            result = self._run_command(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=30.0,
+                check=False,
+            )
+        except FileNotFoundError:
+            self._record_error(
+                "radio watchdog: usb reset command was not found: "
+                f"{self._config.radio_usbreset_command!r}"
+            )
+        except Exception as exc:
+            self._record_error(f"radio watchdog: usb reset command failed: {exc}")
+        else:
+            if result.returncode != 0:
+                stderr = (result.stderr or "").strip()
+                details = stderr.splitlines()[0] if stderr else f"exit code {result.returncode}"
+                self._record_error(f"radio watchdog: usb reset failed: {details}")
+            else:
+                self._logger.info(
+                    "Radio watchdog reset completed with command: %s",
+                    " ".join(command),
+                )
+        finally:
+            # Avoid repeated immediate reset attempts; resume scan loop first.
+            self._last_ais_or_ads_data_received_at = self._now_fn()

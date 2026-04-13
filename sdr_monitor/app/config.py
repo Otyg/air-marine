@@ -87,6 +87,9 @@ class Config:
     ogn_window_seconds: float = 0.0
     ais_window_seconds: float = 12.0
     inter_scan_pause_seconds: float = 2.0
+    radio_no_data_reset_timeout_seconds: float = 1800.0
+    radio_usbreset_command: str = "usbreset"
+    radio_usbreset_device: str = "RTL2838UHIDIR"
     fresh_seconds: int = 30
     aging_seconds: int = 120
     max_positions_per_target: int = 5
@@ -148,6 +151,21 @@ class Config:
                 env_map,
                 f"{ENV_PREFIX}INTER_SCAN_PAUSE_SECONDS",
                 defaults.inter_scan_pause_seconds,
+            ),
+            radio_no_data_reset_timeout_seconds=_read_float(
+                env_map,
+                f"{ENV_PREFIX}RADIO_NO_DATA_RESET_TIMEOUT_SECONDS",
+                defaults.radio_no_data_reset_timeout_seconds,
+            ),
+            radio_usbreset_command=_read_str(
+                env_map,
+                f"{ENV_PREFIX}RADIO_USBRESET_COMMAND",
+                defaults.radio_usbreset_command,
+            ),
+            radio_usbreset_device=_read_str(
+                env_map,
+                f"{ENV_PREFIX}RADIO_USBRESET_DEVICE",
+                defaults.radio_usbreset_device,
             ),
             fresh_seconds=_read_int(
                 env_map, f"{ENV_PREFIX}FRESH_SECONDS", defaults.fresh_seconds
@@ -311,6 +329,12 @@ class Config:
             raise ValueError(f"{ENV_PREFIX}AIS_WINDOW_SECONDS must be > 0.")
         if self.inter_scan_pause_seconds < 0:
             raise ValueError(f"{ENV_PREFIX}INTER_SCAN_PAUSE_SECONDS must be >= 0.")
+        if self.radio_no_data_reset_timeout_seconds < 0:
+            raise ValueError(f"{ENV_PREFIX}RADIO_NO_DATA_RESET_TIMEOUT_SECONDS must be >= 0.")
+        if not self.radio_usbreset_command.strip():
+            raise ValueError(f"{ENV_PREFIX}RADIO_USBRESET_COMMAND must not be empty.")
+        if not self.radio_usbreset_device.strip():
+            raise ValueError(f"{ENV_PREFIX}RADIO_USBRESET_DEVICE must not be empty.")
         if self.fresh_seconds < 0:
             raise ValueError(f"{ENV_PREFIX}FRESH_SECONDS must be >= 0.")
         if self.aging_seconds <= self.fresh_seconds:
