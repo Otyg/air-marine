@@ -20,6 +20,7 @@ DEFAULT_CONFIG_PATH = Path("./qt_client/config.json")
 DEFAULT_CONFIG_TEMPLATE = Path("./qt_client/config.example.json")
 DEFAULT_TRAIL_POINT_WINDOW_SECONDS = 120.0
 DEFAULT_MARKER_SIZE_SCALE = 1.0
+DEFAULT_ZOOM_VISUAL_EXPONENT = 0.18
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +46,7 @@ class QtLiveViewConfig:
     marker_size_scale: float = DEFAULT_MARKER_SIZE_SCALE
     fixed_marker_size_scale: float = DEFAULT_MARKER_SIZE_SCALE
     vessel_symbol_box_factor: float = 0.82
+    zoom_visual_exponent: float = DEFAULT_ZOOM_VISUAL_EXPONENT
     fixed_objects: tuple[dict[str, Any], ...] = ()
     use_backend_live_config: bool = False
 
@@ -194,6 +196,11 @@ def load_qt_live_view_config(config_path: Path) -> QtLiveViewConfig:
             DEFAULT_MARKER_SIZE_SCALE,
         ),
         vessel_symbol_box_factor=_to_float(payload, "vessel_symbol_box_factor", 0.82),
+        zoom_visual_exponent=_to_float(
+            payload,
+            "zoom_visual_exponent",
+            DEFAULT_ZOOM_VISUAL_EXPONENT,
+        ),
         fixed_objects=tuple(item for item in fixed_objects_payload if isinstance(item, dict)),
         use_backend_live_config=_to_bool(payload, "use_backend_live_config", False),
     )
@@ -212,6 +219,8 @@ def load_qt_live_view_config(config_path: Path) -> QtLiveViewConfig:
         raise ValueError("fixed_marker_size_scale must be within 0.4..4.0")
     if not (0.5 <= config.vessel_symbol_box_factor <= 1.5):
         raise ValueError("vessel_symbol_box_factor must be within 0.5..1.5")
+    if not (0.0 <= config.zoom_visual_exponent <= 0.6):
+        raise ValueError("zoom_visual_exponent must be within 0.0..0.6")
 
     return config
 

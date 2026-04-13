@@ -64,6 +64,10 @@ RADAR_TARGET_LABEL_OFFSET_X = 8.0
 RADAR_TARGET_LABEL_OFFSET_Y = -10.0
 RADAR_CENTER_DOT_RADIUS_PX = 5.0
 MARKER_BASE_SCALE_AT_CONFIG_1 = 0.4
+ZOOM_VISUAL_SCALE_MIN = 0.65
+ZOOM_VISUAL_SCALE_MAX = 1.60
+ZOOM_VISUAL_REFERENCE_RANGE_KM = 10.0
+ZOOM_VISUAL_EXPONENT = 0.18
 
 
 class MapContourTileCache:
@@ -175,6 +179,7 @@ class RadarWidget(QWidget):
         self.marker_size_scale = 1.0
         self.fixed_marker_size_scale = 1.0
         self.vessel_symbol_box_factor = 0.82
+        self.zoom_visual_exponent = ZOOM_VISUAL_EXPONENT
 
     def set_home(self, lat: float, lon: float) -> None:
         self.home_lat = lat
@@ -227,6 +232,10 @@ class RadarWidget(QWidget):
         self.vessel_symbol_box_factor = max(0.5, min(1.5, float(value)))
         self.update()
 
+    def set_zoom_visual_exponent(self, value: float) -> None:
+        self.zoom_visual_exponent = max(0.0, min(0.6, float(value)))
+        self.update()
+
     def set_range_km(self, range_km: float) -> None:
         self.state.range_km = max(MIN_RANGE_KM, min(500.0, float(range_km)))
         self.view_changed.emit(self.state.center_lat, self.state.center_lon, self.state.range_km)
@@ -243,6 +252,14 @@ class RadarWidget(QWidget):
         if abs(value) < 0.01:
             return 0.01
         return value
+
+    def _zoom_visual_scale(self, range_km: float | None = None) -> float:
+        reference_range = max(0.2, ZOOM_VISUAL_REFERENCE_RANGE_KM)
+        active_range = float(self.state.range_km if range_km is None else range_km)
+        clamped_range = max(0.2, min(500.0, active_range))
+        zoom_bias = math.log2(reference_range / clamped_range)
+        scale = 2.0 ** (self.zoom_visual_exponent * zoom_bias)
+        return max(ZOOM_VISUAL_SCALE_MIN, min(ZOOM_VISUAL_SCALE_MAX, scale))
 
     def _latlon_to_xy(self, lat: float, lon: float, cx: float, cy: float, px_per_km: float) -> QPointF:
         dy_km = (lat - self.state.center_lat) * KM_PER_DEG_LAT
@@ -550,7 +567,7 @@ class RadarWidget(QWidget):
                 nearest_distance_px = distance_px
                 nearest_target_id = target_id
 
-        hit_radius_px = 14.0 * self.marker_size_scale
+        hit_radius_px = 14.0 * self.marker_size_scale * self._zoom_visual_scale(self.state.range_km)
         if nearest_target_id and nearest_distance_px <= hit_radius_px:
             self.selected_target_id = nearest_target_id
             self.target_selected.emit(nearest_target_id)
@@ -569,8 +586,17 @@ class RadarWidget(QWidget):
 
         painter.fillRect(self.rect(), QColor("#000000"))
 
-        moving_marker_scale = max(0.4, min(4.0, self.marker_size_scale)) * MARKER_BASE_SCALE_AT_CONFIG_1
-        fixed_marker_scale = max(0.4, min(4.0, self.fixed_marker_size_scale)) * MARKER_BASE_SCALE_AT_CONFIG_1
+        zoom_visual_scale = self._zoom_visual_scale(self.state.range_km)
+        moving_marker_scale = (
+            max(0.4, min(4.0, self.marker_size_scale))
+            * MARKER_BASE_SCALE_AT_CONFIG_1
+            * zoom_visual_scale
+        )
+        fixed_marker_scale = (
+            max(0.4, min(4.0, self.fixed_marker_size_scale))
+            * MARKER_BASE_SCALE_AT_CONFIG_1
+            * zoom_visual_scale
+        )
         symbol_font = QFont("Courier New")
         symbol_font.setBold(True)
         symbol_font.setPixelSize(max(7, int(round(RADAR_SYMBOL_FONT_PX * moving_marker_scale))))
@@ -708,12 +734,32 @@ class RadarWidget(QWidget):
 
             if math.isfinite(course) and math.isfinite(speed) and speed > 0.0:
                 radians = math.radians(course % 360)
-                length = max(8.0, min(26.0, 8.0 + (math.sqrt(speed) * 1.5)))
+                length = max(8.0, min(26.0, 8.0 + (math.sqrt(speed) * 1.5))) * zoom_visual_scale
+                head_length = 4.0 * zoom_visual_scale
+                head_half_width = 2.2 * zoom_visual_scale
+                vx = math.sin(radians)
+                vy = -math.cos(radians)
                 end_point = QPointF(
-                    point.x() + (math.sin(radians) * length),
-                    point.y() - (math.cos(radians) * length),
+                    point.x() + (vx * length),
+                    point.y() + (vy * length),
+                )
+                head_base = QPointF(
+                    end_point.x() - (vx * head_length),
+                    end_point.y() - (vy * head_length),
+                )
+                perp_x = -vy
+                perp_y = vx
+                head_left = QPointF(
+                    head_base.x() + (perp_x * head_half_width),
+                    head_base.y() + (perp_y * head_half_width),
+                )
+                head_right = QPointF(
+                    head_base.x() - (perp_x * head_half_width),
+                    head_base.y() - (perp_y * head_half_width),
                 )
                 painter.drawLine(point, end_point)
+                painter.drawLine(end_point, head_left)
+                painter.drawLine(end_point, head_right)
 
             symbol = "◆" if str(target.get("kind", "")).lower() == "vessel" else "●"
             painter.setFont(symbol_font)
@@ -781,6 +827,7 @@ class LiveRadarWindow(QMainWindow):
         self.default_marker_size_scale = max(0.4, min(4.0, float(config.marker_size_scale)))
         self.default_fixed_marker_size_scale = max(0.4, min(4.0, float(config.fixed_marker_size_scale)))
         self.vessel_symbol_box_factor = max(0.5, min(1.5, float(config.vessel_symbol_box_factor)))
+        self.zoom_visual_exponent = max(0.0, min(0.6, float(config.zoom_visual_exponent)))
         self.session_marker_scale_multiplier = 1.0
         self.current_targets: list[dict[str, Any]] = []
         self.current_scanner_scan: list[str] = ["AIS", "ADS"]
@@ -805,6 +852,7 @@ class LiveRadarWindow(QMainWindow):
         self.radar_widget.set_marker_size_scale(self.default_marker_size_scale)
         self.radar_widget.set_fixed_marker_size_scale(self.default_fixed_marker_size_scale)
         self.radar_widget.set_vessel_symbol_box_factor(self.vessel_symbol_box_factor)
+        self.radar_widget.set_zoom_visual_exponent(self.zoom_visual_exponent)
         self.radar_widget.show_fixed_names = config.show_fixed_names
         self.radar_widget.show_target_labels = config.show_target_labels
         self.radar_widget.show_map_contours = config.show_map_contours
@@ -1089,8 +1137,10 @@ class LiveRadarWindow(QMainWindow):
         self.default_marker_size_scale = max(0.4, min(4.0, float(config.marker_size_scale)))
         self.default_fixed_marker_size_scale = max(0.4, min(4.0, float(config.fixed_marker_size_scale)))
         self.vessel_symbol_box_factor = max(0.5, min(1.5, float(config.vessel_symbol_box_factor)))
+        self.zoom_visual_exponent = max(0.0, min(0.6, float(config.zoom_visual_exponent)))
         self._apply_marker_size_scale()
         self.radar_widget.set_vessel_symbol_box_factor(self.vessel_symbol_box_factor)
+        self.radar_widget.set_zoom_visual_exponent(self.zoom_visual_exponent)
 
         self.radar_widget.show_fixed_names = config.show_fixed_names
         self.radar_widget.show_target_labels = config.show_target_labels
@@ -1174,6 +1224,11 @@ class LiveRadarWindow(QMainWindow):
         vessel_symbol_factor_input.setSingleStep(0.01)
         vessel_symbol_factor_input.setDecimals(2)
         vessel_symbol_factor_input.setValue(self.vessel_symbol_box_factor)
+        zoom_visual_exponent_input = QDoubleSpinBox()
+        zoom_visual_exponent_input.setRange(0.0, 0.6)
+        zoom_visual_exponent_input.setSingleStep(0.01)
+        zoom_visual_exponent_input.setDecimals(2)
+        zoom_visual_exponent_input.setValue(self.zoom_visual_exponent)
 
         temp_marker_multiplier_input = QDoubleSpinBox()
         temp_marker_multiplier_input.setRange(0.4, 4.0)
@@ -1228,6 +1283,7 @@ class LiveRadarWindow(QMainWindow):
         form.addRow("Default marker scale", default_marker_scale_input)
         form.addRow("Fixed marker scale", fixed_marker_scale_input)
         form.addRow("Vessel symbol factor", vessel_symbol_factor_input)
+        form.addRow("Zoom visual exponent", zoom_visual_exponent_input)
         form.addRow("Temporary marker multiplier", temp_marker_multiplier_input)
         form.addRow("Map source", map_source_input)
         form.addRow("Target filter", target_filter_input)
@@ -1289,6 +1345,7 @@ class LiveRadarWindow(QMainWindow):
                     marker_size_scale=float(default_marker_scale_input.value()),
                     fixed_marker_size_scale=float(fixed_marker_scale_input.value()),
                     vessel_symbol_box_factor=float(vessel_symbol_factor_input.value()),
+                    zoom_visual_exponent=float(zoom_visual_exponent_input.value()),
                     fixed_objects=fixed_objects,
                     use_backend_live_config=bool(use_backend_live_config_input.isChecked()),
                 )
