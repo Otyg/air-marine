@@ -60,14 +60,10 @@ LIVE_TRAIL_FAR_COLOR = QColor("#031603")
 RADAR_FIXED_OBJECT_COLOR = QColor("#9be89b")
 RADAR_SYMBOL_FONT_PX = 10
 RADAR_LABEL_FONT_PX = 12
-RADAR_TARGET_SYMBOL_BOX_PX = 12.0
-RADAR_FIXED_SYMBOL_BOX_PX = 12.0
-RADAR_AIRCRAFT_SYMBOL_BOX_FACTOR = 1.18
+RADAR_AIRCRAFT_FONT_SCALE = 1.18
 RADAR_TARGET_LABEL_OFFSET_X = 8.0
 RADAR_TARGET_LABEL_OFFSET_Y = -10.0
 RADAR_CENTER_DOT_RADIUS_PX = 5.0
-MARKER_BASE_SCALE_AT_CONFIG_1 = 0.4
-FIXED_MARKER_BASE_SCALE_AT_CONFIG_1 = 0.8
 ZOOM_VISUAL_SCALE_MIN = 0.65
 ZOOM_VISUAL_SCALE_MAX = 1.60
 ZOOM_VISUAL_REFERENCE_RANGE_KM = 10.0
@@ -419,6 +415,18 @@ class RadarWidget(QWidget):
         _kind = str(target.get("kind", "")).lower()
         return QColor("#c1f5c1")
 
+    def _draw_centered_symbol(self, painter: QPainter, point: QPointF, symbol: str) -> None:
+        metrics = painter.fontMetrics()
+        symbol_width = max(1.0, float(metrics.horizontalAdvance(symbol)))
+        symbol_height = max(1.0, float(metrics.height()))
+        symbol_rect = QRectF(
+            point.x() - (symbol_width * 0.5),
+            point.y() - (symbol_height * 0.5),
+            symbol_width,
+            symbol_height,
+        )
+        painter.drawText(symbol_rect, int(Qt.AlignmentFlag.AlignCenter), symbol)
+
     def _fixed_symbol_text(self, raw_symbol: str) -> str:
         symbol = (raw_symbol or "").strip()
         if not symbol:
@@ -757,6 +765,17 @@ class RadarWidget(QWidget):
         px_per_km = radius / self.state.range_km
 
         click_pos = event.position()
+        zoom_visual_scale = self._zoom_visual_scale(self.state.range_km)
+        moving_symbol_font_px = max(
+            7,
+            int(
+                round(
+                    RADAR_SYMBOL_FONT_PX
+                    * max(0.4, min(4.0, self.marker_size_scale))
+                    * zoom_visual_scale
+                )
+            ),
+        )
         nearest_target_id: str | None = None
         nearest_distance_px = float("inf")
         for target in self.targets:
@@ -774,7 +793,7 @@ class RadarWidget(QWidget):
                 nearest_distance_px = distance_px
                 nearest_target_id = target_id
 
-        hit_radius_px = 14.0 * self.marker_size_scale * self._zoom_visual_scale(self.state.range_km)
+        hit_radius_px = max(10.0, moving_symbol_font_px * 0.9)
         if nearest_target_id and nearest_distance_px <= hit_radius_px:
             self.selected_target_id = nearest_target_id
             self.target_selected.emit(nearest_target_id)
@@ -794,19 +813,29 @@ class RadarWidget(QWidget):
         painter.fillRect(self.rect(), QColor("#000000"))
 
         zoom_visual_scale = self._zoom_visual_scale(self.state.range_km)
-        moving_marker_scale = (
-            max(0.4, min(4.0, self.marker_size_scale))
-            * MARKER_BASE_SCALE_AT_CONFIG_1
-            * zoom_visual_scale
+        moving_symbol_font_px = max(
+            7,
+            int(
+                round(
+                    RADAR_SYMBOL_FONT_PX
+                    * max(0.4, min(4.0, self.marker_size_scale))
+                    * zoom_visual_scale
+                )
+            ),
         )
-        fixed_marker_scale = (
-            max(0.4, min(4.0, self.fixed_marker_size_scale))
-            * FIXED_MARKER_BASE_SCALE_AT_CONFIG_1
-            * zoom_visual_scale
+        fixed_symbol_font_px = max(
+            8,
+            int(
+                round(
+                    (RADAR_SYMBOL_FONT_PX + 1)
+                    * max(0.4, min(4.0, self.fixed_marker_size_scale))
+                    * zoom_visual_scale
+                )
+            ),
         )
         symbol_font = QFont("Courier New")
         symbol_font.setBold(True)
-        symbol_font.setPixelSize(max(7, int(round(RADAR_SYMBOL_FONT_PX * moving_marker_scale))))
+        symbol_font.setPixelSize(moving_symbol_font_px)
         fixed_symbol_font = QFont()
         fixed_symbol_font.setFamilies(
             [
@@ -819,7 +848,7 @@ class RadarWidget(QWidget):
             ]
         )
         fixed_symbol_font.setBold(True)
-        fixed_symbol_font.setPixelSize(max(8, int(round((RADAR_SYMBOL_FONT_PX + 1) * fixed_marker_scale))))
+        fixed_symbol_font.setPixelSize(fixed_symbol_font_px)
         label_font = QFont("Courier New")
         label_font.setPixelSize(RADAR_LABEL_FONT_PX)
 
@@ -858,15 +887,7 @@ class RadarWidget(QWidget):
             raw_symbol = str(fixed.get("symbol", "")).strip()
             symbol = self._fixed_symbol_text(raw_symbol)
             painter.setFont(fixed_symbol_font)
-            fixed_symbol_box = RADAR_FIXED_SYMBOL_BOX_PX * fixed_marker_scale
-            half_fixed_symbol_box = fixed_symbol_box * 0.5
-            symbol_rect = QRectF(
-                point.x() - half_fixed_symbol_box,
-                point.y() - half_fixed_symbol_box,
-                fixed_symbol_box,
-                fixed_symbol_box,
-            )
-            painter.drawText(symbol_rect, int(Qt.AlignmentFlag.AlignCenter), symbol)
+            self._draw_centered_symbol(painter, point, symbol)
             if self.show_fixed_names:
                 raw_name = str(fixed.get("name", "")).strip()
                 if raw_name:
@@ -977,37 +998,34 @@ class RadarWidget(QWidget):
                 painter.drawLine(end_point, head_right)
 
             symbol = "◆" if str(target.get("kind", "")).lower() == "vessel" else "●"
+            symbol_font.setPixelSize(moving_symbol_font_px)
             painter.setFont(symbol_font)
-            target_symbol_box = RADAR_TARGET_SYMBOL_BOX_PX * moving_marker_scale
-            if symbol == "◆":
-                target_symbol_box *= self.vessel_symbol_box_factor
-            else:
-                target_symbol_box *= RADAR_AIRCRAFT_SYMBOL_BOX_FACTOR
-            half_target_symbol_box = target_symbol_box * 0.5
-            symbol_rect = QRectF(
-                point.x() - half_target_symbol_box,
-                point.y() - half_target_symbol_box,
-                target_symbol_box,
-                target_symbol_box,
-            )
-            painter.drawText(symbol_rect, int(Qt.AlignmentFlag.AlignCenter), symbol)
+            target_symbol_font_px = moving_symbol_font_px
+            if symbol == "●":
+                target_symbol_font_px = max(
+                    moving_symbol_font_px,
+                    int(round(moving_symbol_font_px * RADAR_AIRCRAFT_FONT_SCALE)),
+                )
+                symbol_font.setPixelSize(target_symbol_font_px)
+                painter.setFont(symbol_font)
+            self._draw_centered_symbol(painter, point, symbol)
 
             if self.show_target_labels:
                 label = str(target.get("label") or target_id)
                 painter.setFont(label_font)
                 label_metrics = painter.fontMetrics()
-                label_anchor_x = point.x() + (target_symbol_box * 0.55)
+                label_anchor_x = point.x() + max(7.0, target_symbol_font_px * 0.55)
                 # drawText(x, y, text) uses baseline; compensate with ascent
-                label_anchor_y = point.y() - (target_symbol_box * 0.20) + (label_metrics.ascent() * 0.35)
+                label_anchor_y = (
+                    point.y() - max(2.0, target_symbol_font_px * 0.20) + (label_metrics.ascent() * 0.35)
+                )
                 painter.drawText(
                     QPointF(label_anchor_x, label_anchor_y),
                     label,
                 )
 
-        # Keep center marker independent from user-configured fixed marker scale.
-        # This matches fixed-object size at fixed_marker_scale == 1.0 for current zoom level.
-        center_reference_scale = FIXED_MARKER_BASE_SCALE_AT_CONFIG_1 * zoom_visual_scale
-        center_dot_radius = max(2.0, (RADAR_FIXED_SYMBOL_BOX_PX * center_reference_scale * 0.8))
+        # Keep center marker constant and independent from all marker scaling.
+        center_dot_radius = RADAR_CENTER_DOT_RADIUS_PX
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor("#d3d3d3"))
         painter.drawEllipse(QPointF(cx, cy), center_dot_radius, center_dot_radius)
