@@ -1057,7 +1057,9 @@ class LiveRadarWindow(QMainWindow):
         self.backend_fixed_objects = self.map_cache.load_backend_fixed_objects()
         self.cached_fixed_objects = self.map_cache.load_effective_fixed_objects()
         if not self.cached_fixed_objects:
-            self._rebuild_fixed_objects_cache()
+            merged = self._merged_fixed_objects(list(self.backend_fixed_objects))
+            self.map_cache.replace_effective_fixed_objects(merged)
+            self.cached_fixed_objects = self.map_cache.load_effective_fixed_objects()
 
         self.view_state = ViewState(
             center_lat=config.fallback_center_lat,
@@ -1407,7 +1409,8 @@ class LiveRadarWindow(QMainWindow):
         merged = self._merged_fixed_objects(list(self.backend_fixed_objects))
         stored_count = self.map_cache.replace_effective_fixed_objects(merged)
         self.cached_fixed_objects = self.map_cache.load_effective_fixed_objects()
-        self.radar_widget.set_fixed_objects(list(self.cached_fixed_objects))
+        if hasattr(self, "radar_widget"):
+            self.radar_widget.set_fixed_objects(list(self.cached_fixed_objects))
         LOGGER.info("QT fixed objects effective cache rebuilt: %s items", stored_count)
 
     def _apply_marker_size_scale(self) -> None:
