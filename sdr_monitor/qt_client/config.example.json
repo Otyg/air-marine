@@ -21,6 +21,7 @@
   "fallback_center_lat": 56.1619519,
   "fallback_center_lon": 15.5940978,
   "use_backend_live_config": false,
+  "fixed_objects_remove_names": [],
   "fixed_objects": [
     {
       "name": "Home Harbor",

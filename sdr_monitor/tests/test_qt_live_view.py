@@ -59,6 +59,7 @@ def test_load_qt_live_view_config_from_json(tmp_path: Path) -> None:
                 "fallback_center_lat": 56.16,
                 "fallback_center_lon": 15.59,
                 "use_backend_live_config": False,
+                "fixed_objects_remove_names": ["Base Harbor", "Radar Mast"],
                 "fixed_objects": [
                     {"name": "Harbor", "lat": 56.16, "lon": 15.59, "symbol": "H"},
                     {"name": "Mast", "latitude": 56.17, "longitude": 15.60},
@@ -89,6 +90,7 @@ def test_load_qt_live_view_config_from_json(tmp_path: Path) -> None:
     assert config.target_type_filter == "aircraft"
     assert config.map_source == "elevation"
     assert config.use_backend_live_config is False
+    assert config.fixed_objects_remove_names == ("Base Harbor", "Radar Mast")
     assert len(config.fixed_objects) == 2
     assert config.fixed_objects[0]["name"] == "Harbor"
 
@@ -158,6 +160,7 @@ def test_save_qt_live_view_config_round_trip(tmp_path: Path) -> None:
                 "fixed_marker_size_scale": 1.25,
                 "vessel_symbol_box_factor": 0.9,
                 "zoom_visual_exponent": 0.2,
+                "fixed_objects_remove_names": ["Base Harbor"],
                 "fixed_objects": [{"name": "Harbor", "lat": 56.16, "lon": 15.59}],
             }
         ),
@@ -171,4 +174,5 @@ def test_save_qt_live_view_config_round_trip(tmp_path: Path) -> None:
     assert reloaded.fixed_marker_size_scale == 1.25
     assert reloaded.vessel_symbol_box_factor == 0.9
     assert reloaded.zoom_visual_exponent == 0.2
+    assert reloaded.fixed_objects_remove_names == ("Base Harbor",)
     assert len(reloaded.fixed_objects) == 1

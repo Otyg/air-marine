@@ -926,6 +926,7 @@ class LiveRadarWindow(QMainWindow):
         self.current_scanner_scan: list[str] = ["AIS", "ADS"]
         self.backend_reachable = False
         self.radio_connected = False
+        self.reception_stale = False
         self._last_view_range_km = float(config.default_range_km)
         self.map_loaded_key: str | None = None
         self.map_pending_key: str | None = None
@@ -1163,7 +1164,12 @@ class LiveRadarWindow(QMainWindow):
                 "color: #5b9e5b; background: #000000; border: 1px solid #225522; padding: 2px 6px;"
             )
 
-    def _style_status_label(self, label: QLabel, active: bool) -> None:
+    def _style_status_label(self, label: QLabel, active: bool, *, stale: bool = False) -> None:
+        if stale:
+            label.setStyleSheet(
+                "color: #ffd48f; background: #2a1d00; border: 1px solid #7a5a21; padding: 2px 6px;"
+            )
+            return
         if active:
             label.setStyleSheet(
                 "color: #9be89b; background: #051805; border: 1px solid #2f8b2f; padding: 2px 6px;"
@@ -1180,7 +1186,7 @@ class LiveRadarWindow(QMainWindow):
             self._style_status_label(label, active)
         radio_active = self.backend_reachable and self.radio_connected
         self.radio_status_label.setText("Radio")
-        self._style_status_label(self.radio_status_label, radio_active)
+        self._style_status_label(self.radio_status_label, radio_active, stale=self.reception_stale)
 
     def on_zoom_in(self) -> None:
         self.radar_widget.zoom_in()
@@ -1207,6 +1213,42 @@ class LiveRadarWindow(QMainWindow):
 
     def _sync_range_input(self) -> None:
         self.range_input.setText(f"{self.radar_widget.state.range_km:.2f}")
+
+    def _normalized_fixed_name(self, value: Any) -> str:
+        return str(value or "").strip().casefold()
+
+    def _merged_fixed_objects(self, backend_fixed_objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = [dict(item) for item in backend_fixed_objects if isinstance(item, dict)]
+        remove_names = {
+            self._normalized_fixed_name(name)
+            for name in self.config.fixed_objects_remove_names
+            if self._normalized_fixed_name(name)
+        }
+        if remove_names:
+            merged = [
+                item
+                for item in merged
+                if self._normalized_fixed_name(item.get("name")) not in remove_names
+            ]
+
+        by_name_index: dict[str, int] = {}
+        for index, item in enumerate(merged):
+            normalized_name = self._normalized_fixed_name(item.get("name"))
+            if normalized_name:
+                by_name_index[normalized_name] = index
+
+        for local_item in self.config.fixed_objects:
+            if not isinstance(local_item, dict):
+                continue
+            candidate = dict(local_item)
+            normalized_name = self._normalized_fixed_name(candidate.get("name"))
+            if normalized_name and normalized_name in by_name_index:
+                merged[by_name_index[normalized_name]] = candidate
+                continue
+            if normalized_name:
+                by_name_index[normalized_name] = len(merged)
+            merged.append(candidate)
+        return merged
 
     def _effective_marker_size_scale(self) -> float:
         return max(0.4, min(4.0, self.default_marker_size_scale * self.session_marker_scale_multiplier))
@@ -1363,6 +1405,11 @@ class LiveRadarWindow(QMainWindow):
         fixed_objects_input.setPlainText(
             json.dumps(list(self.config.fixed_objects), ensure_ascii=False, indent=2)
         )
+        fixed_objects_remove_names_input = QPlainTextEdit()
+        fixed_objects_remove_names_input.setMinimumHeight(70)
+        fixed_objects_remove_names_input.setPlainText(
+            json.dumps(list(self.config.fixed_objects_remove_names), ensure_ascii=False, indent=2)
+        )
 
         form.addRow("Backend URL", backend_input)
         form.addRow("Window title", window_title_input)
@@ -1387,6 +1434,7 @@ class LiveRadarWindow(QMainWindow):
         form.addRow("Show map contours", show_map_contours_input)
         form.addRow("Show low speed", show_low_speed_input)
         form.addRow("Use backend /ui/live-config", use_backend_live_config_input)
+        form.addRow("Remove backend fixed names JSON", fixed_objects_remove_names_input)
         form.addRow("Fixed objects JSON", fixed_objects_input)
         layout.addLayout(form)
 
@@ -1413,8 +1461,18 @@ class LiveRadarWindow(QMainWindow):
                 fixed_objects_payload = json.loads(fixed_objects_input.toPlainText())
                 if not isinstance(fixed_objects_payload, list):
                     raise ValueError("fixed_objects must be a JSON array")
+                fixed_objects_remove_names_payload = json.loads(
+                    fixed_objects_remove_names_input.toPlainText()
+                )
+                if not isinstance(fixed_objects_remove_names_payload, list):
+                    raise ValueError("fixed_objects_remove_names must be a JSON array")
                 fixed_objects = tuple(
                     item for item in fixed_objects_payload if isinstance(item, dict)
+                )
+                fixed_objects_remove_names = tuple(
+                    str(item).strip()
+                    for item in fixed_objects_remove_names_payload
+                    if str(item).strip()
                 )
                 next_config = QtLiveViewConfig(
                     backend_base_url=normalize_backend_base_url(backend_input.text()),
@@ -1440,6 +1498,7 @@ class LiveRadarWindow(QMainWindow):
                     vessel_symbol_box_factor=float(vessel_symbol_factor_input.value()),
                     zoom_visual_exponent=float(zoom_visual_exponent_input.value()),
                     fixed_objects=fixed_objects,
+                    fixed_objects_remove_names=fixed_objects_remove_names,
                     use_backend_live_config=bool(use_backend_live_config_input.isChecked()),
                 )
                 self.config = next_config
@@ -1719,13 +1778,15 @@ class LiveRadarWindow(QMainWindow):
             self.default_map_source = self.config.map_source or parsed.default_map_source
             self.setWindowTitle(f"{self.config.window_title} - {self.service_name}")
             self.radar_widget.set_home(parsed.center_lat, parsed.center_lon)
-            self.radar_widget.set_fixed_objects(list(parsed.fixed_objects))
+            merged_fixed_objects = self._merged_fixed_objects(list(parsed.fixed_objects))
+            self.radar_widget.set_fixed_objects(merged_fixed_objects)
             self._sync_scan_labels()
             self.schedule_map_contours()
 
         def _on_error(message: str) -> None:
             self.backend_reachable = False
             self.radio_connected = False
+            self.reception_stale = False
             self._sync_scan_labels()
             self.statusBar().showMessage(f"/ui/live-config unavailable: {message}", 5000)
 
@@ -1759,6 +1820,7 @@ class LiveRadarWindow(QMainWindow):
         def _on_error(message: str) -> None:
             self.backend_reachable = False
             self.radio_connected = False
+            self.reception_stale = False
             self._sync_scan_labels()
             self.statusBar().showMessage(f"Failed to load /ui/targets-latest: {message}", 3000)
 
@@ -1766,6 +1828,7 @@ class LiveRadarWindow(QMainWindow):
 
     def _update_reception_warning(self, status_payload: Any) -> None:
         if not isinstance(status_payload, dict):
+            self.reception_stale = False
             self.reception_warning_label.setText("")
             return
         threshold_hours = status_payload.get("threshold_hours")
@@ -1776,7 +1839,15 @@ class LiveRadarWindow(QMainWindow):
         except (TypeError, ValueError):
             threshold = 2.0
 
-        if adsb_last in {None, ""} and ais_last in {None, ""}:
+        threshold_ms = max(0.0, threshold) * 60.0 * 60.0 * 1000.0
+        now_ms = datetime.now(timezone.utc).timestamp() * 1000.0
+        adsb_last_ms = self.radar_widget._parse_timestamp_ms(adsb_last)
+        ais_last_ms = self.radar_widget._parse_timestamp_ms(ais_last)
+        adsb_stale = adsb_last_ms is None or ((now_ms - adsb_last_ms) >= threshold_ms)
+        ais_stale = ais_last_ms is None or ((now_ms - ais_last_ms) >= threshold_ms)
+        self.reception_stale = adsb_stale and ais_stale
+
+        if self.reception_stale:
             self.reception_warning_label.setText(
                 f"Varning: ingen positionsdata fran AIS eller ADS-B senaste {threshold:.0f} timmarna."
             )

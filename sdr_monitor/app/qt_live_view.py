@@ -48,6 +48,7 @@ class QtLiveViewConfig:
     vessel_symbol_box_factor: float = 0.82
     zoom_visual_exponent: float = DEFAULT_ZOOM_VISUAL_EXPONENT
     fixed_objects: tuple[dict[str, Any], ...] = ()
+    fixed_objects_remove_names: tuple[str, ...] = ()
     use_backend_live_config: bool = False
 
 
@@ -160,6 +161,9 @@ def load_qt_live_view_config(config_path: Path) -> QtLiveViewConfig:
     fixed_objects_payload = payload.get("fixed_objects", [])
     if not isinstance(fixed_objects_payload, list):
         raise ValueError("fixed_objects must be a JSON array")
+    fixed_objects_remove_names_payload = payload.get("fixed_objects_remove_names", [])
+    if not isinstance(fixed_objects_remove_names_payload, list):
+        raise ValueError("fixed_objects_remove_names must be a JSON array")
 
     backend_base_url = normalize_backend_base_url(str(payload.get("backend_base_url", "")))
     config = QtLiveViewConfig(
@@ -202,6 +206,11 @@ def load_qt_live_view_config(config_path: Path) -> QtLiveViewConfig:
             DEFAULT_ZOOM_VISUAL_EXPONENT,
         ),
         fixed_objects=tuple(item for item in fixed_objects_payload if isinstance(item, dict)),
+        fixed_objects_remove_names=tuple(
+            str(item).strip()
+            for item in fixed_objects_remove_names_payload
+            if str(item).strip()
+        ),
         use_backend_live_config=_to_bool(payload, "use_backend_live_config", False),
     )
 

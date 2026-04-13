@@ -156,6 +156,7 @@ Optional launch flags:
 The Qt client reads all client-side settings from `qt_client/config.json`, so it can run on a separate machine and point to any reachable backend base URL.
 By default, it does not consume backend `/ui/live-config`; center position, service name, map source, and fixed objects are read from `qt_client/config.json`.
 Set `use_backend_live_config: true` in `qt_client/config.json` if you explicitly want backend-provided live config overrides.
+When backend live config is enabled, fixed objects are merged: backend fixed objects are used as base, local `fixed_objects` are added/replaced by matching `name`, and `fixed_objects_remove_names` removes backend objects by name.
 You can tune moving-object trail length with `trail_point_window_seconds`, moving-object marker sizing with `marker_size_scale`, fixed-object symbol sizing with `fixed_marker_size_scale`, vessel-vs-aircraft symbol visual parity with `vessel_symbol_box_factor`, and zoom-dependent marker/vector scaling aggressiveness with `zoom_visual_exponent`.
 In the QT UI, use the `Installningar` button to open a dialog where you can save new defaults to `config.json` and apply a temporary marker-size multiplier for the current session.
 
