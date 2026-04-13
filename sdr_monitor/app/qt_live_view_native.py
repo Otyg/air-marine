@@ -73,6 +73,7 @@ RADAR_FIXED_SYMBOL_BOX_PX = 12.0
 RADAR_TARGET_LABEL_OFFSET_X = 8.0
 RADAR_TARGET_LABEL_OFFSET_Y = -10.0
 RADAR_CENTER_DOT_RADIUS_PX = 5.0
+MARKER_BASE_SCALE_AT_CONFIG_1 = 0.4
 
 
 class MapContourTileCache:
@@ -182,6 +183,7 @@ class RadarWidget(QWidget):
         self.local_trails: dict[str, list[tuple[float, float, float]]] = {}
         self.trail_point_window_seconds = TRAIL_POINT_WINDOW_SECONDS
         self.marker_size_scale = 1.0
+        self.fixed_marker_size_scale = 1.0
 
     def set_home(self, lat: float, lon: float) -> None:
         self.home_lat = lat
@@ -226,6 +228,10 @@ class RadarWidget(QWidget):
         self.marker_size_scale = max(0.4, min(4.0, float(value)))
         self.update()
 
+    def set_fixed_marker_size_scale(self, value: float) -> None:
+        self.fixed_marker_size_scale = max(0.4, min(4.0, float(value)))
+        self.update()
+
     def set_range_km(self, range_km: float) -> None:
         self.state.range_km = max(MIN_RANGE_KM, min(500.0, float(range_km)))
         self.view_changed.emit(self.state.center_lat, self.state.center_lon, self.state.range_km)
@@ -257,13 +263,10 @@ class RadarWidget(QWidget):
         if not symbol:
             return "O"
         mapped = {
-            "◬": "^",
-            "▲": "^",
-            "△": "^",
-            "★": "*",
-            "✈": "A",
-        }.get(symbol, symbol)
-        return mapped[:1] or "O"
+            "▲": "◬",
+            "△": "◬",
+        }.get(symbol[:1], symbol[:1])
+        return mapped or "O"
 
     def _now_ms(self) -> float:
         return datetime.now(timezone.utc).timestamp() * 1000.0
@@ -545,10 +548,24 @@ class RadarWidget(QWidget):
 
         painter.fillRect(self.rect(), QColor("#000000"))
 
-        marker_scale = max(0.4, min(4.0, self.marker_size_scale))
+        moving_marker_scale = max(0.4, min(4.0, self.marker_size_scale)) * MARKER_BASE_SCALE_AT_CONFIG_1
+        fixed_marker_scale = max(0.4, min(4.0, self.fixed_marker_size_scale)) * MARKER_BASE_SCALE_AT_CONFIG_1
         symbol_font = QFont("Courier New")
         symbol_font.setBold(True)
-        symbol_font.setPixelSize(max(7, int(round(RADAR_SYMBOL_FONT_PX * marker_scale))))
+        symbol_font.setPixelSize(max(7, int(round(RADAR_SYMBOL_FONT_PX * moving_marker_scale))))
+        fixed_symbol_font = QFont()
+        fixed_symbol_font.setFamilies(
+            [
+                "Noto Sans Symbols 2",
+                "Noto Sans Symbols",
+                "Segoe UI Symbol",
+                "DejaVu Sans",
+                "Arial Unicode MS",
+                "Courier New",
+            ]
+        )
+        fixed_symbol_font.setBold(False)
+        fixed_symbol_font.setPixelSize(max(8, int(round((RADAR_SYMBOL_FONT_PX + 1) * fixed_marker_scale))))
         label_font = QFont("Courier New")
         label_font.setPixelSize(RADAR_LABEL_FONT_PX)
 
@@ -586,8 +603,8 @@ class RadarWidget(QWidget):
                 continue
             raw_symbol = str(fixed.get("symbol", "")).strip()
             symbol = self._fixed_symbol_text(raw_symbol)
-            painter.setFont(symbol_font)
-            fixed_symbol_box = RADAR_FIXED_SYMBOL_BOX_PX * marker_scale
+            painter.setFont(fixed_symbol_font)
+            fixed_symbol_box = RADAR_FIXED_SYMBOL_BOX_PX * fixed_marker_scale
             half_fixed_symbol_box = fixed_symbol_box * 0.5
             symbol_rect = QRectF(
                 point.x() - half_fixed_symbol_box,
@@ -679,7 +696,7 @@ class RadarWidget(QWidget):
 
             symbol = "◆" if str(target.get("kind", "")).lower() == "vessel" else "●"
             painter.setFont(symbol_font)
-            target_symbol_box = RADAR_TARGET_SYMBOL_BOX_PX * marker_scale
+            target_symbol_box = RADAR_TARGET_SYMBOL_BOX_PX * moving_marker_scale
             half_target_symbol_box = target_symbol_box * 0.5
             symbol_rect = QRectF(
                 point.x() - half_target_symbol_box,
@@ -739,6 +756,7 @@ class LiveRadarWindow(QMainWindow):
         self.service_name = config.service_name
         self.default_map_source = config.map_source
         self.default_marker_size_scale = max(0.4, min(4.0, float(config.marker_size_scale)))
+        self.default_fixed_marker_size_scale = max(0.4, min(4.0, float(config.fixed_marker_size_scale)))
         self.session_marker_scale_multiplier = 1.0
         self.current_targets: list[dict[str, Any]] = []
         self.current_scanner_scan: list[str] = ["AIS", "ADS"]
@@ -761,6 +779,7 @@ class LiveRadarWindow(QMainWindow):
         self.radar_widget.set_fixed_objects(list(config.fixed_objects))
         self.radar_widget.set_trail_point_window_seconds(config.trail_point_window_seconds)
         self.radar_widget.set_marker_size_scale(self.default_marker_size_scale)
+        self.radar_widget.set_fixed_marker_size_scale(self.default_fixed_marker_size_scale)
         self.radar_widget.show_fixed_names = config.show_fixed_names
         self.radar_widget.show_target_labels = config.show_target_labels
         self.radar_widget.show_map_contours = config.show_map_contours
@@ -1028,6 +1047,7 @@ class LiveRadarWindow(QMainWindow):
 
     def _apply_marker_size_scale(self) -> None:
         self.radar_widget.set_marker_size_scale(self._effective_marker_size_scale())
+        self.radar_widget.set_fixed_marker_size_scale(self.default_fixed_marker_size_scale)
 
     def _apply_runtime_config(self, config: QtLiveViewConfig, *, recenter_home: bool) -> None:
         self.default_map_source = config.map_source
@@ -1042,6 +1062,7 @@ class LiveRadarWindow(QMainWindow):
         self.radar_widget.set_fixed_objects(list(config.fixed_objects))
         self.radar_widget.set_trail_point_window_seconds(config.trail_point_window_seconds)
         self.default_marker_size_scale = max(0.4, min(4.0, float(config.marker_size_scale)))
+        self.default_fixed_marker_size_scale = max(0.4, min(4.0, float(config.fixed_marker_size_scale)))
         self._apply_marker_size_scale()
 
         self.radar_widget.show_fixed_names = config.show_fixed_names
@@ -1116,6 +1137,11 @@ class LiveRadarWindow(QMainWindow):
         default_marker_scale_input.setSingleStep(0.05)
         default_marker_scale_input.setDecimals(2)
         default_marker_scale_input.setValue(self.default_marker_size_scale)
+        fixed_marker_scale_input = QDoubleSpinBox()
+        fixed_marker_scale_input.setRange(0.4, 4.0)
+        fixed_marker_scale_input.setSingleStep(0.05)
+        fixed_marker_scale_input.setDecimals(2)
+        fixed_marker_scale_input.setValue(self.default_fixed_marker_size_scale)
 
         temp_marker_multiplier_input = QDoubleSpinBox()
         temp_marker_multiplier_input.setRange(0.4, 4.0)
@@ -1168,6 +1194,7 @@ class LiveRadarWindow(QMainWindow):
         form.addRow("Default range (km)", range_input)
         form.addRow("Trail length (s)", trail_input)
         form.addRow("Default marker scale", default_marker_scale_input)
+        form.addRow("Fixed marker scale", fixed_marker_scale_input)
         form.addRow("Temporary marker multiplier", temp_marker_multiplier_input)
         form.addRow("Map source", map_source_input)
         form.addRow("Target filter", target_filter_input)
@@ -1227,6 +1254,7 @@ class LiveRadarWindow(QMainWindow):
                     fallback_center_lon=float(center_lon_input.value()),
                     trail_point_window_seconds=float(trail_input.value()),
                     marker_size_scale=float(default_marker_scale_input.value()),
+                    fixed_marker_size_scale=float(fixed_marker_scale_input.value()),
                     fixed_objects=fixed_objects,
                     use_backend_live_config=bool(use_backend_live_config_input.isChecked()),
                 )

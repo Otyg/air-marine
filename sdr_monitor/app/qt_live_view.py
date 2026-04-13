@@ -43,6 +43,7 @@ class QtLiveViewConfig:
     fallback_center_lon: float = 0.0
     trail_point_window_seconds: float = DEFAULT_TRAIL_POINT_WINDOW_SECONDS
     marker_size_scale: float = DEFAULT_MARKER_SIZE_SCALE
+    fixed_marker_size_scale: float = DEFAULT_MARKER_SIZE_SCALE
     fixed_objects: tuple[dict[str, Any], ...] = ()
     use_backend_live_config: bool = False
 
@@ -186,6 +187,11 @@ def load_qt_live_view_config(config_path: Path) -> QtLiveViewConfig:
             "marker_size_scale",
             DEFAULT_MARKER_SIZE_SCALE,
         ),
+        fixed_marker_size_scale=_to_float(
+            payload,
+            "fixed_marker_size_scale",
+            DEFAULT_MARKER_SIZE_SCALE,
+        ),
         fixed_objects=tuple(item for item in fixed_objects_payload if isinstance(item, dict)),
         use_backend_live_config=_to_bool(payload, "use_backend_live_config", False),
     )
@@ -200,6 +206,8 @@ def load_qt_live_view_config(config_path: Path) -> QtLiveViewConfig:
         raise ValueError("trail_point_window_seconds must be within 5..3600")
     if not (0.4 <= config.marker_size_scale <= 4.0):
         raise ValueError("marker_size_scale must be within 0.4..4.0")
+    if not (0.4 <= config.fixed_marker_size_scale <= 4.0):
+        raise ValueError("fixed_marker_size_scale must be within 0.4..4.0")
 
     return config
 
