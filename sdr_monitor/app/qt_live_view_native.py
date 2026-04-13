@@ -67,6 +67,7 @@ RADAR_TARGET_LABEL_OFFSET_X = 8.0
 RADAR_TARGET_LABEL_OFFSET_Y = -10.0
 RADAR_CENTER_DOT_RADIUS_PX = 5.0
 MARKER_BASE_SCALE_AT_CONFIG_1 = 0.4
+FIXED_MARKER_BASE_SCALE_AT_CONFIG_1 = 0.8
 ZOOM_VISUAL_SCALE_MIN = 0.65
 ZOOM_VISUAL_SCALE_MAX = 1.60
 ZOOM_VISUAL_REFERENCE_RANGE_KM = 10.0
@@ -800,7 +801,7 @@ class RadarWidget(QWidget):
         )
         fixed_marker_scale = (
             max(0.4, min(4.0, self.fixed_marker_size_scale))
-            * MARKER_BASE_SCALE_AT_CONFIG_1
+            * FIXED_MARKER_BASE_SCALE_AT_CONFIG_1
             * zoom_visual_scale
         )
         symbol_font = QFont("Courier New")
@@ -1005,7 +1006,7 @@ class RadarWidget(QWidget):
 
         # Keep center marker independent from user-configured fixed marker scale.
         # This matches fixed-object size at fixed_marker_scale == 1.0 for current zoom level.
-        center_reference_scale = MARKER_BASE_SCALE_AT_CONFIG_1 * zoom_visual_scale
+        center_reference_scale = FIXED_MARKER_BASE_SCALE_AT_CONFIG_1 * zoom_visual_scale
         center_dot_radius = max(2.0, (RADAR_FIXED_SYMBOL_BOX_PX * center_reference_scale * 0.8))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor("#d3d3d3"))
