@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QSizePolicy,
     QSplitter,
@@ -1314,7 +1315,10 @@ class LiveRadarWindow(QMainWindow):
         self.settings_dialog = dialog
 
         layout = QVBoxLayout(dialog)
-        form = QFormLayout()
+        scroll_area = QScrollArea(dialog)
+        scroll_area.setWidgetResizable(True)
+        scroll_content = QWidget(scroll_area)
+        form = QFormLayout(scroll_content)
 
         backend_input = QLineEdit(self.config.backend_base_url)
         window_title_input = QLineEdit(self.config.window_title)
@@ -1436,7 +1440,8 @@ class LiveRadarWindow(QMainWindow):
         form.addRow("Use backend /ui/live-config", use_backend_live_config_input)
         form.addRow("Remove backend fixed names JSON", fixed_objects_remove_names_input)
         form.addRow("Fixed objects JSON", fixed_objects_input)
-        layout.addLayout(form)
+        scroll_area.setWidget(scroll_content)
+        layout.addWidget(scroll_area, stretch=1)
 
         button_row = QHBoxLayout()
         apply_temp_button = QPushButton("Anvand tillfallig markorskala")
