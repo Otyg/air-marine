@@ -1534,6 +1534,7 @@ class LiveRadarWindow(QMainWindow):
             currently_enabled = self.radar_widget.is_tracking_enabled(target_id)
             self.radar_widget.set_tracking_enabled(target_id, not currently_enabled)
             _refresh_tracking_controls()
+            self._refresh_target_lists()
 
         _refresh_tracking_controls()
         tracking_toggle_button.clicked.connect(_toggle_tracking)
@@ -1596,8 +1597,12 @@ class LiveRadarWindow(QMainWindow):
         self.radar_widget.update()
 
     def _target_label(self, target: dict[str, Any]) -> str:
-        label = str(target.get("label") or target.get("target_id") or "okant")
-        parts = [label]
+        target_id = str(target.get("target_id") or "").strip()
+        label = str(target.get("label") or target_id or "okant")
+        kind = str(target.get("kind", "")).lower()
+        kind_icon = "⛵" if kind == "vessel" else "✈" if kind == "aircraft" else "•"
+        tracking_icon = "📌 " if self.radar_widget.is_tracking_enabled(target_id) else ""
+        parts = [f"{tracking_icon}{kind_icon} {label}"]
 
         if target.get("speed") is not None:
             try:
