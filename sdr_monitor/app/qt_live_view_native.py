@@ -91,6 +91,18 @@ class MapContourTileCache:
             )
             """
         )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS backend_fixed_objects (
+                position_key TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                lat REAL NOT NULL,
+                lon REAL NOT NULL,
+                fetched_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL
+            )
+            """
+        )
         self.conn.commit()
 
     def get_tile_features(
@@ -147,6 +159,78 @@ class MapContourTileCache:
             ),
         )
         self.conn.commit()
+
+    def replace_backend_fixed_objects(self, fixed_objects: list[dict[str, Any]]) -> int:
+        normalized_rows: list[tuple[str, str, float, float, str, str]] = []
+        seen_positions: set[str] = set()
+        fetched_at = datetime.now(timezone.utc).isoformat()
+
+        for raw_item in fixed_objects:
+            if not isinstance(raw_item, dict):
+                continue
+            item = dict(raw_item)
+            lat_value = item.get("lat", item.get("latitude"))
+            lon_value = item.get("lon", item.get("longitude"))
+            try:
+                lat = float(lat_value)
+                lon = float(lon_value)
+            except (TypeError, ValueError):
+                continue
+            if not (math.isfinite(lat) and math.isfinite(lon)):
+                continue
+            item["lat"] = lat
+            item["lon"] = lon
+            name = str(item.get("name") or "").strip() or "(unnamed)"
+            position_key = f"{lat:.7f},{lon:.7f}"
+            if position_key in seen_positions:
+                continue
+            seen_positions.add(position_key)
+            normalized_rows.append(
+                (
+                    position_key,
+                    name,
+                    lat,
+                    lon,
+                    fetched_at,
+                    json.dumps(item, separators=(",", ":"), ensure_ascii=True),
+                )
+            )
+
+        self.conn.execute("DELETE FROM backend_fixed_objects")
+        if normalized_rows:
+            self.conn.executemany(
+                """
+                INSERT INTO backend_fixed_objects (
+                    position_key,
+                    name,
+                    lat,
+                    lon,
+                    fetched_at,
+                    payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                normalized_rows,
+            )
+        self.conn.commit()
+        return len(normalized_rows)
+
+    def load_backend_fixed_objects(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT payload_json
+            FROM backend_fixed_objects
+            ORDER BY name COLLATE NOCASE ASC, position_key ASC
+            """
+        ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                payload = json.loads(str(row[0]))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                result.append(payload)
+        return result
 
 
 class RadarWidget(QWidget):
@@ -909,7 +993,7 @@ class LiveRadarWindow(QMainWindow):
 
         self.live_config_timer = QTimer(self)
         self.live_config_timer.setInterval(max(30_000, config.poll_interval_ms * 6))
-        self.live_config_timer.timeout.connect(self.load_live_ui_config)
+        self.live_config_timer.timeout.connect(self._on_live_config_timer)
 
         self.map_retry_timer = QTimer(self)
         self.map_retry_timer.setSingleShot(True)
@@ -934,6 +1018,7 @@ class LiveRadarWindow(QMainWindow):
         self.map_in_flight = False
         self.map_refresh_pending = False
         self.map_cache = MapContourTileCache(DEFAULT_MAP_CACHE_DB_PATH)
+        self.backend_fixed_objects = self.map_cache.load_backend_fixed_objects()
 
         self.view_state = ViewState(
             center_lat=config.fallback_center_lat,
@@ -942,7 +1027,7 @@ class LiveRadarWindow(QMainWindow):
         )
 
         self.radar_widget = RadarWidget(self.view_state)
-        self.radar_widget.set_fixed_objects(list(config.fixed_objects))
+        self.radar_widget.set_fixed_objects(self._merged_fixed_objects(list(self.backend_fixed_objects)))
         self.radar_widget.set_trail_point_window_seconds(config.trail_point_window_seconds)
         self.radar_widget.set_marker_size_scale(self.default_marker_size_scale)
         self.radar_widget.set_fixed_marker_size_scale(self.default_fixed_marker_size_scale)
@@ -1218,6 +1303,18 @@ class LiveRadarWindow(QMainWindow):
     def _normalized_fixed_name(self, value: Any) -> str:
         return str(value or "").strip().casefold()
 
+    def _normalized_fixed_position_key(self, item: dict[str, Any]) -> str | None:
+        lat_value = item.get("lat", item.get("latitude"))
+        lon_value = item.get("lon", item.get("longitude"))
+        try:
+            lat = float(lat_value)
+            lon = float(lon_value)
+        except (TypeError, ValueError):
+            return None
+        if not (math.isfinite(lat) and math.isfinite(lon)):
+            return None
+        return f"{lat:.7f},{lon:.7f}"
+
     def _merged_fixed_objects(self, backend_fixed_objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
         merged: list[dict[str, Any]] = [dict(item) for item in backend_fixed_objects if isinstance(item, dict)]
         remove_names = {
@@ -1249,7 +1346,20 @@ class LiveRadarWindow(QMainWindow):
             if normalized_name:
                 by_name_index[normalized_name] = len(merged)
             merged.append(candidate)
-        return merged
+
+        # Prefer local overrides when multiple entries share the same lat/lon.
+        deduped_reversed: list[dict[str, Any]] = []
+        seen_position_keys: set[str] = set()
+        for item in reversed(merged):
+            position_key = self._normalized_fixed_position_key(item)
+            if position_key is None:
+                deduped_reversed.append(item)
+                continue
+            if position_key in seen_position_keys:
+                continue
+            seen_position_keys.add(position_key)
+            deduped_reversed.append(item)
+        return list(reversed(deduped_reversed))
 
     def _effective_marker_size_scale(self) -> float:
         return max(0.4, min(4.0, self.default_marker_size_scale * self.session_marker_scale_multiplier))
@@ -1268,7 +1378,7 @@ class LiveRadarWindow(QMainWindow):
             self.radar_widget.set_range_km(config.default_range_km)
             self._sync_range_input()
 
-        self.radar_widget.set_fixed_objects(list(config.fixed_objects))
+        self.radar_widget.set_fixed_objects(self._merged_fixed_objects(list(self.backend_fixed_objects)))
         self.radar_widget.set_trail_point_window_seconds(config.trail_point_window_seconds)
         self.default_marker_size_scale = max(0.4, min(4.0, float(config.marker_size_scale)))
         self.default_fixed_marker_size_scale = max(0.4, min(4.0, float(config.fixed_marker_size_scale)))
@@ -1769,22 +1879,37 @@ class LiveRadarWindow(QMainWindow):
         reply.finished.connect(_finished)
 
     def start(self) -> None:
+        self.load_live_ui_config(
+            apply_live_runtime=self.config.use_backend_live_config,
+            refresh_fixed_objects=True,
+        )
         if self.config.use_backend_live_config:
-            self.load_live_ui_config()
             self.live_config_timer.start()
         self.poll_timer.start()
         self.load_targets()
 
-    def load_live_ui_config(self) -> None:
+    def _on_live_config_timer(self) -> None:
+        self.load_live_ui_config(apply_live_runtime=True, refresh_fixed_objects=False)
+
+    def load_live_ui_config(
+        self,
+        *,
+        apply_live_runtime: bool,
+        refresh_fixed_objects: bool,
+    ) -> None:
         def _on_success(payload: dict[str, Any]) -> None:
             self.backend_reachable = True
             parsed = parse_live_ui_config(payload)
-            self.service_name = parsed.service_name
-            self.default_map_source = self.config.map_source or parsed.default_map_source
-            self.setWindowTitle(f"{self.config.window_title} - {self.service_name}")
-            self.radar_widget.set_home(parsed.center_lat, parsed.center_lon)
-            merged_fixed_objects = self._merged_fixed_objects(list(parsed.fixed_objects))
-            self.radar_widget.set_fixed_objects(merged_fixed_objects)
+            if apply_live_runtime:
+                self.service_name = parsed.service_name
+                self.default_map_source = self.config.map_source or parsed.default_map_source
+                self.setWindowTitle(f"{self.config.window_title} - {self.service_name}")
+                self.radar_widget.set_home(parsed.center_lat, parsed.center_lon)
+            if refresh_fixed_objects:
+                stored_count = self.map_cache.replace_backend_fixed_objects(list(parsed.fixed_objects))
+                self.backend_fixed_objects = self.map_cache.load_backend_fixed_objects()
+                LOGGER.info("QT fixed objects cache updated from backend at startup: %s items", stored_count)
+            self.radar_widget.set_fixed_objects(self._merged_fixed_objects(list(self.backend_fixed_objects)))
             self._sync_scan_labels()
             self.schedule_map_contours()
 
