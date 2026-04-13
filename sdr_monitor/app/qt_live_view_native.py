@@ -60,7 +60,6 @@ LIVE_TRAIL_FAR_COLOR = QColor("#031603")
 RADAR_FIXED_OBJECT_COLOR = QColor("#9be89b")
 RADAR_SYMBOL_FONT_PX = 10
 RADAR_LABEL_FONT_PX = 12
-RADAR_AIRCRAFT_FONT_SCALE = 1.18
 RADAR_TARGET_LABEL_OFFSET_X = 8.0
 RADAR_TARGET_LABEL_OFFSET_Y = -10.0
 RADAR_CENTER_DOT_RADIUS_PX = 2.0
@@ -298,7 +297,11 @@ class RadarWidget(QWidget):
         self.trail_point_window_seconds = TRAIL_POINT_WINDOW_SECONDS
         self.marker_size_scale = 1.0
         self.fixed_marker_size_scale = 1.0
-        self.vessel_symbol_box_factor = 0.82
+        self.aircraft_symbol = "●"
+        self.vessel_symbol = "◆"
+        self.aircraft_symbol_size_scale = 1.0
+        self.vessel_symbol_size_scale = 1.0
+        self.fixed_default_symbol = "O"
         self.zoom_visual_exponent = ZOOM_VISUAL_EXPONENT
 
     def set_home(self, lat: float, lon: float) -> None:
@@ -373,8 +376,24 @@ class RadarWidget(QWidget):
         self.fixed_marker_size_scale = max(0.4, min(4.0, float(value)))
         self.update()
 
-    def set_vessel_symbol_box_factor(self, value: float) -> None:
-        self.vessel_symbol_box_factor = max(0.5, min(1.5, float(value)))
+    def set_aircraft_symbol(self, value: str) -> None:
+        self.aircraft_symbol = self._normalize_symbol(value, fallback="●")
+        self.update()
+
+    def set_vessel_symbol(self, value: str) -> None:
+        self.vessel_symbol = self._normalize_symbol(value, fallback="◆")
+        self.update()
+
+    def set_aircraft_symbol_size_scale(self, value: float) -> None:
+        self.aircraft_symbol_size_scale = max(0.4, min(4.0, float(value)))
+        self.update()
+
+    def set_vessel_symbol_size_scale(self, value: float) -> None:
+        self.vessel_symbol_size_scale = max(0.4, min(4.0, float(value)))
+        self.update()
+
+    def set_fixed_default_symbol(self, value: str) -> None:
+        self.fixed_default_symbol = self._normalize_symbol(value, fallback="O")
         self.update()
 
     def set_zoom_visual_exponent(self, value: float) -> None:
@@ -415,6 +434,10 @@ class RadarWidget(QWidget):
         _kind = str(target.get("kind", "")).lower()
         return QColor("#c1f5c1")
 
+    def _normalize_symbol(self, value: str, *, fallback: str) -> str:
+        raw = str(value).strip()
+        return raw[:1] if raw else fallback
+
     def _draw_centered_symbol(self, painter: QPainter, point: QPointF, symbol: str) -> None:
         metrics = painter.fontMetrics()
         symbol_width = max(1.0, float(metrics.horizontalAdvance(symbol)))
@@ -430,12 +453,12 @@ class RadarWidget(QWidget):
     def _fixed_symbol_text(self, raw_symbol: str) -> str:
         symbol = (raw_symbol or "").strip()
         if not symbol:
-            return "O"
+            return self.fixed_default_symbol
         mapped = {
             "▲": "◬",
             "△": "◬",
         }.get(symbol[:1], symbol[:1])
-        return mapped or "O"
+        return mapped or self.fixed_default_symbol
 
     def _now_ms(self) -> float:
         return datetime.now(timezone.utc).timestamp() * 1000.0
@@ -997,15 +1020,22 @@ class RadarWidget(QWidget):
                 painter.drawLine(end_point, head_left)
                 painter.drawLine(end_point, head_right)
 
-            symbol = "◆" if str(target.get("kind", "")).lower() == "vessel" else "●"
+            is_vessel = str(target.get("kind", "")).lower() == "vessel"
+            symbol = self.vessel_symbol if is_vessel else self.aircraft_symbol
             symbol_font.setPixelSize(moving_symbol_font_px)
             painter.setFont(symbol_font)
             target_symbol_font_px = moving_symbol_font_px
-            if symbol == "●":
+            if is_vessel:
                 target_symbol_font_px = max(
-                    moving_symbol_font_px,
-                    int(round(moving_symbol_font_px * RADAR_AIRCRAFT_FONT_SCALE)),
+                    7,
+                    int(round(moving_symbol_font_px * self.vessel_symbol_size_scale)),
                 )
+            else:
+                target_symbol_font_px = max(
+                    7,
+                    int(round(moving_symbol_font_px * self.aircraft_symbol_size_scale)),
+                )
+            if target_symbol_font_px != moving_symbol_font_px:
                 symbol_font.setPixelSize(target_symbol_font_px)
                 painter.setFont(symbol_font)
             self._draw_centered_symbol(painter, point, symbol)
@@ -1065,7 +1095,11 @@ class LiveRadarWindow(QMainWindow):
         self.default_map_source = config.map_source
         self.default_marker_size_scale = max(0.4, min(4.0, float(config.marker_size_scale)))
         self.default_fixed_marker_size_scale = max(0.4, min(4.0, float(config.fixed_marker_size_scale)))
-        self.vessel_symbol_box_factor = max(0.5, min(1.5, float(config.vessel_symbol_box_factor)))
+        self.aircraft_symbol = str(config.aircraft_symbol or "●")[:1]
+        self.vessel_symbol = str(config.vessel_symbol or "◆")[:1]
+        self.aircraft_symbol_size_scale = max(0.4, min(4.0, float(config.aircraft_symbol_size_scale)))
+        self.vessel_symbol_size_scale = max(0.4, min(4.0, float(config.vessel_symbol_size_scale)))
+        self.fixed_default_symbol = str(config.fixed_default_symbol or "O")[:1]
         self.zoom_visual_exponent = max(0.0, min(0.6, float(config.zoom_visual_exponent)))
         self.session_marker_scale_multiplier = 1.0
         self.current_targets: list[dict[str, Any]] = []
@@ -1097,7 +1131,11 @@ class LiveRadarWindow(QMainWindow):
         self.radar_widget.set_trail_point_window_seconds(config.trail_point_window_seconds)
         self.radar_widget.set_marker_size_scale(self.default_marker_size_scale)
         self.radar_widget.set_fixed_marker_size_scale(self.default_fixed_marker_size_scale)
-        self.radar_widget.set_vessel_symbol_box_factor(self.vessel_symbol_box_factor)
+        self.radar_widget.set_aircraft_symbol(self.aircraft_symbol)
+        self.radar_widget.set_vessel_symbol(self.vessel_symbol)
+        self.radar_widget.set_aircraft_symbol_size_scale(self.aircraft_symbol_size_scale)
+        self.radar_widget.set_vessel_symbol_size_scale(self.vessel_symbol_size_scale)
+        self.radar_widget.set_fixed_default_symbol(self.fixed_default_symbol)
         self.radar_widget.set_zoom_visual_exponent(self.zoom_visual_exponent)
         self.radar_widget.show_fixed_names = config.show_fixed_names
         self.radar_widget.show_target_labels = config.show_target_labels
@@ -1383,17 +1421,6 @@ class LiveRadarWindow(QMainWindow):
 
     def _merged_fixed_objects(self, backend_fixed_objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
         merged: list[dict[str, Any]] = [dict(item) for item in backend_fixed_objects if isinstance(item, dict)]
-        remove_names = {
-            self._normalized_fixed_name(name)
-            for name in self.config.fixed_objects_remove_names
-            if self._normalized_fixed_name(name)
-        }
-        if remove_names:
-            merged = [
-                item
-                for item in merged
-                if self._normalized_fixed_name(item.get("name")) not in remove_names
-            ]
 
         by_name_index: dict[str, int] = {}
         for index, item in enumerate(merged):
@@ -1456,10 +1483,18 @@ class LiveRadarWindow(QMainWindow):
         self.radar_widget.set_trail_point_window_seconds(config.trail_point_window_seconds)
         self.default_marker_size_scale = max(0.4, min(4.0, float(config.marker_size_scale)))
         self.default_fixed_marker_size_scale = max(0.4, min(4.0, float(config.fixed_marker_size_scale)))
-        self.vessel_symbol_box_factor = max(0.5, min(1.5, float(config.vessel_symbol_box_factor)))
+        self.aircraft_symbol = str(config.aircraft_symbol or "●")[:1]
+        self.vessel_symbol = str(config.vessel_symbol or "◆")[:1]
+        self.aircraft_symbol_size_scale = max(0.4, min(4.0, float(config.aircraft_symbol_size_scale)))
+        self.vessel_symbol_size_scale = max(0.4, min(4.0, float(config.vessel_symbol_size_scale)))
+        self.fixed_default_symbol = str(config.fixed_default_symbol or "O")[:1]
         self.zoom_visual_exponent = max(0.0, min(0.6, float(config.zoom_visual_exponent)))
         self._apply_marker_size_scale()
-        self.radar_widget.set_vessel_symbol_box_factor(self.vessel_symbol_box_factor)
+        self.radar_widget.set_aircraft_symbol(self.aircraft_symbol)
+        self.radar_widget.set_vessel_symbol(self.vessel_symbol)
+        self.radar_widget.set_aircraft_symbol_size_scale(self.aircraft_symbol_size_scale)
+        self.radar_widget.set_vessel_symbol_size_scale(self.vessel_symbol_size_scale)
+        self.radar_widget.set_fixed_default_symbol(self.fixed_default_symbol)
         self.radar_widget.set_zoom_visual_exponent(self.zoom_visual_exponent)
 
         self.radar_widget.show_fixed_names = config.show_fixed_names
@@ -1532,21 +1567,27 @@ class LiveRadarWindow(QMainWindow):
         trail_input.setDecimals(1)
         trail_input.setValue(self.radar_widget.trail_point_window_seconds)
 
-        default_marker_scale_input = QDoubleSpinBox()
-        default_marker_scale_input.setRange(0.4, 4.0)
-        default_marker_scale_input.setSingleStep(0.05)
-        default_marker_scale_input.setDecimals(2)
-        default_marker_scale_input.setValue(self.default_marker_size_scale)
-        fixed_marker_scale_input = QDoubleSpinBox()
-        fixed_marker_scale_input.setRange(0.4, 4.0)
-        fixed_marker_scale_input.setSingleStep(0.05)
-        fixed_marker_scale_input.setDecimals(2)
-        fixed_marker_scale_input.setValue(self.default_fixed_marker_size_scale)
-        vessel_symbol_factor_input = QDoubleSpinBox()
-        vessel_symbol_factor_input.setRange(0.5, 1.5)
-        vessel_symbol_factor_input.setSingleStep(0.01)
-        vessel_symbol_factor_input.setDecimals(2)
-        vessel_symbol_factor_input.setValue(self.vessel_symbol_box_factor)
+        aircraft_symbol_input = QLineEdit(self.aircraft_symbol)
+        aircraft_symbol_input.setMaxLength(1)
+        aircraft_symbol_size_input = QDoubleSpinBox()
+        aircraft_symbol_size_input.setRange(0.4, 4.0)
+        aircraft_symbol_size_input.setSingleStep(0.05)
+        aircraft_symbol_size_input.setDecimals(2)
+        aircraft_symbol_size_input.setValue(self.aircraft_symbol_size_scale)
+        vessel_symbol_input = QLineEdit(self.vessel_symbol)
+        vessel_symbol_input.setMaxLength(1)
+        vessel_symbol_size_input = QDoubleSpinBox()
+        vessel_symbol_size_input.setRange(0.4, 4.0)
+        vessel_symbol_size_input.setSingleStep(0.05)
+        vessel_symbol_size_input.setDecimals(2)
+        vessel_symbol_size_input.setValue(self.vessel_symbol_size_scale)
+        fixed_symbol_size_input = QDoubleSpinBox()
+        fixed_symbol_size_input.setRange(0.4, 4.0)
+        fixed_symbol_size_input.setSingleStep(0.05)
+        fixed_symbol_size_input.setDecimals(2)
+        fixed_symbol_size_input.setValue(self.default_fixed_marker_size_scale)
+        fixed_default_symbol_input = QLineEdit(self.fixed_default_symbol)
+        fixed_default_symbol_input.setMaxLength(1)
         zoom_visual_exponent_input = QDoubleSpinBox()
         zoom_visual_exponent_input.setRange(0.0, 0.6)
         zoom_visual_exponent_input.setSingleStep(0.01)
@@ -1593,11 +1634,6 @@ class LiveRadarWindow(QMainWindow):
         fixed_objects_input.setPlainText(
             json.dumps(list(self.config.fixed_objects), ensure_ascii=False, indent=2)
         )
-        fixed_objects_remove_names_input = QPlainTextEdit()
-        fixed_objects_remove_names_input.setMinimumHeight(70)
-        fixed_objects_remove_names_input.setPlainText(
-            json.dumps(list(self.config.fixed_objects_remove_names), ensure_ascii=False, indent=2)
-        )
 
         form.addRow("Backend URL", backend_input)
         form.addRow("Window title", window_title_input)
@@ -1608,9 +1644,12 @@ class LiveRadarWindow(QMainWindow):
         form.addRow("Request timeout (ms)", timeout_input)
         form.addRow("Default range (km)", range_input)
         form.addRow("Trail length (s)", trail_input)
-        form.addRow("Default marker scale", default_marker_scale_input)
-        form.addRow("Fixed marker scale", fixed_marker_scale_input)
-        form.addRow("Vessel symbol factor", vessel_symbol_factor_input)
+        form.addRow("Flygplanssymbol", aircraft_symbol_input)
+        form.addRow("Flygplanssymbol storlek", aircraft_symbol_size_input)
+        form.addRow("Batsymbol", vessel_symbol_input)
+        form.addRow("Batsymbol storlek", vessel_symbol_size_input)
+        form.addRow("Fast symbol storlek", fixed_symbol_size_input)
+        form.addRow("Fast standard-symbol", fixed_default_symbol_input)
         form.addRow("Zoom visual exponent", zoom_visual_exponent_input)
         form.addRow("Temporary marker multiplier", temp_marker_multiplier_input)
         form.addRow("Map source", map_source_input)
@@ -1622,7 +1661,6 @@ class LiveRadarWindow(QMainWindow):
         form.addRow("Show map contours", show_map_contours_input)
         form.addRow("Show low speed", show_low_speed_input)
         form.addRow("Use backend /ui/live-config", use_backend_live_config_input)
-        form.addRow("Remove backend fixed names JSON", fixed_objects_remove_names_input)
         form.addRow("Fixed objects JSON", fixed_objects_input)
         scroll_area.setWidget(scroll_content)
         layout.addWidget(scroll_area, stretch=1)
@@ -1650,18 +1688,8 @@ class LiveRadarWindow(QMainWindow):
                 fixed_objects_payload = json.loads(fixed_objects_input.toPlainText())
                 if not isinstance(fixed_objects_payload, list):
                     raise ValueError("fixed_objects must be a JSON array")
-                fixed_objects_remove_names_payload = json.loads(
-                    fixed_objects_remove_names_input.toPlainText()
-                )
-                if not isinstance(fixed_objects_remove_names_payload, list):
-                    raise ValueError("fixed_objects_remove_names must be a JSON array")
                 fixed_objects = tuple(
                     item for item in fixed_objects_payload if isinstance(item, dict)
-                )
-                fixed_objects_remove_names = tuple(
-                    str(item).strip()
-                    for item in fixed_objects_remove_names_payload
-                    if str(item).strip()
                 )
                 next_config = QtLiveViewConfig(
                     backend_base_url=normalize_backend_base_url(backend_input.text()),
@@ -1682,12 +1710,18 @@ class LiveRadarWindow(QMainWindow):
                     fallback_center_lat=float(center_lat_input.value()),
                     fallback_center_lon=float(center_lon_input.value()),
                     trail_point_window_seconds=float(trail_input.value()),
-                    marker_size_scale=float(default_marker_scale_input.value()),
-                    fixed_marker_size_scale=float(fixed_marker_scale_input.value()),
-                    vessel_symbol_box_factor=float(vessel_symbol_factor_input.value()),
+                    marker_size_scale=float(self.default_marker_size_scale),
+                    fixed_marker_size_scale=float(fixed_symbol_size_input.value()),
+                    aircraft_symbol=(aircraft_symbol_input.text().strip() or self.aircraft_symbol)[:1],
+                    vessel_symbol=(vessel_symbol_input.text().strip() or self.vessel_symbol)[:1],
+                    aircraft_symbol_size_scale=float(aircraft_symbol_size_input.value()),
+                    vessel_symbol_size_scale=float(vessel_symbol_size_input.value()),
+                    fixed_default_symbol=(fixed_default_symbol_input.text().strip() or self.fixed_default_symbol)[
+                        :1
+                    ],
+                    vessel_symbol_box_factor=float(self.config.vessel_symbol_box_factor),
                     zoom_visual_exponent=float(zoom_visual_exponent_input.value()),
                     fixed_objects=fixed_objects,
-                    fixed_objects_remove_names=fixed_objects_remove_names,
                     use_backend_live_config=bool(use_backend_live_config_input.isChecked()),
                 )
                 self.config = next_config

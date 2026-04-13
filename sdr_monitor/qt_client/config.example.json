@@ -10,6 +10,11 @@
   "trail_point_window_seconds": 120,
   "marker_size_scale": 1.0,
   "fixed_marker_size_scale": 1.5625,
+  "aircraft_symbol": "●",
+  "vessel_symbol": "◆",
+  "aircraft_symbol_size_scale": 1.18,
+  "vessel_symbol_size_scale": 1.0,
+  "fixed_default_symbol": "O",
   "vessel_symbol_box_factor": 0.82,
   "zoom_visual_exponent": 0.18,
   "show_target_labels": false,
@@ -21,7 +26,6 @@
   "fallback_center_lat": 56.1619519,
   "fallback_center_lon": 15.5940978,
   "use_backend_live_config": false,
-  "fixed_objects_remove_names": [],
   "fixed_objects": [
     {
       "name": "Home Harbor",

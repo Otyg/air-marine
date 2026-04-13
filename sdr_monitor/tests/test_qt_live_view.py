@@ -48,6 +48,11 @@ def test_load_qt_live_view_config_from_json(tmp_path: Path) -> None:
                 "trail_point_window_seconds": 240,
                 "marker_size_scale": 1.3,
                 "fixed_marker_size_scale": 1.6,
+                "aircraft_symbol": "✈",
+                "vessel_symbol": "⛵",
+                "aircraft_symbol_size_scale": 1.3,
+                "vessel_symbol_size_scale": 1.1,
+                "fixed_default_symbol": "H",
                 "vessel_symbol_box_factor": 0.78,
                 "zoom_visual_exponent": 0.22,
                 "show_target_labels": True,
@@ -59,7 +64,6 @@ def test_load_qt_live_view_config_from_json(tmp_path: Path) -> None:
                 "fallback_center_lat": 56.16,
                 "fallback_center_lon": 15.59,
                 "use_backend_live_config": False,
-                "fixed_objects_remove_names": ["Base Harbor", "Radar Mast"],
                 "fixed_objects": [
                     {"name": "Harbor", "lat": 56.16, "lon": 15.59, "symbol": "H"},
                     {"name": "Mast", "latitude": 56.17, "longitude": 15.60},
@@ -81,6 +85,11 @@ def test_load_qt_live_view_config_from_json(tmp_path: Path) -> None:
     assert config.trail_point_window_seconds == 240.0
     assert config.marker_size_scale == 1.3
     assert config.fixed_marker_size_scale == 1.6
+    assert config.aircraft_symbol == "✈"
+    assert config.vessel_symbol == "⛵"
+    assert config.aircraft_symbol_size_scale == 1.3
+    assert config.vessel_symbol_size_scale == 1.1
+    assert config.fixed_default_symbol == "H"
     assert config.vessel_symbol_box_factor == 0.78
     assert config.zoom_visual_exponent == 0.22
     assert config.show_target_labels is True
@@ -90,7 +99,6 @@ def test_load_qt_live_view_config_from_json(tmp_path: Path) -> None:
     assert config.target_type_filter == "aircraft"
     assert config.map_source == "elevation"
     assert config.use_backend_live_config is False
-    assert config.fixed_objects_remove_names == ("Base Harbor", "Radar Mast")
     assert len(config.fixed_objects) == 2
     assert config.fixed_objects[0]["name"] == "Harbor"
 
@@ -173,9 +181,13 @@ def test_save_qt_live_view_config_round_trip(tmp_path: Path) -> None:
                 "trail_point_window_seconds": 180,
                 "marker_size_scale": 1.15,
                 "fixed_marker_size_scale": 1.25,
+                "aircraft_symbol": "✈",
+                "vessel_symbol": "⛵",
+                "aircraft_symbol_size_scale": 1.22,
+                "vessel_symbol_size_scale": 1.05,
+                "fixed_default_symbol": "H",
                 "vessel_symbol_box_factor": 0.9,
                 "zoom_visual_exponent": 0.2,
-                "fixed_objects_remove_names": ["Base Harbor"],
                 "fixed_objects": [{"name": "Harbor", "lat": 56.16, "lon": 15.59}],
             }
         ),
@@ -187,7 +199,11 @@ def test_save_qt_live_view_config_round_trip(tmp_path: Path) -> None:
     assert reloaded.trail_point_window_seconds == 180.0
     assert reloaded.marker_size_scale == 1.15
     assert reloaded.fixed_marker_size_scale == 1.25
+    assert reloaded.aircraft_symbol == "✈"
+    assert reloaded.vessel_symbol == "⛵"
+    assert reloaded.aircraft_symbol_size_scale == 1.22
+    assert reloaded.vessel_symbol_size_scale == 1.05
+    assert reloaded.fixed_default_symbol == "H"
     assert reloaded.vessel_symbol_box_factor == 0.9
     assert reloaded.zoom_visual_exponent == 0.2
-    assert reloaded.fixed_objects_remove_names == ("Base Harbor",)
     assert len(reloaded.fixed_objects) == 1

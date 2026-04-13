@@ -22,6 +22,9 @@ DEFAULT_TRAIL_POINT_WINDOW_SECONDS = 120.0
 DEFAULT_MARKER_SIZE_SCALE = 1.0
 DEFAULT_FIXED_MARKER_SIZE_SCALE = 1.5625
 DEFAULT_ZOOM_VISUAL_EXPONENT = 0.18
+DEFAULT_AIRCRAFT_SYMBOL = "●"
+DEFAULT_VESSEL_SYMBOL = "◆"
+DEFAULT_FIXED_DEFAULT_SYMBOL = "O"
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,10 +49,14 @@ class QtLiveViewConfig:
     trail_point_window_seconds: float = DEFAULT_TRAIL_POINT_WINDOW_SECONDS
     marker_size_scale: float = DEFAULT_MARKER_SIZE_SCALE
     fixed_marker_size_scale: float = DEFAULT_FIXED_MARKER_SIZE_SCALE
+    aircraft_symbol: str = DEFAULT_AIRCRAFT_SYMBOL
+    vessel_symbol: str = DEFAULT_VESSEL_SYMBOL
+    aircraft_symbol_size_scale: float = 1.0
+    vessel_symbol_size_scale: float = 1.0
+    fixed_default_symbol: str = DEFAULT_FIXED_DEFAULT_SYMBOL
     vessel_symbol_box_factor: float = 0.82
     zoom_visual_exponent: float = DEFAULT_ZOOM_VISUAL_EXPONENT
     fixed_objects: tuple[dict[str, Any], ...] = ()
-    fixed_objects_remove_names: tuple[str, ...] = ()
     use_backend_live_config: bool = False
 
 
@@ -160,6 +167,13 @@ def _to_map_source(payload: dict[str, Any], key: str, default: str) -> str:
     return value
 
 
+def _to_symbol(payload: dict[str, Any], key: str, default: str) -> str:
+    raw = str(payload.get(key, default)).strip()
+    if not raw:
+        return default
+    return raw[:1]
+
+
 
 def load_qt_live_view_config(config_path: Path) -> QtLiveViewConfig:
     if not config_path.exists():
@@ -174,9 +188,6 @@ def load_qt_live_view_config(config_path: Path) -> QtLiveViewConfig:
     fixed_objects_payload = payload.get("fixed_objects", [])
     if not isinstance(fixed_objects_payload, list):
         raise ValueError("fixed_objects must be a JSON array")
-    fixed_objects_remove_names_payload = payload.get("fixed_objects_remove_names", [])
-    if not isinstance(fixed_objects_remove_names_payload, list):
-        raise ValueError("fixed_objects_remove_names must be a JSON array")
 
     backend_base_url = normalize_backend_base_url(str(payload.get("backend_base_url", "")))
     config = QtLiveViewConfig(
@@ -213,6 +224,19 @@ def load_qt_live_view_config(config_path: Path) -> QtLiveViewConfig:
             "fixed_marker_scale",
             DEFAULT_FIXED_MARKER_SIZE_SCALE,
         ),
+        aircraft_symbol=_to_symbol(payload, "aircraft_symbol", DEFAULT_AIRCRAFT_SYMBOL),
+        vessel_symbol=_to_symbol(payload, "vessel_symbol", DEFAULT_VESSEL_SYMBOL),
+        aircraft_symbol_size_scale=_to_float(
+            payload,
+            "aircraft_symbol_size_scale",
+            1.0,
+        ),
+        vessel_symbol_size_scale=_to_float(
+            payload,
+            "vessel_symbol_size_scale",
+            1.0,
+        ),
+        fixed_default_symbol=_to_symbol(payload, "fixed_default_symbol", DEFAULT_FIXED_DEFAULT_SYMBOL),
         vessel_symbol_box_factor=_to_float(payload, "vessel_symbol_box_factor", 0.82),
         zoom_visual_exponent=_to_float(
             payload,
@@ -220,11 +244,6 @@ def load_qt_live_view_config(config_path: Path) -> QtLiveViewConfig:
             DEFAULT_ZOOM_VISUAL_EXPONENT,
         ),
         fixed_objects=tuple(item for item in fixed_objects_payload if isinstance(item, dict)),
-        fixed_objects_remove_names=tuple(
-            str(item).strip()
-            for item in fixed_objects_remove_names_payload
-            if str(item).strip()
-        ),
         use_backend_live_config=_to_bool(payload, "use_backend_live_config", False),
     )
 
@@ -240,6 +259,10 @@ def load_qt_live_view_config(config_path: Path) -> QtLiveViewConfig:
         raise ValueError("marker_size_scale must be within 0.4..4.0")
     if not (0.4 <= config.fixed_marker_size_scale <= 4.0):
         raise ValueError("fixed_marker_size_scale must be within 0.4..4.0")
+    if not (0.4 <= config.aircraft_symbol_size_scale <= 4.0):
+        raise ValueError("aircraft_symbol_size_scale must be within 0.4..4.0")
+    if not (0.4 <= config.vessel_symbol_size_scale <= 4.0):
+        raise ValueError("vessel_symbol_size_scale must be within 0.4..4.0")
     if not (0.5 <= config.vessel_symbol_box_factor <= 1.5):
         raise ValueError("vessel_symbol_box_factor must be within 0.5..1.5")
     if not (0.0 <= config.zoom_visual_exponent <= 0.6):
