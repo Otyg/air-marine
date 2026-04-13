@@ -104,6 +104,18 @@ class MapContourTileCache:
             )
             """
         )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS fixed_objects_cache (
+                position_key TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                lat REAL NOT NULL,
+                lon REAL NOT NULL,
+                fetched_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL
+            )
+            """
+        )
         self.conn.commit()
 
     def get_tile_features(
@@ -161,7 +173,12 @@ class MapContourTileCache:
         )
         self.conn.commit()
 
-    def replace_backend_fixed_objects(self, fixed_objects: list[dict[str, Any]]) -> int:
+    def _replace_fixed_objects_in_table(
+        self,
+        *,
+        table_name: str,
+        fixed_objects: list[dict[str, Any]],
+    ) -> int:
         normalized_rows: list[tuple[str, str, float, float, str, str]] = []
         seen_positions: set[str] = set()
         fetched_at = datetime.now(timezone.utc).isoformat()
@@ -197,11 +214,11 @@ class MapContourTileCache:
                 )
             )
 
-        self.conn.execute("DELETE FROM backend_fixed_objects")
+        self.conn.execute(f"DELETE FROM {table_name}")
         if normalized_rows:
             self.conn.executemany(
-                """
-                INSERT INTO backend_fixed_objects (
+                f"""
+                INSERT INTO {table_name} (
                     position_key,
                     name,
                     lat,
@@ -215,11 +232,11 @@ class MapContourTileCache:
         self.conn.commit()
         return len(normalized_rows)
 
-    def load_backend_fixed_objects(self) -> list[dict[str, Any]]:
+    def _load_fixed_objects_from_table(self, *, table_name: str) -> list[dict[str, Any]]:
         rows = self.conn.execute(
-            """
+            f"""
             SELECT payload_json
-            FROM backend_fixed_objects
+            FROM {table_name}
             ORDER BY name COLLATE NOCASE ASC, position_key ASC
             """
         ).fetchall()
@@ -232,6 +249,24 @@ class MapContourTileCache:
             if isinstance(payload, dict):
                 result.append(payload)
         return result
+
+    def replace_backend_fixed_objects(self, fixed_objects: list[dict[str, Any]]) -> int:
+        return self._replace_fixed_objects_in_table(
+            table_name="backend_fixed_objects",
+            fixed_objects=fixed_objects,
+        )
+
+    def load_backend_fixed_objects(self) -> list[dict[str, Any]]:
+        return self._load_fixed_objects_from_table(table_name="backend_fixed_objects")
+
+    def replace_effective_fixed_objects(self, fixed_objects: list[dict[str, Any]]) -> int:
+        return self._replace_fixed_objects_in_table(
+            table_name="fixed_objects_cache",
+            fixed_objects=fixed_objects,
+        )
+
+    def load_effective_fixed_objects(self) -> list[dict[str, Any]]:
+        return self._load_fixed_objects_from_table(table_name="fixed_objects_cache")
 
 
 class RadarWidget(QWidget):
@@ -1020,6 +1055,9 @@ class LiveRadarWindow(QMainWindow):
         self.map_refresh_pending = False
         self.map_cache = MapContourTileCache(DEFAULT_MAP_CACHE_DB_PATH)
         self.backend_fixed_objects = self.map_cache.load_backend_fixed_objects()
+        self.cached_fixed_objects = self.map_cache.load_effective_fixed_objects()
+        if not self.cached_fixed_objects:
+            self._rebuild_fixed_objects_cache()
 
         self.view_state = ViewState(
             center_lat=config.fallback_center_lat,
@@ -1028,7 +1066,7 @@ class LiveRadarWindow(QMainWindow):
         )
 
         self.radar_widget = RadarWidget(self.view_state)
-        self.radar_widget.set_fixed_objects(self._merged_fixed_objects(list(self.backend_fixed_objects)))
+        self.radar_widget.set_fixed_objects(list(self.cached_fixed_objects))
         self.radar_widget.set_trail_point_window_seconds(config.trail_point_window_seconds)
         self.radar_widget.set_marker_size_scale(self.default_marker_size_scale)
         self.radar_widget.set_fixed_marker_size_scale(self.default_fixed_marker_size_scale)
@@ -1365,6 +1403,13 @@ class LiveRadarWindow(QMainWindow):
     def _effective_marker_size_scale(self) -> float:
         return max(0.4, min(4.0, self.default_marker_size_scale * self.session_marker_scale_multiplier))
 
+    def _rebuild_fixed_objects_cache(self) -> None:
+        merged = self._merged_fixed_objects(list(self.backend_fixed_objects))
+        stored_count = self.map_cache.replace_effective_fixed_objects(merged)
+        self.cached_fixed_objects = self.map_cache.load_effective_fixed_objects()
+        self.radar_widget.set_fixed_objects(list(self.cached_fixed_objects))
+        LOGGER.info("QT fixed objects effective cache rebuilt: %s items", stored_count)
+
     def _apply_marker_size_scale(self) -> None:
         self.radar_widget.set_marker_size_scale(self._effective_marker_size_scale())
         self.radar_widget.set_fixed_marker_size_scale(self.default_fixed_marker_size_scale)
@@ -1379,7 +1424,7 @@ class LiveRadarWindow(QMainWindow):
             self.radar_widget.set_range_km(config.default_range_km)
             self._sync_range_input()
 
-        self.radar_widget.set_fixed_objects(self._merged_fixed_objects(list(self.backend_fixed_objects)))
+        self._rebuild_fixed_objects_cache()
         self.radar_widget.set_trail_point_window_seconds(config.trail_point_window_seconds)
         self.default_marker_size_scale = max(0.4, min(4.0, float(config.marker_size_scale)))
         self.default_fixed_marker_size_scale = max(0.4, min(4.0, float(config.fixed_marker_size_scale)))
@@ -1909,8 +1954,8 @@ class LiveRadarWindow(QMainWindow):
             if refresh_fixed_objects:
                 stored_count = self.map_cache.replace_backend_fixed_objects(list(parsed.fixed_objects))
                 self.backend_fixed_objects = self.map_cache.load_backend_fixed_objects()
-                LOGGER.info("QT fixed objects cache updated from backend at startup: %s items", stored_count)
-            self.radar_widget.set_fixed_objects(self._merged_fixed_objects(list(self.backend_fixed_objects)))
+                LOGGER.info("QT fixed objects backend cache updated: %s items", stored_count)
+            self._rebuild_fixed_objects_cache()
             self._sync_scan_labels()
             self.schedule_map_contours()
 
