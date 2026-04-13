@@ -9,7 +9,7 @@
   "default_range_km": 10,
   "trail_point_window_seconds": 120,
   "marker_size_scale": 1.0,
-  "fixed_marker_size_scale": 1.25,
+  "fixed_marker_size_scale": 3.125,
   "vessel_symbol_box_factor": 0.82,
   "zoom_visual_exponent": 0.18,
   "show_target_labels": false,

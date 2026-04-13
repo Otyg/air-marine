@@ -62,6 +62,7 @@ RADAR_SYMBOL_FONT_PX = 10
 RADAR_LABEL_FONT_PX = 12
 RADAR_TARGET_SYMBOL_BOX_PX = 12.0
 RADAR_FIXED_SYMBOL_BOX_PX = 12.0
+RADAR_AIRCRAFT_SYMBOL_BOX_FACTOR = 1.18
 RADAR_TARGET_LABEL_OFFSET_X = 8.0
 RADAR_TARGET_LABEL_OFFSET_Y = -10.0
 RADAR_CENTER_DOT_RADIUS_PX = 5.0
@@ -816,7 +817,7 @@ class RadarWidget(QWidget):
                 "Courier New",
             ]
         )
-        fixed_symbol_font.setBold(False)
+        fixed_symbol_font.setBold(True)
         fixed_symbol_font.setPixelSize(max(8, int(round((RADAR_SYMBOL_FONT_PX + 1) * fixed_marker_scale))))
         label_font = QFont("Courier New")
         label_font.setPixelSize(RADAR_LABEL_FONT_PX)
@@ -979,6 +980,8 @@ class RadarWidget(QWidget):
             target_symbol_box = RADAR_TARGET_SYMBOL_BOX_PX * moving_marker_scale
             if symbol == "◆":
                 target_symbol_box *= self.vessel_symbol_box_factor
+            else:
+                target_symbol_box *= RADAR_AIRCRAFT_SYMBOL_BOX_FACTOR
             half_target_symbol_box = target_symbol_box * 0.5
             symbol_rect = QRectF(
                 point.x() - half_target_symbol_box,

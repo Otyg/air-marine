@@ -20,6 +20,7 @@ DEFAULT_CONFIG_PATH = Path("./qt_client/config.json")
 DEFAULT_CONFIG_TEMPLATE = Path("./qt_client/config.example.json")
 DEFAULT_TRAIL_POINT_WINDOW_SECONDS = 120.0
 DEFAULT_MARKER_SIZE_SCALE = 1.0
+DEFAULT_FIXED_MARKER_SIZE_SCALE = 3.125
 DEFAULT_ZOOM_VISUAL_EXPONENT = 0.18
 
 
@@ -44,7 +45,7 @@ class QtLiveViewConfig:
     fallback_center_lon: float = 0.0
     trail_point_window_seconds: float = DEFAULT_TRAIL_POINT_WINDOW_SECONDS
     marker_size_scale: float = DEFAULT_MARKER_SIZE_SCALE
-    fixed_marker_size_scale: float = DEFAULT_MARKER_SIZE_SCALE
+    fixed_marker_size_scale: float = DEFAULT_FIXED_MARKER_SIZE_SCALE
     vessel_symbol_box_factor: float = 0.82
     zoom_visual_exponent: float = DEFAULT_ZOOM_VISUAL_EXPONENT
     fixed_objects: tuple[dict[str, Any], ...] = ()
@@ -210,7 +211,7 @@ def load_qt_live_view_config(config_path: Path) -> QtLiveViewConfig:
             payload,
             "fixed_marker_size_scale",
             "fixed_marker_scale",
-            DEFAULT_MARKER_SIZE_SCALE,
+            DEFAULT_FIXED_MARKER_SIZE_SCALE,
         ),
         vessel_symbol_box_factor=_to_float(payload, "vessel_symbol_box_factor", 0.82),
         zoom_visual_exponent=_to_float(
