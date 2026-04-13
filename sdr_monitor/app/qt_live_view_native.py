@@ -57,6 +57,7 @@ TRAIL_STALE_START_SECONDS = 120.0
 TRAIL_STALE_FADE_SECONDS = 270.0
 LIVE_TRAIL_NEAR_COLOR = QColor("#C1F5C1")
 LIVE_TRAIL_FAR_COLOR = QColor("#031603")
+RADAR_FIXED_OBJECT_COLOR = QColor("#9be89b")
 RADAR_SYMBOL_FONT_PX = 10
 RADAR_LABEL_FONT_PX = 12
 RADAR_TARGET_SYMBOL_BOX_PX = 12.0
@@ -801,7 +802,7 @@ class RadarWidget(QWidget):
             for start, end in self.map_segments:
                 painter.drawLine(start, end)
 
-        painter.setPen(QPen(QColor("#2c7a2c"), 1))
+        painter.setPen(QPen(RADAR_FIXED_OBJECT_COLOR, 1))
         for fixed in self.fixed_objects:
             lat = fixed.get("lat")
             lon = fixed.get("lon")
@@ -836,12 +837,12 @@ class RadarWidget(QWidget):
                     if name_lines:
                         line_height = 12.0
                         start_y = point.y() - (((len(name_lines) - 1) * line_height) * 0.5)
-                        painter.setPen(QPen(QColor("#9be89b"), 1))
+                        painter.setPen(QPen(RADAR_FIXED_OBJECT_COLOR, 1))
                         painter.setFont(label_font)
                         for index, line in enumerate(name_lines):
                             text_point = QPointF(point.x() + 7.0, start_y + (index * line_height))
                             painter.drawText(text_point, line)
-                        painter.setPen(QPen(QColor("#2c7a2c"), 1))
+                        painter.setPen(QPen(RADAR_FIXED_OBJECT_COLOR, 1))
 
         visible_targets, outside_targets = self.filtered_targets()
         for target in visible_targets:
