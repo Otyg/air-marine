@@ -54,18 +54,8 @@ DEFAULT_MAP_CACHE_DB_PATH = Path("./data/qt_map_contours.sqlite")
 TRAIL_POINT_WINDOW_SECONDS = 120.0
 TRAIL_STALE_START_SECONDS = 120.0
 TRAIL_STALE_FADE_SECONDS = 270.0
-LIVE_TRAIL_AGE_COLORS = (
-    "#C1F5C1",
-    "#90EE90",
-    "#72E972",
-    "#4AE34A",
-    "#22DD22",
-    "#1CB51C",
-    "#168D16",
-    "#106510",
-    "#0A3E0A",
-    "#031603",
-)
+LIVE_TRAIL_NEAR_COLOR = QColor("#C1F5C1")
+LIVE_TRAIL_FAR_COLOR = QColor("#031603")
 RADAR_SYMBOL_FONT_PX = 10
 RADAR_LABEL_FONT_PX = 12
 RADAR_TARGET_SYMBOL_BOX_PX = 12.0
@@ -360,13 +350,14 @@ class RadarWidget(QWidget):
         local_progress = max(0.0, min(1.0, (fade_progress - fade_start) / (1.0 - fade_start)))
         return 1.0 - local_progress
 
-    def _live_trail_color_for_age(self, age_rank: float) -> QColor:
-        clamped_rank = max(0.0, min(1.0, float(age_rank)))
-        palette_index = min(
-            len(LIVE_TRAIL_AGE_COLORS) - 1,
-            int(math.floor(clamped_rank * len(LIVE_TRAIL_AGE_COLORS))),
-        )
-        return QColor(LIVE_TRAIL_AGE_COLORS[palette_index])
+    def _live_trail_color_for_distance_ratio(self, distance_ratio: float) -> QColor:
+        clamped_ratio = max(0.0, min(1.0, float(distance_ratio)))
+        near = LIVE_TRAIL_NEAR_COLOR
+        far = LIVE_TRAIL_FAR_COLOR
+        red = int(round(near.red() + ((far.red() - near.red()) * clamped_ratio)))
+        green = int(round(near.green() + ((far.green() - near.green()) * clamped_ratio)))
+        blue = int(round(near.blue() + ((far.blue() - near.blue()) * clamped_ratio)))
+        return QColor(red, green, blue)
 
     def _draw_recent_positions(
         self,
@@ -411,38 +402,63 @@ class RadarWidget(QWidget):
         if last_seen_ms is None and ordered:
             last_seen_ms = ordered[0][0]
         fade_progress = self._trail_fade_progress(last_seen_ms)
+
+        anchor_points = [current_point] + points if current_point is not None else list(points)
+        if not anchor_points:
+            return
+        cumulative_distances: list[float] = [0.0]
+        for index in range(1, len(anchor_points)):
+            segment_distance = math.hypot(
+                anchor_points[index].x() - anchor_points[index - 1].x(),
+                anchor_points[index].y() - anchor_points[index - 1].y(),
+            )
+            cumulative_distances.append(cumulative_distances[-1] + segment_distance)
+        total_path_distance = max(1e-6, cumulative_distances[-1])
+
         painter.save()
         dashed_pen = QPen(QColor("#2c7a2c"), 1)
         dashed_pen.setDashPattern([4.0, 3.0])
         painter.setPen(dashed_pen)
 
         if current_point is not None:
-            newest_opacity = self._trail_opacity_for_age_rank(0.0, fade_progress)
+            first_ratio = cumulative_distances[1] / total_path_distance if len(cumulative_distances) > 1 else 0.0
+            newest_opacity = self._trail_opacity_for_age_rank(first_ratio, fade_progress)
             if newest_opacity > 0.02:
                 painter.setOpacity(newest_opacity)
-                head_pen = QPen(self._live_trail_color_for_age(0.0), 1)
+                head_mid_ratio = (
+                    (cumulative_distances[0] + cumulative_distances[1]) * 0.5 / total_path_distance
+                    if len(cumulative_distances) > 1
+                    else 0.0
+                )
+                head_pen = QPen(self._live_trail_color_for_distance_ratio(head_mid_ratio), 1)
                 head_pen.setDashPattern([4.0, 3.0])
                 painter.setPen(head_pen)
                 painter.drawLine(current_point, points[0])
 
         for index in range(0, len(points) - 1):
-            age_rank = 1.0 if len(points) <= 1 else (index + 1) / (len(points) - 1)
-            segment_opacity = self._trail_opacity_for_age_rank(age_rank, fade_progress)
+            start_anchor_index = index + (1 if current_point is not None else 0)
+            end_anchor_index = start_anchor_index + 1
+            segment_mid_ratio = (
+                (cumulative_distances[start_anchor_index] + cumulative_distances[end_anchor_index]) * 0.5
+                / total_path_distance
+            )
+            segment_opacity = self._trail_opacity_for_age_rank(segment_mid_ratio, fade_progress)
             if segment_opacity <= 0.02:
                 continue
             painter.setOpacity(segment_opacity)
-            segment_pen = QPen(self._live_trail_color_for_age(age_rank), 1)
+            segment_pen = QPen(self._live_trail_color_for_distance_ratio(segment_mid_ratio), 1)
             segment_pen.setDashPattern([4.0, 3.0])
             painter.setPen(segment_pen)
             painter.drawLine(points[index], points[index + 1])
 
         for index, point in enumerate(points):
-            age_rank = 1.0 if len(points) <= 1 else index / (len(points) - 1)
-            point_opacity = self._trail_opacity_for_age_rank(age_rank, fade_progress)
+            anchor_index = index + (1 if current_point is not None else 0)
+            point_ratio = cumulative_distances[anchor_index] / total_path_distance
+            point_opacity = self._trail_opacity_for_age_rank(point_ratio, fade_progress)
             if point_opacity <= 0.02:
                 continue
             painter.setOpacity(point_opacity)
-            dot_color = self._live_trail_color_for_age(age_rank)
+            dot_color = self._live_trail_color_for_distance_ratio(point_ratio)
             painter.setPen(QPen(dot_color, 1))
             painter.setBrush(dot_color)
             painter.drawEllipse(point, 1.6, 1.6)
@@ -697,6 +713,8 @@ class RadarWidget(QWidget):
             symbol = "◆" if str(target.get("kind", "")).lower() == "vessel" else "●"
             painter.setFont(symbol_font)
             target_symbol_box = RADAR_TARGET_SYMBOL_BOX_PX * moving_marker_scale
+            if symbol == "◆":
+                target_symbol_box *= self.vessel_symbol_box_factor
             half_target_symbol_box = target_symbol_box * 0.5
             symbol_rect = QRectF(
                 point.x() - half_target_symbol_box,
@@ -757,6 +775,7 @@ class LiveRadarWindow(QMainWindow):
         self.default_map_source = config.map_source
         self.default_marker_size_scale = max(0.4, min(4.0, float(config.marker_size_scale)))
         self.default_fixed_marker_size_scale = max(0.4, min(4.0, float(config.fixed_marker_size_scale)))
+        self.vessel_symbol_box_factor = max(0.5, min(1.5, float(config.vessel_symbol_box_factor)))
         self.session_marker_scale_multiplier = 1.0
         self.current_targets: list[dict[str, Any]] = []
         self.current_scanner_scan: list[str] = ["AIS", "ADS"]
@@ -1063,6 +1082,7 @@ class LiveRadarWindow(QMainWindow):
         self.radar_widget.set_trail_point_window_seconds(config.trail_point_window_seconds)
         self.default_marker_size_scale = max(0.4, min(4.0, float(config.marker_size_scale)))
         self.default_fixed_marker_size_scale = max(0.4, min(4.0, float(config.fixed_marker_size_scale)))
+        self.vessel_symbol_box_factor = max(0.5, min(1.5, float(config.vessel_symbol_box_factor)))
         self._apply_marker_size_scale()
 
         self.radar_widget.show_fixed_names = config.show_fixed_names
@@ -1142,6 +1162,11 @@ class LiveRadarWindow(QMainWindow):
         fixed_marker_scale_input.setSingleStep(0.05)
         fixed_marker_scale_input.setDecimals(2)
         fixed_marker_scale_input.setValue(self.default_fixed_marker_size_scale)
+        vessel_symbol_factor_input = QDoubleSpinBox()
+        vessel_symbol_factor_input.setRange(0.5, 1.5)
+        vessel_symbol_factor_input.setSingleStep(0.01)
+        vessel_symbol_factor_input.setDecimals(2)
+        vessel_symbol_factor_input.setValue(self.vessel_symbol_box_factor)
 
         temp_marker_multiplier_input = QDoubleSpinBox()
         temp_marker_multiplier_input.setRange(0.4, 4.0)
@@ -1195,6 +1220,7 @@ class LiveRadarWindow(QMainWindow):
         form.addRow("Trail length (s)", trail_input)
         form.addRow("Default marker scale", default_marker_scale_input)
         form.addRow("Fixed marker scale", fixed_marker_scale_input)
+        form.addRow("Vessel symbol factor", vessel_symbol_factor_input)
         form.addRow("Temporary marker multiplier", temp_marker_multiplier_input)
         form.addRow("Map source", map_source_input)
         form.addRow("Target filter", target_filter_input)
@@ -1255,6 +1281,7 @@ class LiveRadarWindow(QMainWindow):
                     trail_point_window_seconds=float(trail_input.value()),
                     marker_size_scale=float(default_marker_scale_input.value()),
                     fixed_marker_size_scale=float(fixed_marker_scale_input.value()),
+                    vessel_symbol_box_factor=float(vessel_symbol_factor_input.value()),
                     fixed_objects=fixed_objects,
                     use_backend_live_config=bool(use_backend_live_config_input.isChecked()),
                 )

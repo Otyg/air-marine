@@ -8,3 +8,4 @@ sdr_monitor/data/readsb
 **/__pycache__/
 **/*.pyc
 sdr_monitor/.pytest_cache
+**/config.json

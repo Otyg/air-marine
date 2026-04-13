@@ -10,6 +10,7 @@
   "trail_point_window_seconds": 120,
   "marker_size_scale": 1.0,
   "fixed_marker_size_scale": 1.25,
+  "vessel_symbol_box_factor": 0.82,
   "show_target_labels": false,
   "show_fixed_names": true,
   "show_map_contours": true,

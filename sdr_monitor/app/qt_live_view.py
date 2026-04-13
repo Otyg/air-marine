@@ -44,6 +44,7 @@ class QtLiveViewConfig:
     trail_point_window_seconds: float = DEFAULT_TRAIL_POINT_WINDOW_SECONDS
     marker_size_scale: float = DEFAULT_MARKER_SIZE_SCALE
     fixed_marker_size_scale: float = DEFAULT_MARKER_SIZE_SCALE
+    vessel_symbol_box_factor: float = 0.82
     fixed_objects: tuple[dict[str, Any], ...] = ()
     use_backend_live_config: bool = False
 
@@ -192,6 +193,7 @@ def load_qt_live_view_config(config_path: Path) -> QtLiveViewConfig:
             "fixed_marker_size_scale",
             DEFAULT_MARKER_SIZE_SCALE,
         ),
+        vessel_symbol_box_factor=_to_float(payload, "vessel_symbol_box_factor", 0.82),
         fixed_objects=tuple(item for item in fixed_objects_payload if isinstance(item, dict)),
         use_backend_live_config=_to_bool(payload, "use_backend_live_config", False),
     )
@@ -208,6 +210,8 @@ def load_qt_live_view_config(config_path: Path) -> QtLiveViewConfig:
         raise ValueError("marker_size_scale must be within 0.4..4.0")
     if not (0.4 <= config.fixed_marker_size_scale <= 4.0):
         raise ValueError("fixed_marker_size_scale must be within 0.4..4.0")
+    if not (0.5 <= config.vessel_symbol_box_factor <= 1.5):
+        raise ValueError("vessel_symbol_box_factor must be within 0.5..1.5")
 
     return config
 

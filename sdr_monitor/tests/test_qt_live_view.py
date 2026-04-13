@@ -48,6 +48,7 @@ def test_load_qt_live_view_config_from_json(tmp_path: Path) -> None:
                 "trail_point_window_seconds": 240,
                 "marker_size_scale": 1.3,
                 "fixed_marker_size_scale": 1.6,
+                "vessel_symbol_box_factor": 0.78,
                 "show_target_labels": True,
                 "show_fixed_names": False,
                 "show_map_contours": True,
@@ -78,6 +79,7 @@ def test_load_qt_live_view_config_from_json(tmp_path: Path) -> None:
     assert config.trail_point_window_seconds == 240.0
     assert config.marker_size_scale == 1.3
     assert config.fixed_marker_size_scale == 1.6
+    assert config.vessel_symbol_box_factor == 0.78
     assert config.show_target_labels is True
     assert config.show_fixed_names is False
     assert config.show_map_contours is True
@@ -152,6 +154,7 @@ def test_save_qt_live_view_config_round_trip(tmp_path: Path) -> None:
                 "trail_point_window_seconds": 180,
                 "marker_size_scale": 1.15,
                 "fixed_marker_size_scale": 1.25,
+                "vessel_symbol_box_factor": 0.9,
                 "fixed_objects": [{"name": "Harbor", "lat": 56.16, "lon": 15.59}],
             }
         ),
@@ -163,4 +166,5 @@ def test_save_qt_live_view_config_round_trip(tmp_path: Path) -> None:
     assert reloaded.trail_point_window_seconds == 180.0
     assert reloaded.marker_size_scale == 1.15
     assert reloaded.fixed_marker_size_scale == 1.25
+    assert reloaded.vessel_symbol_box_factor == 0.9
     assert len(reloaded.fixed_objects) == 1
