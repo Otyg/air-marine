@@ -15,7 +15,11 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
+    QComboBox,
     QDialog,
+    QDoubleSpinBox,
+    QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -24,6 +28,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QPlainTextEdit,
     QPushButton,
+    QSpinBox,
     QSizePolicy,
     QSplitter,
     QVBoxLayout,
@@ -36,7 +41,9 @@ from app.qt_live_view import (
     QtLiveViewConfig,
     ViewState,
     build_api_url,
+    normalize_backend_base_url,
     parse_live_ui_config,
+    save_qt_live_view_config,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -62,7 +69,7 @@ LIVE_TRAIL_AGE_COLORS = (
 RADAR_SYMBOL_FONT_PX = 10
 RADAR_LABEL_FONT_PX = 12
 RADAR_TARGET_SYMBOL_BOX_PX = 12.0
-RADAR_FIXED_SYMBOL_BOX_PX = 10.0
+RADAR_FIXED_SYMBOL_BOX_PX = 12.0
 RADAR_TARGET_LABEL_OFFSET_X = 8.0
 RADAR_TARGET_LABEL_OFFSET_Y = -10.0
 RADAR_CENTER_DOT_RADIUS_PX = 5.0
@@ -173,6 +180,8 @@ class RadarWidget(QWidget):
         self.show_vessel = True
         self.selected_target_id: str | None = None
         self.local_trails: dict[str, list[tuple[float, float, float]]] = {}
+        self.trail_point_window_seconds = TRAIL_POINT_WINDOW_SECONDS
+        self.marker_size_scale = 1.0
 
     def set_home(self, lat: float, lon: float) -> None:
         self.home_lat = lat
@@ -207,6 +216,14 @@ class RadarWidget(QWidget):
 
     def set_selected_target(self, target_id: str | None) -> None:
         self.selected_target_id = target_id
+        self.update()
+
+    def set_trail_point_window_seconds(self, value: float) -> None:
+        self.trail_point_window_seconds = max(5.0, min(3600.0, float(value)))
+        self.update()
+
+    def set_marker_size_scale(self, value: float) -> None:
+        self.marker_size_scale = max(0.4, min(4.0, float(value)))
         self.update()
 
     def set_range_km(self, range_km: float) -> None:
@@ -314,7 +331,9 @@ class RadarWidget(QWidget):
             if len(trail) > 256:
                 del trail[:-256]
 
-        max_trail_age_seconds = TRAIL_POINT_WINDOW_SECONDS + TRAIL_STALE_START_SECONDS + TRAIL_STALE_FADE_SECONDS
+        max_trail_age_seconds = (
+            self.trail_point_window_seconds + TRAIL_STALE_START_SECONDS + TRAIL_STALE_FADE_SECONDS
+        )
         purge_before_ms = now_ms - (max_trail_age_seconds * 1000.0)
         stale_target_ids: list[str] = []
         for target_id, trail in self.local_trails.items():
@@ -362,7 +381,7 @@ class RadarWidget(QWidget):
         if not raw_trail:
             return
 
-        cutoff_ms = self._now_ms() - (TRAIL_POINT_WINDOW_SECONDS * 1000.0)
+        cutoff_ms = self._now_ms() - (self.trail_point_window_seconds * 1000.0)
         ordered = [sample for sample in raw_trail if sample[0] >= cutoff_ms]
 
         if not ordered:
@@ -507,7 +526,8 @@ class RadarWidget(QWidget):
                 nearest_distance_px = distance_px
                 nearest_target_id = target_id
 
-        if nearest_target_id and nearest_distance_px <= 14.0:
+        hit_radius_px = 14.0 * self.marker_size_scale
+        if nearest_target_id and nearest_distance_px <= hit_radius_px:
             self.selected_target_id = nearest_target_id
             self.target_selected.emit(nearest_target_id)
             self.update()
@@ -525,9 +545,10 @@ class RadarWidget(QWidget):
 
         painter.fillRect(self.rect(), QColor("#000000"))
 
+        marker_scale = max(0.4, min(4.0, self.marker_size_scale))
         symbol_font = QFont("Courier New")
         symbol_font.setBold(True)
-        symbol_font.setPixelSize(RADAR_SYMBOL_FONT_PX)
+        symbol_font.setPixelSize(max(7, int(round(RADAR_SYMBOL_FONT_PX * marker_scale))))
         label_font = QFont("Courier New")
         label_font.setPixelSize(RADAR_LABEL_FONT_PX)
 
@@ -566,12 +587,13 @@ class RadarWidget(QWidget):
             raw_symbol = str(fixed.get("symbol", "")).strip()
             symbol = self._fixed_symbol_text(raw_symbol)
             painter.setFont(symbol_font)
-            half_fixed_symbol_box = RADAR_FIXED_SYMBOL_BOX_PX * 0.5
+            fixed_symbol_box = RADAR_FIXED_SYMBOL_BOX_PX * marker_scale
+            half_fixed_symbol_box = fixed_symbol_box * 0.5
             symbol_rect = QRectF(
                 point.x() - half_fixed_symbol_box,
                 point.y() - half_fixed_symbol_box,
-                RADAR_FIXED_SYMBOL_BOX_PX,
-                RADAR_FIXED_SYMBOL_BOX_PX,
+                fixed_symbol_box,
+                fixed_symbol_box,
             )
             painter.drawText(symbol_rect, int(Qt.AlignmentFlag.AlignCenter), symbol)
             if self.show_fixed_names:
@@ -657,12 +679,13 @@ class RadarWidget(QWidget):
 
             symbol = "◆" if str(target.get("kind", "")).lower() == "vessel" else "●"
             painter.setFont(symbol_font)
-            half_target_symbol_box = RADAR_TARGET_SYMBOL_BOX_PX * 0.5
+            target_symbol_box = RADAR_TARGET_SYMBOL_BOX_PX * marker_scale
+            half_target_symbol_box = target_symbol_box * 0.5
             symbol_rect = QRectF(
                 point.x() - half_target_symbol_box,
                 point.y() - half_target_symbol_box,
-                RADAR_TARGET_SYMBOL_BOX_PX,
-                RADAR_TARGET_SYMBOL_BOX_PX,
+                target_symbol_box,
+                target_symbol_box,
             )
             painter.drawText(symbol_rect, int(Qt.AlignmentFlag.AlignCenter), symbol)
 
@@ -712,8 +735,11 @@ class LiveRadarWindow(QMainWindow):
         self.map_retry_timer.setSingleShot(True)
         self.map_retry_timer.timeout.connect(self._on_map_retry_timeout)
 
-        self.service_name = "sdr-monitor"
+        self.settings_dialog: QDialog | None = None
+        self.service_name = config.service_name
         self.default_map_source = config.map_source
+        self.default_marker_size_scale = max(0.4, min(4.0, float(config.marker_size_scale)))
+        self.session_marker_scale_multiplier = 1.0
         self.current_targets: list[dict[str, Any]] = []
         self.current_scanner_scan: list[str] = ["AIS", "ADS"]
         self.backend_reachable = False
@@ -732,6 +758,9 @@ class LiveRadarWindow(QMainWindow):
         )
 
         self.radar_widget = RadarWidget(self.view_state)
+        self.radar_widget.set_fixed_objects(list(config.fixed_objects))
+        self.radar_widget.set_trail_point_window_seconds(config.trail_point_window_seconds)
+        self.radar_widget.set_marker_size_scale(self.default_marker_size_scale)
         self.radar_widget.show_fixed_names = config.show_fixed_names
         self.radar_widget.show_target_labels = config.show_target_labels
         self.radar_widget.show_map_contours = config.show_map_contours
@@ -771,6 +800,8 @@ class LiveRadarWindow(QMainWindow):
         self.zoom_reset_button = QPushButton("Hem")
         self.zoom_reset_button.clicked.connect(self.on_zoom_reset)
         self.range_input.setFixedHeight(self.zoom_in_button.sizeHint().height())
+        self.settings_button = QPushButton("Installningar")
+        self.settings_button.clicked.connect(self.open_settings_dialog)
 
         self.target_type_filter_buttons: dict[str, QPushButton] = {}
         for value, label in (("stopped", "Stoppade"), ("aircraft", "Flygplan"), ("vessel", "Batar")):
@@ -808,6 +839,7 @@ class LiveRadarWindow(QMainWindow):
 
         self._build_layout()
         self._apply_dark_style()
+        self.setWindowTitle(f"{self.config.window_title} - {self.service_name}")
         self._sync_scan_labels()
         self._refresh_target_lists()
 
@@ -825,6 +857,7 @@ class LiveRadarWindow(QMainWindow):
         top_bar.addWidget(title_label)
 
         top_bar.addStretch(1)
+        top_bar.addWidget(self.settings_button)
 
         root_layout.addLayout(top_bar)
         root_layout.addWidget(self.reception_warning_label)
@@ -989,6 +1022,227 @@ class LiveRadarWindow(QMainWindow):
 
     def _sync_range_input(self) -> None:
         self.range_input.setText(f"{self.radar_widget.state.range_km:.2f}")
+
+    def _effective_marker_size_scale(self) -> float:
+        return max(0.4, min(4.0, self.default_marker_size_scale * self.session_marker_scale_multiplier))
+
+    def _apply_marker_size_scale(self) -> None:
+        self.radar_widget.set_marker_size_scale(self._effective_marker_size_scale())
+
+    def _apply_runtime_config(self, config: QtLiveViewConfig, *, recenter_home: bool) -> None:
+        self.default_map_source = config.map_source
+        self.service_name = config.service_name
+        self.setWindowTitle(f"{config.window_title} - {self.service_name}")
+
+        if recenter_home:
+            self.radar_widget.set_home(config.fallback_center_lat, config.fallback_center_lon)
+            self.radar_widget.set_range_km(config.default_range_km)
+            self._sync_range_input()
+
+        self.radar_widget.set_fixed_objects(list(config.fixed_objects))
+        self.radar_widget.set_trail_point_window_seconds(config.trail_point_window_seconds)
+        self.default_marker_size_scale = max(0.4, min(4.0, float(config.marker_size_scale)))
+        self._apply_marker_size_scale()
+
+        self.radar_widget.show_fixed_names = config.show_fixed_names
+        self.radar_widget.show_target_labels = config.show_target_labels
+        self.radar_widget.show_map_contours = config.show_map_contours
+        self.radar_widget.show_stopped = bool(config.show_low_speed)
+        if config.target_type_filter == "aircraft":
+            self.radar_widget.show_aircraft = True
+            self.radar_widget.show_vessel = False
+        elif config.target_type_filter == "vessel":
+            self.radar_widget.show_aircraft = False
+            self.radar_widget.show_vessel = True
+        else:
+            self.radar_widget.show_aircraft = True
+            self.radar_widget.show_vessel = True
+
+        self.poll_timer.setInterval(config.poll_interval_ms)
+        if config.use_backend_live_config:
+            self.live_config_timer.start()
+        else:
+            self.live_config_timer.stop()
+
+        self._sync_overlay_toggle_buttons()
+        self._sync_target_type_filter_buttons()
+        self._refresh_target_lists()
+        self.schedule_map_contours(force=True)
+
+    def open_settings_dialog(self) -> None:
+        if self.settings_dialog is not None and self.settings_dialog.isVisible():
+            self.settings_dialog.raise_()
+            self.settings_dialog.activateWindow()
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("QT klientinstallningar")
+        dialog.resize(760, 700)
+        self.settings_dialog = dialog
+
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+
+        backend_input = QLineEdit(self.config.backend_base_url)
+        window_title_input = QLineEdit(self.config.window_title)
+        service_name_input = QLineEdit(self.config.service_name)
+
+        width_input = QSpinBox()
+        width_input.setRange(640, 5000)
+        width_input.setValue(self.config.window_width)
+        height_input = QSpinBox()
+        height_input.setRange(480, 5000)
+        height_input.setValue(self.config.window_height)
+
+        poll_input = QSpinBox()
+        poll_input.setRange(1000, 120000)
+        poll_input.setValue(self.config.poll_interval_ms)
+        timeout_input = QSpinBox()
+        timeout_input.setRange(1000, 120000)
+        timeout_input.setValue(self.config.request_timeout_ms)
+
+        range_input = QDoubleSpinBox()
+        range_input.setRange(MIN_RANGE_KM, 500.0)
+        range_input.setDecimals(2)
+        range_input.setValue(self.config.default_range_km)
+
+        trail_input = QDoubleSpinBox()
+        trail_input.setRange(5.0, 3600.0)
+        trail_input.setDecimals(1)
+        trail_input.setValue(self.radar_widget.trail_point_window_seconds)
+
+        default_marker_scale_input = QDoubleSpinBox()
+        default_marker_scale_input.setRange(0.4, 4.0)
+        default_marker_scale_input.setSingleStep(0.05)
+        default_marker_scale_input.setDecimals(2)
+        default_marker_scale_input.setValue(self.default_marker_size_scale)
+
+        temp_marker_multiplier_input = QDoubleSpinBox()
+        temp_marker_multiplier_input.setRange(0.4, 4.0)
+        temp_marker_multiplier_input.setSingleStep(0.05)
+        temp_marker_multiplier_input.setDecimals(2)
+        temp_marker_multiplier_input.setValue(self.session_marker_scale_multiplier)
+
+        map_source_input = QComboBox()
+        map_source_input.addItems(["hydro", "elevation"])
+        map_source_input.setCurrentText(self.config.map_source)
+
+        target_filter_input = QComboBox()
+        target_filter_input.addItems(["all", "stopped", "aircraft", "vessel"])
+        target_filter_input.setCurrentText(self.config.target_type_filter)
+
+        center_lat_input = QDoubleSpinBox()
+        center_lat_input.setRange(-90.0, 90.0)
+        center_lat_input.setDecimals(6)
+        center_lat_input.setValue(self.config.fallback_center_lat)
+
+        center_lon_input = QDoubleSpinBox()
+        center_lon_input.setRange(-180.0, 180.0)
+        center_lon_input.setDecimals(6)
+        center_lon_input.setValue(self.config.fallback_center_lon)
+
+        show_labels_input = QCheckBox()
+        show_labels_input.setChecked(self.config.show_target_labels)
+        show_fixed_names_input = QCheckBox()
+        show_fixed_names_input.setChecked(self.config.show_fixed_names)
+        show_map_contours_input = QCheckBox()
+        show_map_contours_input.setChecked(self.config.show_map_contours)
+        show_low_speed_input = QCheckBox()
+        show_low_speed_input.setChecked(self.config.show_low_speed)
+        use_backend_live_config_input = QCheckBox()
+        use_backend_live_config_input.setChecked(self.config.use_backend_live_config)
+
+        fixed_objects_input = QPlainTextEdit()
+        fixed_objects_input.setMinimumHeight(180)
+        fixed_objects_input.setPlainText(
+            json.dumps(list(self.config.fixed_objects), ensure_ascii=False, indent=2)
+        )
+
+        form.addRow("Backend URL", backend_input)
+        form.addRow("Window title", window_title_input)
+        form.addRow("Service name", service_name_input)
+        form.addRow("Window width", width_input)
+        form.addRow("Window height", height_input)
+        form.addRow("Poll interval (ms)", poll_input)
+        form.addRow("Request timeout (ms)", timeout_input)
+        form.addRow("Default range (km)", range_input)
+        form.addRow("Trail length (s)", trail_input)
+        form.addRow("Default marker scale", default_marker_scale_input)
+        form.addRow("Temporary marker multiplier", temp_marker_multiplier_input)
+        form.addRow("Map source", map_source_input)
+        form.addRow("Target filter", target_filter_input)
+        form.addRow("Fallback center lat", center_lat_input)
+        form.addRow("Fallback center lon", center_lon_input)
+        form.addRow("Show target labels", show_labels_input)
+        form.addRow("Show fixed names", show_fixed_names_input)
+        form.addRow("Show map contours", show_map_contours_input)
+        form.addRow("Show low speed", show_low_speed_input)
+        form.addRow("Use backend /ui/live-config", use_backend_live_config_input)
+        form.addRow("Fixed objects JSON", fixed_objects_input)
+        layout.addLayout(form)
+
+        button_row = QHBoxLayout()
+        apply_temp_button = QPushButton("Anvand tillfallig markorskala")
+        save_defaults_button = QPushButton("Spara defaults till config.json")
+        close_button = QPushButton("Stang")
+        button_row.addWidget(apply_temp_button)
+        button_row.addWidget(save_defaults_button)
+        button_row.addStretch(1)
+        button_row.addWidget(close_button)
+        layout.addLayout(button_row)
+
+        def _apply_temporary_marker_scale() -> None:
+            self.session_marker_scale_multiplier = float(temp_marker_multiplier_input.value())
+            self._apply_marker_size_scale()
+            self.statusBar().showMessage(
+                f"Tillfallig markorskala aktiv: x{self.session_marker_scale_multiplier:.2f}",
+                4000,
+            )
+
+        def _save_defaults() -> None:
+            try:
+                fixed_objects_payload = json.loads(fixed_objects_input.toPlainText())
+                if not isinstance(fixed_objects_payload, list):
+                    raise ValueError("fixed_objects must be a JSON array")
+                fixed_objects = tuple(
+                    item for item in fixed_objects_payload if isinstance(item, dict)
+                )
+                next_config = QtLiveViewConfig(
+                    backend_base_url=normalize_backend_base_url(backend_input.text()),
+                    window_title=window_title_input.text().strip() or self.config.window_title,
+                    service_name=service_name_input.text().strip() or "sdr-monitor",
+                    config_path=self.config.config_path,
+                    window_width=int(width_input.value()),
+                    window_height=int(height_input.value()),
+                    poll_interval_ms=int(poll_input.value()),
+                    request_timeout_ms=int(timeout_input.value()),
+                    default_range_km=float(range_input.value()),
+                    show_target_labels=bool(show_labels_input.isChecked()),
+                    show_fixed_names=bool(show_fixed_names_input.isChecked()),
+                    show_map_contours=bool(show_map_contours_input.isChecked()),
+                    show_low_speed=bool(show_low_speed_input.isChecked()),
+                    target_type_filter=str(target_filter_input.currentText()),
+                    map_source=str(map_source_input.currentText()),
+                    fallback_center_lat=float(center_lat_input.value()),
+                    fallback_center_lon=float(center_lon_input.value()),
+                    trail_point_window_seconds=float(trail_input.value()),
+                    marker_size_scale=float(default_marker_scale_input.value()),
+                    fixed_objects=fixed_objects,
+                    use_backend_live_config=bool(use_backend_live_config_input.isChecked()),
+                )
+                self.config = next_config
+                save_qt_live_view_config(next_config)
+                self._apply_runtime_config(next_config, recenter_home=True)
+                self.resize(next_config.window_width, next_config.window_height)
+                self.statusBar().showMessage("Defaults sparade till config.json", 5000)
+            except Exception as exc:
+                self.statusBar().showMessage(f"Kunde inte spara config: {exc}", 7000)
+
+        apply_temp_button.clicked.connect(_apply_temporary_marker_scale)
+        save_defaults_button.clicked.connect(_save_defaults)
+        close_button.clicked.connect(dialog.close)
+        dialog.finished.connect(lambda _result: setattr(self, "settings_dialog", None))
+        dialog.exec()
 
     def on_show_fixed_names_changed(self, checked: bool) -> None:
         self.radar_widget.show_fixed_names = checked
@@ -1177,8 +1431,9 @@ class LiveRadarWindow(QMainWindow):
         reply.finished.connect(_finished)
 
     def start(self) -> None:
-        self.load_live_ui_config()
-        self.live_config_timer.start()
+        if self.config.use_backend_live_config:
+            self.load_live_ui_config()
+            self.live_config_timer.start()
         self.poll_timer.start()
         self.load_targets()
 

@@ -18,12 +18,16 @@ DEFAULT_TIMEOUT_MS = 6000
 DEFAULT_WINDOW_TITLE = "SDR Monitor Live Radar"
 DEFAULT_CONFIG_PATH = Path("./qt_client/config.json")
 DEFAULT_CONFIG_TEMPLATE = Path("./qt_client/config.example.json")
+DEFAULT_TRAIL_POINT_WINDOW_SECONDS = 120.0
+DEFAULT_MARKER_SIZE_SCALE = 1.0
 
 
 @dataclass(frozen=True, slots=True)
 class QtLiveViewConfig:
     backend_base_url: str
     window_title: str = DEFAULT_WINDOW_TITLE
+    service_name: str = "sdr-monitor"
+    config_path: str = str(DEFAULT_CONFIG_PATH)
     window_width: int = 1400
     window_height: int = 900
     poll_interval_ms: int = DEFAULT_POLL_INTERVAL_MS
@@ -37,6 +41,10 @@ class QtLiveViewConfig:
     map_source: str = "hydro"
     fallback_center_lat: float = 0.0
     fallback_center_lon: float = 0.0
+    trail_point_window_seconds: float = DEFAULT_TRAIL_POINT_WINDOW_SECONDS
+    marker_size_scale: float = DEFAULT_MARKER_SIZE_SCALE
+    fixed_objects: tuple[dict[str, Any], ...] = ()
+    use_backend_live_config: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,11 +153,16 @@ def load_qt_live_view_config(config_path: Path) -> QtLiveViewConfig:
     payload = json.loads(config_path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("Qt client config root must be a JSON object")
+    fixed_objects_payload = payload.get("fixed_objects", [])
+    if not isinstance(fixed_objects_payload, list):
+        raise ValueError("fixed_objects must be a JSON array")
 
     backend_base_url = normalize_backend_base_url(str(payload.get("backend_base_url", "")))
     config = QtLiveViewConfig(
         backend_base_url=backend_base_url,
         window_title=str(payload.get("window_title", DEFAULT_WINDOW_TITLE)).strip() or DEFAULT_WINDOW_TITLE,
+        service_name=str(payload.get("service_name", "sdr-monitor")).strip() or "sdr-monitor",
+        config_path=str(config_path),
         window_width=_to_int(payload, "window_width", 1400, minimum=640),
         window_height=_to_int(payload, "window_height", 900, minimum=480),
         poll_interval_ms=_to_int(payload, "poll_interval_ms", DEFAULT_POLL_INTERVAL_MS, minimum=1000),
@@ -163,6 +176,18 @@ def load_qt_live_view_config(config_path: Path) -> QtLiveViewConfig:
         map_source=_to_map_source(payload, "map_source", "hydro"),
         fallback_center_lat=_to_float(payload, "fallback_center_lat", 0.0),
         fallback_center_lon=_to_float(payload, "fallback_center_lon", 0.0),
+        trail_point_window_seconds=_to_float(
+            payload,
+            "trail_point_window_seconds",
+            DEFAULT_TRAIL_POINT_WINDOW_SECONDS,
+        ),
+        marker_size_scale=_to_float(
+            payload,
+            "marker_size_scale",
+            DEFAULT_MARKER_SIZE_SCALE,
+        ),
+        fixed_objects=tuple(item for item in fixed_objects_payload if isinstance(item, dict)),
+        use_backend_live_config=_to_bool(payload, "use_backend_live_config", False),
     )
 
     if not (MIN_RANGE_KM <= config.default_range_km <= MAX_RANGE_KM):
@@ -171,6 +196,10 @@ def load_qt_live_view_config(config_path: Path) -> QtLiveViewConfig:
         raise ValueError("fallback_center_lat must be within -90..90")
     if not (-180.0 <= config.fallback_center_lon <= 180.0):
         raise ValueError("fallback_center_lon must be within -180..180")
+    if not (5.0 <= config.trail_point_window_seconds <= 3600.0):
+        raise ValueError("trail_point_window_seconds must be within 5..3600")
+    if not (0.4 <= config.marker_size_scale <= 4.0):
+        raise ValueError("marker_size_scale must be within 0.4..4.0")
 
     return config
 
@@ -228,7 +257,24 @@ def resolve_config(args: argparse.Namespace) -> QtLiveViewConfig:
         payload["backend_base_url"] = normalize_backend_base_url(args.base_url)
     if args.title:
         payload["window_title"] = str(args.title).strip() or config.window_title
+    payload["config_path"] = str(config_path)
     return QtLiveViewConfig(**payload)
+
+
+def qt_live_view_config_to_payload(config: QtLiveViewConfig) -> dict[str, Any]:
+    payload = asdict(config)
+    payload.pop("config_path", None)
+    payload["fixed_objects"] = [dict(item) for item in config.fixed_objects]
+    return payload
+
+
+def save_qt_live_view_config(config: QtLiveViewConfig, *, config_path: Path | None = None) -> None:
+    target_path = config_path or Path(config.config_path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_text(
+        json.dumps(qt_live_view_config_to_payload(config), ensure_ascii=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 

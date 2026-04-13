@@ -1,11 +1,14 @@
 {
   "backend_base_url": "http://127.0.0.1:8000",
   "window_title": "SDR Monitor Live Radar",
+  "service_name": "sdr-monitor",
   "window_width": 1400,
   "window_height": 900,
   "poll_interval_ms": 5000,
   "request_timeout_ms": 6000,
   "default_range_km": 10,
+  "trail_point_window_seconds": 120,
+  "marker_size_scale": 1.0,
   "show_target_labels": false,
   "show_fixed_names": true,
   "show_map_contours": true,
@@ -13,5 +16,7 @@
   "target_type_filter": "all",
   "map_source": "hydro",
   "fallback_center_lat": 56.1619519,
-  "fallback_center_lon": 15.5940978
+  "fallback_center_lon": 15.5940978,
+  "use_backend_live_config": false,
+  "fixed_objects": []
 }
