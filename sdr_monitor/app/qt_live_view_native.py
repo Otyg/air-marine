@@ -1512,6 +1512,8 @@ class LiveRadarWindow(QMainWindow):
         layout = QVBoxLayout(dialog)
         tracking_status_label = QLabel(dialog)
         tracking_toggle_button = QPushButton(dialog)
+        distance_status_label = QLabel(dialog)
+        distance_button = QPushButton("Berakna avstand till center", dialog)
 
         def _refresh_tracking_controls() -> None:
             if not target_id_raw:
@@ -1540,6 +1542,30 @@ class LiveRadarWindow(QMainWindow):
         tracking_toggle_button.clicked.connect(_toggle_tracking)
         layout.addWidget(tracking_status_label)
         layout.addWidget(tracking_toggle_button)
+        layout.addWidget(distance_button)
+        layout.addWidget(distance_status_label)
+
+        def _update_distance_to_center() -> None:
+            lat_value = target.get("lat")
+            lon_value = target.get("lon")
+            try:
+                lat = float(lat_value)
+                lon = float(lon_value)
+            except (TypeError, ValueError):
+                distance_status_label.setText("Avstand: saknas (ingen giltig position for objektet)")
+                return
+            center_lat = float(self.radar_widget.state.center_lat)
+            center_lon = float(self.radar_widget.state.center_lon)
+            dy_km = (lat - center_lat) * KM_PER_DEG_LAT
+            dx_km = (lon - center_lon) * self.radar_widget._km_per_deg_lon(center_lat)
+            distance_km = math.hypot(dx_km, dy_km)
+            distance_nm = distance_km / 1.852
+            distance_status_label.setText(
+                f"Avstand till center: {distance_km:.2f} km ({distance_nm:.2f} NM)"
+            )
+
+        distance_button.clicked.connect(_update_distance_to_center)
+        _update_distance_to_center()
 
         text_view = QPlainTextEdit(dialog)
         text_view.setReadOnly(True)
