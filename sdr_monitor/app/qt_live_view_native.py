@@ -11,7 +11,7 @@ import sqlite3
 from typing import Any
 
 from PySide6.QtCore import QPointF, QRectF, QTimer, Qt, QUrl, Signal
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
     QApplication,
@@ -59,6 +59,13 @@ LIVE_TRAIL_AGE_COLORS = (
     "#0A3E0A",
     "#031603",
 )
+RADAR_SYMBOL_FONT_PX = 10
+RADAR_LABEL_FONT_PX = 12
+RADAR_TARGET_SYMBOL_BOX_PX = 12.0
+RADAR_FIXED_SYMBOL_BOX_PX = 10.0
+RADAR_TARGET_LABEL_OFFSET_X = 8.0
+RADAR_TARGET_LABEL_OFFSET_Y = -10.0
+RADAR_CENTER_DOT_RADIUS_PX = 5.0
 
 
 class MapContourTileCache:
@@ -518,6 +525,12 @@ class RadarWidget(QWidget):
 
         painter.fillRect(self.rect(), QColor("#000000"))
 
+        symbol_font = QFont("Courier New")
+        symbol_font.setBold(True)
+        symbol_font.setPixelSize(RADAR_SYMBOL_FONT_PX)
+        label_font = QFont("Courier New")
+        label_font.setPixelSize(RADAR_LABEL_FONT_PX)
+
         painter.setPen(QPen(QColor("#2c7a2c"), 1))
         for index in range(1, RADAR_RING_COUNT + 1):
             ring_radius = radius * index / RADAR_RING_COUNT
@@ -552,10 +565,14 @@ class RadarWidget(QWidget):
                 continue
             raw_symbol = str(fixed.get("symbol", "")).strip()
             symbol = self._fixed_symbol_text(raw_symbol)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawEllipse(point, 3.2, 3.2)
-            painter.drawPoint(point)
-            symbol_rect = QRectF(point.x() - 7.0, point.y() - 7.0, 14.0, 14.0)
+            painter.setFont(symbol_font)
+            half_fixed_symbol_box = RADAR_FIXED_SYMBOL_BOX_PX * 0.5
+            symbol_rect = QRectF(
+                point.x() - half_fixed_symbol_box,
+                point.y() - half_fixed_symbol_box,
+                RADAR_FIXED_SYMBOL_BOX_PX,
+                RADAR_FIXED_SYMBOL_BOX_PX,
+            )
             painter.drawText(symbol_rect, int(Qt.AlignmentFlag.AlignCenter), symbol)
             if self.show_fixed_names:
                 raw_name = str(fixed.get("name", "")).strip()
@@ -565,6 +582,7 @@ class RadarWidget(QWidget):
                         line_height = 12.0
                         start_y = point.y() - (((len(name_lines) - 1) * line_height) * 0.5)
                         painter.setPen(QPen(QColor("#9be89b"), 1))
+                        painter.setFont(label_font)
                         for index, line in enumerate(name_lines):
                             text_point = QPointF(point.x() + 7.0, start_y + (index * line_height))
                             painter.drawText(text_point, line)
@@ -638,17 +656,35 @@ class RadarWidget(QWidget):
                 painter.drawLine(point, end_point)
 
             symbol = "◆" if str(target.get("kind", "")).lower() == "vessel" else "●"
-            symbol_rect = QRectF(point.x() - 7.0, point.y() - 7.0, 14.0, 14.0)
+            painter.setFont(symbol_font)
+            half_target_symbol_box = RADAR_TARGET_SYMBOL_BOX_PX * 0.5
+            symbol_rect = QRectF(
+                point.x() - half_target_symbol_box,
+                point.y() - half_target_symbol_box,
+                RADAR_TARGET_SYMBOL_BOX_PX,
+                RADAR_TARGET_SYMBOL_BOX_PX,
+            )
             painter.drawText(symbol_rect, int(Qt.AlignmentFlag.AlignCenter), symbol)
 
             if self.show_target_labels:
                 label = str(target.get("label") or target_id)
-                painter.drawText(point + QPointF(6, -6), label)
+                painter.setFont(label_font)
+                painter.drawText(
+                    point
+                    + QPointF(
+                        RADAR_TARGET_LABEL_OFFSET_X,
+                        RADAR_TARGET_LABEL_OFFSET_Y,
+                    ),
+                    label,
+                )
 
-        painter.setPen(QPen(QColor("#d3d3d3"), 2))
-        painter.drawPoint(QPointF(cx, cy))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#d3d3d3"))
+        painter.drawEllipse(QPointF(cx, cy), RADAR_CENTER_DOT_RADIUS_PX, RADAR_CENTER_DOT_RADIUS_PX)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
 
         painter.setPen(QPen(QColor("#9be89b"), 1))
+        painter.setFont(label_font)
         painter.drawText(12, 20, f"Center: {self.state.center_lat:.6f}, {self.state.center_lon:.6f}")
         painter.drawText(12, 40, f"Range: {self.state.range_km:.2f} km")
 
