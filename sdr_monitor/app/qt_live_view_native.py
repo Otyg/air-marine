@@ -174,6 +174,7 @@ class RadarWidget(QWidget):
         self.trail_point_window_seconds = TRAIL_POINT_WINDOW_SECONDS
         self.marker_size_scale = 1.0
         self.fixed_marker_size_scale = 1.0
+        self.vessel_symbol_box_factor = 0.82
 
     def set_home(self, lat: float, lon: float) -> None:
         self.home_lat = lat
@@ -220,6 +221,10 @@ class RadarWidget(QWidget):
 
     def set_fixed_marker_size_scale(self, value: float) -> None:
         self.fixed_marker_size_scale = max(0.4, min(4.0, float(value)))
+        self.update()
+
+    def set_vessel_symbol_box_factor(self, value: float) -> None:
+        self.vessel_symbol_box_factor = max(0.5, min(1.5, float(value)))
         self.update()
 
     def set_range_km(self, range_km: float) -> None:
@@ -799,6 +804,7 @@ class LiveRadarWindow(QMainWindow):
         self.radar_widget.set_trail_point_window_seconds(config.trail_point_window_seconds)
         self.radar_widget.set_marker_size_scale(self.default_marker_size_scale)
         self.radar_widget.set_fixed_marker_size_scale(self.default_fixed_marker_size_scale)
+        self.radar_widget.set_vessel_symbol_box_factor(self.vessel_symbol_box_factor)
         self.radar_widget.show_fixed_names = config.show_fixed_names
         self.radar_widget.show_target_labels = config.show_target_labels
         self.radar_widget.show_map_contours = config.show_map_contours
@@ -1084,6 +1090,7 @@ class LiveRadarWindow(QMainWindow):
         self.default_fixed_marker_size_scale = max(0.4, min(4.0, float(config.fixed_marker_size_scale)))
         self.vessel_symbol_box_factor = max(0.5, min(1.5, float(config.vessel_symbol_box_factor)))
         self._apply_marker_size_scale()
+        self.radar_widget.set_vessel_symbol_box_factor(self.vessel_symbol_box_factor)
 
         self.radar_widget.show_fixed_names = config.show_fixed_names
         self.radar_widget.show_target_labels = config.show_target_labels
