@@ -879,9 +879,10 @@ class RadarWidget(QWidget):
                     label,
                 )
 
+        center_dot_radius = max(2.0, (RADAR_FIXED_SYMBOL_BOX_PX * fixed_marker_scale * 0.8))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor("#d3d3d3"))
-        painter.drawEllipse(QPointF(cx, cy), RADAR_CENTER_DOT_RADIUS_PX, RADAR_CENTER_DOT_RADIUS_PX)
+        painter.drawEllipse(QPointF(cx, cy), center_dot_radius, center_dot_radius)
         painter.setBrush(Qt.BrushStyle.NoBrush)
 
         painter.setPen(QPen(QColor("#9be89b"), 1))
