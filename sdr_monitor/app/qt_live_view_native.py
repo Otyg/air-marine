@@ -1000,7 +1000,10 @@ class RadarWidget(QWidget):
                     label,
                 )
 
-        center_dot_radius = max(2.0, (RADAR_FIXED_SYMBOL_BOX_PX * fixed_marker_scale * 0.8))
+        # Keep center marker independent from user-configured fixed marker scale.
+        # This matches fixed-object size at fixed_marker_scale == 1.0 for current zoom level.
+        center_reference_scale = MARKER_BASE_SCALE_AT_CONFIG_1 * zoom_visual_scale
+        center_dot_radius = max(2.0, (RADAR_FIXED_SYMBOL_BOX_PX * center_reference_scale * 0.8))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor("#d3d3d3"))
         painter.drawEllipse(QPointF(cx, cy), center_dot_radius, center_dot_radius)
