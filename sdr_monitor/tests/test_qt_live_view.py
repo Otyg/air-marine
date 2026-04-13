@@ -148,6 +148,21 @@ def test_load_qt_live_view_config_defaults_to_local_live_config(tmp_path: Path) 
     assert config.use_backend_live_config is False
 
 
+def test_load_qt_live_view_config_supports_fixed_marker_scale_alias(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "backend_base_url": "http://127.0.0.1:8000",
+                "fixed_marker_scale": 1.9,
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = load_qt_live_view_config(config_path)
+    assert config.fixed_marker_size_scale == 1.9
+
+
 def test_save_qt_live_view_config_round_trip(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text(

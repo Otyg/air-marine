@@ -117,6 +117,18 @@ def _to_float(payload: dict[str, Any], key: str, default: float) -> float:
         raise ValueError(f"{key} must be numeric") from exc
 
 
+def _to_float_alias(
+    payload: dict[str, Any],
+    primary_key: str,
+    fallback_key: str,
+    default: float,
+) -> float:
+    if primary_key in payload:
+        return _to_float(payload, primary_key, default)
+    if fallback_key in payload:
+        return _to_float(payload, fallback_key, default)
+    return default
+
 
 def _to_bool(payload: dict[str, Any], key: str, default: bool) -> bool:
     value = payload.get(key, default)
@@ -194,9 +206,10 @@ def load_qt_live_view_config(config_path: Path) -> QtLiveViewConfig:
             "marker_size_scale",
             DEFAULT_MARKER_SIZE_SCALE,
         ),
-        fixed_marker_size_scale=_to_float(
+        fixed_marker_size_scale=_to_float_alias(
             payload,
             "fixed_marker_size_scale",
+            "fixed_marker_scale",
             DEFAULT_MARKER_SIZE_SCALE,
         ),
         vessel_symbol_box_factor=_to_float(payload, "vessel_symbol_box_factor", 0.82),
