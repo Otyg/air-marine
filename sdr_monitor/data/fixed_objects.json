@@ -123,5 +123,53 @@
     "latitude": 56.86, 
     "longitude": 15.5,
     "symbol": "✈"
-  }
+  },
+  {
+      "name": "Bryggareberget",
+      "latitude": 56.170621,
+      "longitude": 15.6005715,
+      "symbol": "\u2605"
+    },
+    {
+      "name": "Bredavik brygga",
+      "latitude": 56.1162089,
+      "longitude": 15.6814911,
+      "symbol": "\u25ec"
+    },
+    {
+      "name": "Sanda hamn",
+      "latitude": 56.1197008,
+      "longitude": 15.6503223,
+      "symbol": "\u25ec"
+    },
+    {
+      "name": "Trummen\u00e4s brygga",
+      "latitude": 56.1598453,
+      "longitude": 15.7186011,
+      "symbol": "\u25ec"
+    },
+    {
+      "name": "Drags\u00f6 brygga",
+      "latitude": 56.1726077,
+      "longitude": 15.5777052,
+      "symbol": "\u25ec"
+    },
+    {
+      "name": "Sjuhalla brygga",
+      "latitude": 56.1848552,
+      "longitude": 15.5620349,
+      "symbol": "\u25ec"
+    },
+    {
+      "name": "Ytterön brygga",
+      "latitude": 56.0942819,
+      "longitude": 15.7642847,
+      "symbol": "\u25ec"
+    },
+    {
+      "name": "Inlängan hamn",
+      "latitude": 56.0487282,
+      "longitude": 15.7739529,
+      "symbol": "\u25ec"
+    }
 ]
